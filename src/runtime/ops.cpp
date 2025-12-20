@@ -1,5 +1,8 @@
 #include "runtime/ops.h"
 
+#include <algorithm>
+#include <cmath>
+#include <numeric>
 #include <stdexcept>
 
 #include "util/error.h"
@@ -20,6 +23,9 @@ Value Evaluator::Evaluate(const parser::Expression& expr) {
   }
   if (const auto* identifier = dynamic_cast<const parser::Identifier*>(&expr)) {
     return EvaluateIdentifier(*identifier);
+  }
+  if (const auto* call = dynamic_cast<const parser::CallExpression*>(&expr)) {
+    return EvaluateCall(*call);
   }
   throw std::runtime_error("Unknown expression type");
 }
@@ -63,6 +69,83 @@ Value Evaluator::EvaluateIdentifier(const parser::Identifier& identifier) {
     throw util::Error("Undefined identifier: " + identifier.name, 0, 0);
   }
   return value.value();
+}
+
+Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
+  if (env_ == nullptr) {
+    throw util::Error("Environment is not configured", 0, 0);
+  }
+  std::vector<Value> args;
+  args.reserve(call.args.size());
+  for (const auto& arg : call.args) {
+    args.push_back(Evaluate(*arg));
+  }
+  const std::string& name = call.callee;
+  auto expect_args = [&](size_t count, const std::string& func) {
+    if (args.size() != count) {
+      throw util::Error(func + " expects " + std::to_string(count) + " arguments", 0, 0);
+    }
+  };
+
+  if (name == "pow") {
+    expect_args(2, name);
+    return Value::Number(std::pow(args[0].number, args[1].number));
+  }
+  if (name == "gcd") {
+    expect_args(2, name);
+    auto a = static_cast<long long>(args[0].number);
+    auto b = static_cast<long long>(args[1].number);
+    return Value::Number(std::gcd(a, b));
+  }
+  if (name == "lcm") {
+    expect_args(2, name);
+    auto a = static_cast<long long>(args[0].number);
+    auto b = static_cast<long long>(args[1].number);
+    return Value::Number(std::lcm(a, b));
+  }
+  if (name == "abs") {
+    expect_args(1, name);
+    return Value::Number(std::fabs(args[0].number));
+  }
+  if (name == "sign") {
+    expect_args(1, name);
+    double v = args[0].number;
+    if (v > 0) return Value::Number(1.0);
+    if (v < 0) return Value::Number(-1.0);
+    return Value::Number(0.0);
+  }
+  if (name == "mod") {
+    expect_args(2, name);
+    if (args[1].number == 0.0) {
+      throw util::Error("mod divisor cannot be zero", 0, 0);
+    }
+    return Value::Number(std::fmod(args[0].number, args[1].number));
+  }
+  if (name == "floor") {
+    expect_args(1, name);
+    return Value::Number(std::floor(args[0].number));
+  }
+  if (name == "ceil") {
+    expect_args(1, name);
+    return Value::Number(std::ceil(args[0].number));
+  }
+  if (name == "round") {
+    expect_args(1, name);
+    return Value::Number(std::round(args[0].number));
+  }
+  if (name == "clamp") {
+    expect_args(3, name);
+    return Value::Number(std::clamp(args[0].number, args[1].number, args[2].number));
+  }
+  if (name == "min") {
+    expect_args(2, name);
+    return Value::Number(std::min(args[0].number, args[1].number));
+  }
+  if (name == "max") {
+    expect_args(2, name);
+    return Value::Number(std::max(args[0].number, args[1].number));
+  }
+  throw util::Error("Unknown function: " + name, 0, 0);
 }
 
 std::string Value::ToString() const {

@@ -88,6 +88,8 @@ Token Lexer::NextToken() {
       return Token{TokenType::kStar, "*", token_line, token_column};
     case '/':
       return Token{TokenType::kSlash, "/", token_line, token_column};
+    case ',':
+      return Token{TokenType::kComma, ",", token_line, token_column};
     case '=':
       return Token{TokenType::kEqual, "=", token_line, token_column};
     case '(':

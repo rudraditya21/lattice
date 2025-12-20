@@ -27,6 +27,7 @@ class Parser {
   std::unique_ptr<Expression> Factor();
   std::unique_ptr<Expression> Unary();
   std::unique_ptr<Expression> Primary();
+  std::unique_ptr<Expression> FinishCall(std::string callee);
 
   void Next();
 

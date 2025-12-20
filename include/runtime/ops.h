@@ -20,6 +20,7 @@ class Evaluator {
   Value EvaluateUnary(const parser::UnaryExpression& expr);
   Value EvaluateBinary(const parser::BinaryExpression& expr);
   Value EvaluateIdentifier(const parser::Identifier& identifier);
+  Value EvaluateCall(const parser::CallExpression& call);
 
   Environment* env_;
 };

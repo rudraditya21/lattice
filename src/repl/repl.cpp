@@ -47,7 +47,9 @@ bool Repl::ProcessLine(const std::string& line) {
     }
     return true;
   };
-  static const std::unordered_set<std::string> kReserved = {"pi", "e"};
+  static const std::unordered_set<std::string> kReserved = {
+      "pi",  "e",     "pow",  "gcd",   "lcm",   "abs", "sign",
+      "mod", "floor", "ceil", "round", "clamp", "min", "max"};
   try {
     size_t eq_pos = trimmed.find('=');
     if (eq_pos != std::string::npos) {

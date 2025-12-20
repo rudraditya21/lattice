@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace lattice::parser {
 
@@ -37,6 +38,13 @@ struct BinaryExpression : public Expression {
 struct Identifier : public Expression {
   explicit Identifier(std::string n) : name(std::move(n)) {}
   std::string name;
+};
+
+struct CallExpression : public Expression {
+  CallExpression(std::string callee_name, std::vector<std::unique_ptr<Expression>> arguments)
+      : callee(std::move(callee_name)), args(std::move(arguments)) {}
+  std::string callee;
+  std::vector<std::unique_ptr<Expression>> args;
 };
 
 }  // namespace lattice::parser

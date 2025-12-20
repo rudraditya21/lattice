@@ -107,8 +107,21 @@ std::unique_ptr<Expression> Parser::Primary() {
   }
 
   if (Match(lexer::TokenType::kIdentifier)) {
-    const auto& tok = Previous();
-    return std::make_unique<Identifier>(tok.lexeme);
+    std::string name = Previous().lexeme;
+    if (Match(lexer::TokenType::kLParen)) {
+      std::vector<std::unique_ptr<Expression>> args;
+      if (!Match(lexer::TokenType::kRParen)) {
+        while (true) {
+          args.push_back(ExpressionRule());
+          if (Match(lexer::TokenType::kRParen)) {
+            break;
+          }
+          Consume(lexer::TokenType::kComma, "Expected ',' between arguments");
+        }
+      }
+      return std::make_unique<CallExpression>(name, std::move(args));
+    }
+    return std::make_unique<Identifier>(name);
   }
 
   if (Match(lexer::TokenType::kLParen)) {
