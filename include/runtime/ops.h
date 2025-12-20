@@ -11,8 +11,10 @@ namespace lattice::runtime {
 
 class Evaluator {
  public:
+  /// Evaluates AST nodes against the provided environment (not owned).
   explicit Evaluator(Environment* env);
 
+  /// Dispatches to the appropriate visitor for the expression kind.
   Value Evaluate(const parser::Expression& expr);
 
  private:

@@ -11,8 +11,10 @@ namespace lattice::runtime {
 
 class Environment {
  public:
+  /// Stores or replaces a named value.
   void Define(const std::string& name, const Value& value) { values_[name] = value; }
 
+  /// Looks up a name, returning std::nullopt if it is undefined.
   std::optional<Value> Get(const std::string& name) const {
     auto it = values_.find(name);
     if (it == values_.end()) {

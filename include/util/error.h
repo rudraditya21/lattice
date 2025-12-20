@@ -8,12 +8,16 @@ namespace lattice::util {
 
 class Error : public std::runtime_error {
  public:
+  /// Creates an error with message and source location (1-based line/column).
   Error(const std::string& message, int line, int column)
       : std::runtime_error(message), line_(line), column_(column) {}
 
+  /// Line where the error was detected.
   int line() const { return line_; }
+  /// Column where the error was detected.
   int column() const { return column_; }
 
+  /// Returns a human-readable string with location context.
   std::string formatted() const {
     return "Error at " + std::to_string(line_) + ":" + std::to_string(column_) + " - " + what();
   }

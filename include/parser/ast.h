@@ -15,17 +15,20 @@ struct Expression {
   virtual ~Expression() = default;
 };
 
+/// Numeric literal value.
 struct NumberLiteral : public Expression {
   explicit NumberLiteral(double v) : value(v) {}
   double value;
 };
 
+/// Unary expression such as negation.
 struct UnaryExpression : public Expression {
   UnaryExpression(UnaryOp o, std::unique_ptr<Expression> expr) : op(o), operand(std::move(expr)) {}
   UnaryOp op;
   std::unique_ptr<Expression> operand;
 };
 
+/// Binary expression for arithmetic operators.
 struct BinaryExpression : public Expression {
   BinaryExpression(BinaryOp o, std::unique_ptr<Expression> lhs_expr,
                    std::unique_ptr<Expression> rhs_expr)
@@ -35,11 +38,13 @@ struct BinaryExpression : public Expression {
   std::unique_ptr<Expression> rhs;
 };
 
+/// Named identifier reference.
 struct Identifier : public Expression {
   explicit Identifier(std::string n) : name(std::move(n)) {}
   std::string name;
 };
 
+/// Function call with positional arguments.
 struct CallExpression : public Expression {
   CallExpression(std::string callee_name, std::vector<std::unique_ptr<Expression>> arguments)
       : callee(std::move(callee_name)), args(std::move(arguments)) {}

@@ -11,8 +11,10 @@ namespace lattice::lexer {
 
 class Lexer {
  public:
+  /// Initializes a lexer over the provided source string.
   explicit Lexer(const std::string& source);
 
+  /// Returns the next token, throwing util::Error on malformed input.
   Token NextToken();
 
  private:

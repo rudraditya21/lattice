@@ -11,8 +11,10 @@ namespace lattice::parser {
 
 class Parser {
  public:
+  /// Builds a parser with ownership of the provided lexer.
   explicit Parser(lexer::Lexer lexer);
 
+  /// Parses an expression and throws util::Error on syntax issues.
   std::unique_ptr<Expression> ParseExpression();
 
  private:

@@ -20,6 +20,7 @@ enum class TokenType {
   kInvalid,
 };
 
+/// A lexical token with type, original lexeme, and source location.
 struct Token {
   TokenType type;
   std::string lexeme;

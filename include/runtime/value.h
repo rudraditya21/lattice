@@ -11,8 +11,10 @@ struct Value {
   DType type;
   double number;
 
+  /// Convenience constructor for numeric values.
   static Value Number(double v) { return Value{DType::kNumber, v}; }
 
+  /// Formats the value for display in the REPL.
   std::string ToString() const;
 };
 
