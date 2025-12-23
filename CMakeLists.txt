@@ -21,3 +21,18 @@ target_include_directories(lattice_lib PUBLIC
 add_executable(lattice main.cpp)
 
 target_link_libraries(lattice PRIVATE lattice_lib)
+
+enable_testing()
+add_executable(lattice_tests
+    tests/main.cpp
+    tests/test_util.cpp
+    tests/lexer/lexer_tests.cpp
+    tests/parser/parser_tests.cpp
+    tests/runtime/runtime_tests.cpp
+    tests/builtin/builtin_tests.cpp
+    tests/util/util_tests.cpp
+    tests/repl/repl_tests.cpp
+)
+target_include_directories(lattice_tests PRIVATE tests)
+target_link_libraries(lattice_tests PRIVATE lattice_lib)
+add_test(NAME lattice_tests COMMAND lattice_tests)

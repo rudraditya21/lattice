@@ -1,10 +1,11 @@
 # lattice
 
-Minimal lattice language with a REPL supporting numeric literals, identifiers, unary minus, and `+/-/*//` operations plus assignment. Built-in constants `pi` and `e` are available, and builtin functions `pow(x, y)`, `gcd(a, b)`, `lcm(a, b)`, `abs(x)`, `sign(x)`, `mod(a, b)`, `floor(x)`, `ceil(x)`, `round(x)`, `clamp(x, lo, hi)`, `min(a, b)`, and `max(a, b)` are provided. The project is organized with headers in `include/` and sources in `src/`.
+Minimal lattice language with a REPL supporting numeric literals, identifiers, unary minus, and `+/-/*//` operations plus assignment. Built-in constants `pi`, `e`, `gamma`, and `inf` are available, and builtin functions `pow(x, y)`, `gcd(a, b)`, `lcm(a, b)`, `abs(x)`, `sign(x)`, `mod(a, b)`, `floor(x)`, `ceil(x)`, `round(x)`, `clamp(x, lo, hi)`, `min(a, b)`, and `max(a, b)` are provided. The project is organized with headers in `include/` and sources in `src/`.
 
 ## Layout
 - `include/` – public headers (`lexer/`, `parser/`, `runtime/`, `repl/`, `builtin/`, `util/`)
 - `src/` – implementation (`lexer/`, `parser/`, `runtime/`, `repl/`, `builtin/`, `main.cpp`)
+- `tests/` – modular tests under `tests/{lexer,parser,runtime,builtin,util,repl}` with shared helpers at `tests/test_util.*` and entry in `tests/main.cpp`
 - `CMakeLists.txt` – build configuration
 - `.clang-format` – formatting rules
 - `.gitignore` – repository hygiene
@@ -35,6 +36,13 @@ lattice> lcm(3, 5)
 15.000000
 lattice> exit
 ```
+
+## Tests
+```bash
+cmake --build build
+ctest --test-dir build
+```
+Tests exercise parsing and evaluation (arithmetic, identifiers, constants, builtins, and error paths).
 
 ## Formatting
 Use clang-format with the provided configuration:
