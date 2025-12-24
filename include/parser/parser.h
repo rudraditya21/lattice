@@ -17,13 +17,21 @@ class Parser {
   /// Parses an expression and throws util::Error on syntax issues.
   std::unique_ptr<Expression> ParseExpression();
 
+  /// Parses a statement (including blocks/conditionals) and throws util::Error on syntax issues.
+  std::unique_ptr<Statement> ParseStatement();
+
  private:
   const lexer::Token& Peek() const;
+  const lexer::Token& Next() const;
   const lexer::Token& Previous() const;
   lexer::Token Advance();
   bool Match(lexer::TokenType type);
   void Consume(lexer::TokenType type, const std::string& message);
 
+  std::unique_ptr<Statement> StatementRule();
+  std::unique_ptr<Statement> IfStatementRule();
+  std::unique_ptr<Statement> Block();
+  std::unique_ptr<Statement> AssignmentOrExpression();
   std::unique_ptr<Expression> ExpressionRule();
   std::unique_ptr<Expression> Term();
   std::unique_ptr<Expression> Factor();
@@ -31,10 +39,9 @@ class Parser {
   std::unique_ptr<Expression> Primary();
   std::unique_ptr<Expression> FinishCall(std::string callee);
 
-  void Next();
-
   lexer::Lexer lexer_;
   lexer::Token current_;
+  lexer::Token lookahead_;
   lexer::Token previous_;
 };
 

@@ -31,6 +31,20 @@ void RunRuntimeTests(TestContext* ctx) {
     caught = true;
   }
   ExpectTrue(caught, "mod_divide_by_zero_error", ctx);
+
+  // Blocks and assignment.
+  auto block_val = EvalStmt("{ x = 3; x + 2; }", &env);
+  ExpectNear(block_val.value().number, 5.0, "block_assignment", ctx);
+
+  // Conditional execution.
+  auto if_val = EvalStmt("if (0) 10 else 7", &env);
+  ExpectNear(if_val.value().number, 7.0, "if_else_execution", ctx);
+
+  // Nested condition and guard that else is not evaluated when condition is true.
+  auto nested = EvalStmt("if (1) { if (0) 9 else 8 } else 7", &env);
+  ExpectNear(nested.value().number, 8.0, "nested_if", ctx);
+  auto guard = EvalStmt("if (1) 5 else mod(1, 0)", &env);
+  ExpectNear(guard.value().number, 5.0, "if_skips_else", ctx);
 }
 
 }  // namespace test

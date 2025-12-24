@@ -30,6 +30,22 @@ Value Evaluator::Evaluate(const parser::Expression& expr) {
   throw std::runtime_error("Unknown expression type");
 }
 
+std::optional<Value> Evaluator::EvaluateStatement(const parser::Statement& stmt) {
+  if (const auto* block = dynamic_cast<const parser::BlockStatement*>(&stmt)) {
+    return EvaluateBlock(*block);
+  }
+  if (const auto* if_stmt = dynamic_cast<const parser::IfStatement*>(&stmt)) {
+    return EvaluateIf(*if_stmt);
+  }
+  if (const auto* assign = dynamic_cast<const parser::AssignmentStatement*>(&stmt)) {
+    return EvaluateAssignment(*assign);
+  }
+  if (const auto* expr_stmt = dynamic_cast<const parser::ExpressionStatement*>(&stmt)) {
+    return EvaluateExpressionStatement(*expr_stmt);
+  }
+  throw std::runtime_error("Unknown statement type");
+}
+
 Value Evaluator::EvaluateNumber(const parser::NumberLiteral& literal) {
   (void)env_;
   return Value::Number(literal.value);
@@ -146,6 +162,40 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     return Value::Number(std::max(args[0].number, args[1].number));
   }
   throw util::Error("Unknown function: " + name, 0, 0);
+}
+
+std::optional<Value> Evaluator::EvaluateBlock(const parser::BlockStatement& block) {
+  std::optional<Value> last;
+  for (const auto& stmt : block.statements) {
+    last = EvaluateStatement(*stmt);
+  }
+  return last;
+}
+
+std::optional<Value> Evaluator::EvaluateIf(const parser::IfStatement& stmt) {
+  Value condition = Evaluate(*stmt.condition);
+  bool truthy = condition.number != 0.0;
+  if (truthy) {
+    return EvaluateStatement(*stmt.then_branch);
+  }
+  if (stmt.else_branch) {
+    return EvaluateStatement(*stmt.else_branch);
+  }
+  return std::nullopt;
+}
+
+std::optional<Value> Evaluator::EvaluateAssignment(const parser::AssignmentStatement& stmt) {
+  if (env_ == nullptr) {
+    throw util::Error("Environment is not configured", 0, 0);
+  }
+  Value value = Evaluate(*stmt.value);
+  env_->Define(stmt.name, value);
+  return value;
+}
+
+std::optional<Value> Evaluator::EvaluateExpressionStatement(
+    const parser::ExpressionStatement& stmt) {
+  return Evaluate(*stmt.expr);
 }
 
 std::string Value::ToString() const {

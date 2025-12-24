@@ -66,6 +66,12 @@ Token Lexer::IdentifierToken() {
   while (std::isalnum(Peek()) || Peek() == '_') {
     lexeme.push_back(Advance());
   }
+  if (lexeme == "if") {
+    return Token{TokenType::kIf, lexeme, token_line, token_column};
+  }
+  if (lexeme == "else") {
+    return Token{TokenType::kElse, lexeme, token_line, token_column};
+  }
   return Token{TokenType::kIdentifier, lexeme, token_line, token_column};
 }
 
@@ -90,12 +96,18 @@ Token Lexer::NextToken() {
       return Token{TokenType::kSlash, "/", token_line, token_column};
     case ',':
       return Token{TokenType::kComma, ",", token_line, token_column};
+    case ';':
+      return Token{TokenType::kSemicolon, ";", token_line, token_column};
     case '=':
       return Token{TokenType::kEqual, "=", token_line, token_column};
     case '(':
       return Token{TokenType::kLParen, "(", token_line, token_column};
     case ')':
       return Token{TokenType::kRParen, ")", token_line, token_column};
+    case '{':
+      return Token{TokenType::kLBrace, "{", token_line, token_column};
+    case '}':
+      return Token{TokenType::kRBrace, "}", token_line, token_column};
     default:
       break;
   }

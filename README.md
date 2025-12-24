@@ -1,6 +1,10 @@
 # lattice
 
-Minimal lattice language with a REPL supporting numeric literals, identifiers, unary minus, and `+/-/*//` operations plus assignment. Built-in constants `pi`, `e`, `gamma`, and `inf` are available, and builtin functions `pow(x, y)`, `gcd(a, b)`, `lcm(a, b)`, `abs(x)`, `sign(x)`, `mod(a, b)`, `floor(x)`, `ceil(x)`, `round(x)`, `clamp(x, lo, hi)`, `min(a, b)`, and `max(a, b)` are provided. The project is organized with headers in `include/` and sources in `src/`.
+Lattice is a small scientific computing language aimed at reproducible numerics and statistical workflows. It ships a REPL and embeddable library with:
+- Arithmetic expressions with identifiers, unary minus, calls, assignments, and blocks.
+- Control flow via `if/else` statements and nested blocks.
+- Built-in constants `pi`, `e`, `gamma`, `inf` and math helpers `pow`, `gcd`, `lcm`, `abs`, `sign`, `mod`, `floor`, `ceil`, `round`, `clamp`, `min`, `max`.
+The project is organized with headers in `include/` and sources in `src/`.
 
 ## Layout
 - `include/` – public headers (`lexer/`, `parser/`, `runtime/`, `repl/`, `builtin/`, `util/`)

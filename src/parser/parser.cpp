@@ -4,16 +4,22 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace lattice::parser {
 
 Parser::Parser(lexer::Lexer lexer)
     : lexer_(std::move(lexer)),
       current_(lexer_.NextToken()),
+      lookahead_(lexer_.NextToken()),
       previous_{lexer::TokenType::kInvalid, "", 0, 0} {}
 
 const lexer::Token& Parser::Peek() const {
   return current_;
+}
+
+const lexer::Token& Parser::Next() const {
+  return lookahead_;
 }
 
 const lexer::Token& Parser::Previous() const {
@@ -22,7 +28,8 @@ const lexer::Token& Parser::Previous() const {
 
 lexer::Token Parser::Advance() {
   previous_ = current_;
-  current_ = lexer_.NextToken();
+  current_ = lookahead_;
+  lookahead_ = lexer_.NextToken();
   return previous_;
 }
 
@@ -48,6 +55,62 @@ std::unique_ptr<Expression> Parser::ParseExpression() {
     throw util::Error("Unexpected tokens after expression", Peek().line, Peek().column);
   }
   return expr;
+}
+
+std::unique_ptr<Statement> Parser::ParseStatement() {
+  auto stmt = StatementRule();
+  Match(lexer::TokenType::kSemicolon);  // optional trailing semicolon
+  if (Peek().type != lexer::TokenType::kEof) {
+    throw util::Error("Unexpected tokens after statement", Peek().line, Peek().column);
+  }
+  return stmt;
+}
+
+std::unique_ptr<Statement> Parser::StatementRule() {
+  if (Match(lexer::TokenType::kIf)) {
+    return IfStatementRule();
+  }
+  if (Match(lexer::TokenType::kLBrace)) {
+    return Block();
+  }
+  return AssignmentOrExpression();
+}
+
+std::unique_ptr<Statement> Parser::IfStatementRule() {
+  Consume(lexer::TokenType::kLParen, "Expected '(' after 'if'");
+  auto condition = ExpressionRule();
+  Consume(lexer::TokenType::kRParen, "Expected ')' after condition");
+  auto then_branch = StatementRule();
+  std::unique_ptr<Statement> else_branch;
+  if (Match(lexer::TokenType::kElse)) {
+    else_branch = StatementRule();
+  }
+  return std::make_unique<IfStatement>(std::move(condition), std::move(then_branch),
+                                       std::move(else_branch));
+}
+
+std::unique_ptr<Statement> Parser::Block() {
+  std::vector<std::unique_ptr<Statement>> statements;
+  while (!Match(lexer::TokenType::kRBrace)) {
+    if (Peek().type == lexer::TokenType::kEof) {
+      throw util::Error("Unterminated block", Previous().line, Previous().column);
+    }
+    statements.push_back(StatementRule());
+    Match(lexer::TokenType::kSemicolon);
+  }
+  return std::make_unique<BlockStatement>(std::move(statements));
+}
+
+std::unique_ptr<Statement> Parser::AssignmentOrExpression() {
+  if (Peek().type == lexer::TokenType::kIdentifier && Next().type == lexer::TokenType::kEqual) {
+    std::string name = Peek().lexeme;
+    Advance();  // identifier
+    Advance();  // '='
+    auto value = ExpressionRule();
+    return std::make_unique<AssignmentStatement>(std::move(name), std::move(value));
+  }
+  auto expr = ExpressionRule();
+  return std::make_unique<ExpressionStatement>(std::move(expr));
 }
 
 std::unique_ptr<Expression> Parser::ExpressionRule() {

@@ -41,6 +41,18 @@ void RunReplTests(TestContext* ctx) {
   std::string out = output.str();
   bool has_sum = out.find("2.000000") != std::string::npos;
   ExpectTrue(has_sum, "repl_evaluates_expression", ctx);
+
+  std::istringstream input2("{ a = 4; if (a) a = a + 1; a }\nexit\n");
+  std::ostringstream output2;
+  StreamRedirect redirect2(std::cin, std::cout, input2, output2);
+
+  lattice::repl::Repl repl2;
+  repl2.Run();
+
+  redirect2.Restore(std::cin, std::cout);
+  std::string out2 = output2.str();
+  bool has_block = out2.find("5.000000") != std::string::npos;
+  ExpectTrue(has_block, "repl_handles_block_and_if", ctx);
 }
 
 }  // namespace test

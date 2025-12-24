@@ -15,8 +15,13 @@ enum class TokenType {
   kStar,
   kSlash,
   kComma,
+  kSemicolon,
   kLParen,
   kRParen,
+  kLBrace,
+  kRBrace,
+  kIf,
+  kElse,
   kInvalid,
 };
 

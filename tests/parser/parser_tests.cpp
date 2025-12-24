@@ -15,6 +15,16 @@ void RunParserTests(TestContext* ctx) {
     caught = true;
   }
   ExpectTrue(caught, "unexpected_token_error", ctx);
+
+  // If/else statement parses and evaluates.
+  bool parsed_if = false;
+  try {
+    auto val = EvalStmt("if (1) 2 else 3", &env);
+    parsed_if = true;
+    ExpectNear(val.value().number, 2.0, "if_else_true_branch", ctx);
+  } catch (const util::Error&) {
+  }
+  ExpectTrue(parsed_if, "if_else_parsed", ctx);
 }
 
 }  // namespace test

@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+// AST nodes for expressions and statements.
+
 namespace lattice::parser {
 
 enum class UnaryOp { kNegate };
@@ -50,6 +52,43 @@ struct CallExpression : public Expression {
       : callee(std::move(callee_name)), args(std::move(arguments)) {}
   std::string callee;
   std::vector<std::unique_ptr<Expression>> args;
+};
+
+struct Statement {
+  virtual ~Statement() = default;
+};
+
+/// Expression used as a statement.
+struct ExpressionStatement : public Statement {
+  explicit ExpressionStatement(std::unique_ptr<Expression> e) : expr(std::move(e)) {}
+  std::unique_ptr<Expression> expr;
+};
+
+/// Assignment to a named identifier.
+struct AssignmentStatement : public Statement {
+  AssignmentStatement(std::string n, std::unique_ptr<Expression> v)
+      : name(std::move(n)), value(std::move(v)) {}
+  std::string name;
+  std::unique_ptr<Expression> value;
+};
+
+/// Sequence of statements in a block.
+struct BlockStatement : public Statement {
+  explicit BlockStatement(std::vector<std::unique_ptr<Statement>> stmts)
+      : statements(std::move(stmts)) {}
+  std::vector<std::unique_ptr<Statement>> statements;
+};
+
+/// Conditional statement with optional else branch.
+struct IfStatement : public Statement {
+  IfStatement(std::unique_ptr<Expression> cond, std::unique_ptr<Statement> then_branch,
+              std::unique_ptr<Statement> else_branch)
+      : condition(std::move(cond)),
+        then_branch(std::move(then_branch)),
+        else_branch(std::move(else_branch)) {}
+  std::unique_ptr<Expression> condition;
+  std::unique_ptr<Statement> then_branch;
+  std::unique_ptr<Statement> else_branch;
 };
 
 }  // namespace lattice::parser
