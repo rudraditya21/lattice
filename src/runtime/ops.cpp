@@ -13,6 +13,19 @@
 namespace lattice::runtime {
 
 namespace {
+bool IsComplex(DType t) {
+  return t == DType::kC64 || t == DType::kC128;
+}
+bool IsFloat(DType t) {
+  return t == DType::kF16 || t == DType::kBF16 || t == DType::kF32 || t == DType::kF64;
+}
+bool IsSignedInt(DType t) {
+  return t == DType::kI8 || t == DType::kI16 || t == DType::kI32 || t == DType::kI64;
+}
+bool IsUnsignedInt(DType t) {
+  return t == DType::kU8 || t == DType::kU16 || t == DType::kU32 || t == DType::kU64;
+}
+
 bool IsBoolTypeName(const std::string& name) {
   return name == "bool";
 }
@@ -54,6 +67,240 @@ std::string CombineNumericType(const Value& lhs, const Value& rhs) {
   if (is_intish(lt)) return lt;
   if (is_intish(rt)) return rt;
   return "f64";
+}
+
+int ComplexRank(DType t) {
+  if (t == DType::kC128) return 2;
+  if (t == DType::kC64) return 1;
+  return 0;
+}
+
+int FloatRank(DType t) {
+  if (t == DType::kF64) return 4;
+  if (t == DType::kF32) return 3;
+  if (t == DType::kBF16) return 2;
+  if (t == DType::kF16) return 1;
+  return 0;
+}
+
+int SignedRank(DType t) {
+  if (t == DType::kI64) return 4;
+  if (t == DType::kI32) return 3;
+  if (t == DType::kI16) return 2;
+  if (t == DType::kI8) return 1;
+  return 0;
+}
+
+int UnsignedRank(DType t) {
+  if (t == DType::kU64) return 4;
+  if (t == DType::kU32) return 3;
+  if (t == DType::kU16) return 2;
+  if (t == DType::kU8) return 1;
+  return 0;
+}
+
+DType RankToSigned(int rank) {
+  switch (rank) {
+    case 1:
+      return DType::kI8;
+    case 2:
+      return DType::kI16;
+    case 3:
+      return DType::kI32;
+    default:
+      return DType::kI64;
+  }
+}
+
+DType RankToUnsigned(int rank) {
+  switch (rank) {
+    case 1:
+      return DType::kU8;
+    case 2:
+      return DType::kU16;
+    case 3:
+      return DType::kU32;
+    default:
+      return DType::kU64;
+  }
+}
+
+DType RankToFloat(int rank, bool seen_bf16) {
+  switch (rank) {
+    case 1:
+      return DType::kF16;
+    case 2:
+      return seen_bf16 ? DType::kBF16 : DType::kF16;
+    case 3:
+      return DType::kF32;
+    default:
+      return DType::kF64;
+  }
+}
+
+DType PromoteType(DType a, DType b) {
+  auto is_decimal_or_rational = [](DType t) {
+    return t == DType::kDecimal || t == DType::kRational;
+  };
+  if (a == DType::kDecimal && b == DType::kDecimal) return DType::kDecimal;
+  if (a == DType::kRational && b == DType::kRational) return DType::kRational;
+  if (is_decimal_or_rational(a) || is_decimal_or_rational(b)) {
+    throw util::Error("Decimal/rational cross-type arithmetic not supported in promotion", 0, 0);
+  }
+  const int complex_rank = std::max(ComplexRank(a), ComplexRank(b));
+  const int float_rank = std::max(FloatRank(a), FloatRank(b));
+  const bool seen_bf16 = (a == DType::kBF16) || (b == DType::kBF16);
+  if (complex_rank > 0 || IsComplex(a) || IsComplex(b)) {
+    if (complex_rank == 2 || float_rank >= 4) {
+      return DType::kC128;
+    }
+    if (float_rank >= 3) {
+      return DType::kC128;
+    }
+    if (float_rank >= 1 && complex_rank == 0) {
+      // Complex wins; choose width based on float precision.
+      return float_rank >= 2 ? DType::kC128 : DType::kC64;
+    }
+    return complex_rank == 1 ? DType::kC64 : DType::kC128;
+  }
+  if (float_rank > 0) {
+    return RankToFloat(float_rank, seen_bf16);
+  }
+  const int signed_rank = std::max(SignedRank(a), SignedRank(b));
+  const int unsigned_rank = std::max(UnsignedRank(a), UnsignedRank(b));
+  if (signed_rank > 0 && unsigned_rank > 0) {
+    if (unsigned_rank >= signed_rank) {
+      return DType::kI64;
+    }
+    return RankToSigned(std::max(signed_rank, unsigned_rank));
+  }
+  if (signed_rank > 0) return RankToSigned(signed_rank);
+  if (unsigned_rank > 0) return RankToUnsigned(unsigned_rank);
+  return a;
+}
+
+Value CastTo(DType target, const Value& v) {
+  auto as_double = [&]() -> double {
+    switch (v.type) {
+      case DType::kBool:
+        return v.boolean ? 1.0 : 0.0;
+      case DType::kI8:
+      case DType::kI16:
+      case DType::kI32:
+      case DType::kI64:
+        return static_cast<double>(v.i64);
+      case DType::kU8:
+      case DType::kU16:
+      case DType::kU32:
+      case DType::kU64:
+        return static_cast<double>(v.u64);
+      case DType::kF16:
+      case DType::kBF16:
+      case DType::kF32:
+      case DType::kF64:
+        return v.f64;
+      case DType::kDecimal:
+        return static_cast<double>(v.decimal);
+      case DType::kRational:
+        return static_cast<double>(v.rational.num) / static_cast<double>(v.rational.den);
+      default:
+        throw util::Error("Cannot cast complex/decimal/rational/function", 0, 0);
+    }
+  };
+  auto as_signed = [&]() -> int64_t {
+    switch (v.type) {
+      case DType::kBool:
+        return v.boolean ? 1 : 0;
+      case DType::kI8:
+      case DType::kI16:
+      case DType::kI32:
+      case DType::kI64:
+        return v.i64;
+      case DType::kU8:
+      case DType::kU16:
+      case DType::kU32:
+      case DType::kU64:
+        return static_cast<int64_t>(v.u64);
+      case DType::kF16:
+      case DType::kBF16:
+      case DType::kF32:
+      case DType::kF64:
+        return static_cast<int64_t>(v.f64);
+      case DType::kDecimal:
+        return static_cast<int64_t>(v.decimal);
+      case DType::kRational:
+        return static_cast<int64_t>(v.rational.num / v.rational.den);
+      default:
+        throw util::Error("Cannot cast complex/decimal/rational/function", 0, 0);
+    }
+  };
+  auto as_unsigned = [&]() -> uint64_t {
+    switch (v.type) {
+      case DType::kBool:
+        return v.boolean ? 1 : 0;
+      case DType::kI8:
+      case DType::kI16:
+      case DType::kI32:
+      case DType::kI64:
+        return static_cast<uint64_t>(v.i64);
+      case DType::kU8:
+      case DType::kU16:
+      case DType::kU32:
+      case DType::kU64:
+        return v.u64;
+      case DType::kF16:
+      case DType::kBF16:
+      case DType::kF32:
+      case DType::kF64:
+        return static_cast<uint64_t>(v.f64);
+      case DType::kDecimal:
+        return static_cast<uint64_t>(v.decimal);
+      case DType::kRational:
+        return static_cast<uint64_t>(v.rational.num / v.rational.den);
+      default:
+        throw util::Error("Cannot cast complex/decimal/rational/function", 0, 0);
+    }
+  };
+  switch (target) {
+    case DType::kBool:
+      return Value::Bool(as_double() != 0.0);
+    case DType::kI8:
+      return Value::I8(static_cast<int8_t>(as_signed()));
+    case DType::kI16:
+      return Value::I16(static_cast<int16_t>(as_signed()));
+    case DType::kI32:
+      return Value::I32(static_cast<int32_t>(as_signed()));
+    case DType::kI64:
+      return Value::I64(as_signed());
+    case DType::kU8:
+      return Value::U8(static_cast<uint8_t>(as_unsigned()));
+    case DType::kU16:
+      return Value::U16(static_cast<uint16_t>(as_unsigned()));
+    case DType::kU32:
+      return Value::U32(static_cast<uint32_t>(as_unsigned()));
+    case DType::kU64:
+      return Value::U64(as_unsigned());
+    case DType::kF16:
+      return Value::F16(static_cast<float>(as_double()));
+    case DType::kBF16:
+      return Value::BF16(static_cast<float>(as_double()));
+    case DType::kF32:
+      return Value::F32(static_cast<float>(as_double()));
+    case DType::kF64:
+      return Value::F64(as_double());
+    case DType::kC64:
+      return Value::Complex64(std::complex<float>(static_cast<float>(as_double()), 0.0f));
+    case DType::kC128:
+      return Value::Complex128(std::complex<double>(as_double(), 0.0));
+    case DType::kDecimal:
+      return Value::Decimal(static_cast<long double>(as_double()));
+    case DType::kRational: {
+      int64_t num = static_cast<int64_t>(as_signed());
+      return Value::RationalValue(num, 1);
+    }
+    default:
+      throw util::Error("Unsupported cast target", 0, 0);
+  }
 }
 
 std::string DeriveTypeName(const Value& v) {
@@ -201,11 +448,83 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
   };
   auto is_complex = [](DType t) { return t == DType::kC64 || t == DType::kC128; };
 
-  if (is_complex(lhs.type) || is_complex(rhs.type)) {
+  DType target = PromoteType(lhs.type, rhs.type);
+  Value lcast = CastTo(target, lhs);
+  Value rcast = CastTo(target, rhs);
+
+  if (target == DType::kDecimal) {
+    long double lv = lcast.decimal;
+    long double rv = rcast.decimal;
+    switch (expr.op) {
+      case parser::BinaryOp::kAdd:
+        return Value::Decimal(lv + rv);
+      case parser::BinaryOp::kSub:
+        return Value::Decimal(lv - rv);
+      case parser::BinaryOp::kMul:
+        return Value::Decimal(lv * rv);
+      case parser::BinaryOp::kDiv:
+        if (rv == 0.0L) throw util::Error("Division by zero", 0, 0);
+        return Value::Decimal(lv / rv);
+      case parser::BinaryOp::kEq:
+        return Value::Bool(lv == rv);
+      case parser::BinaryOp::kNe:
+        return Value::Bool(lv != rv);
+      case parser::BinaryOp::kGt:
+        return Value::Bool(lv > rv);
+      case parser::BinaryOp::kGe:
+        return Value::Bool(lv >= rv);
+      case parser::BinaryOp::kLt:
+        return Value::Bool(lv < rv);
+      case parser::BinaryOp::kLe:
+        return Value::Bool(lv <= rv);
+    }
+  }
+
+  if (target == DType::kRational) {
+    auto simplify = [](int64_t num, int64_t den) -> Value {
+      if (den == 0) throw util::Error("Division by zero", 0, 0);
+      int64_t g = std::gcd(num, den);
+      num /= g;
+      den /= g;
+      if (den < 0) {
+        num = -num;
+        den = -den;
+      }
+      return Value::RationalValue(num, den);
+    };
+    int64_t ln = lcast.rational.num;
+    int64_t ld = lcast.rational.den;
+    int64_t rn = rcast.rational.num;
+    int64_t rd = rcast.rational.den;
+    switch (expr.op) {
+      case parser::BinaryOp::kAdd:
+        return simplify(ln * rd + rn * ld, ld * rd);
+      case parser::BinaryOp::kSub:
+        return simplify(ln * rd - rn * ld, ld * rd);
+      case parser::BinaryOp::kMul:
+        return simplify(ln * rn, ld * rd);
+      case parser::BinaryOp::kDiv:
+        return simplify(ln * rd, ld * rn);
+      case parser::BinaryOp::kEq:
+        return Value::Bool(ln * rd == rn * ld);
+      case parser::BinaryOp::kNe:
+        return Value::Bool(ln * rd != rn * ld);
+      case parser::BinaryOp::kGt:
+        return Value::Bool(ln * rd > rn * ld);
+      case parser::BinaryOp::kGe:
+        return Value::Bool(ln * rd >= rn * ld);
+      case parser::BinaryOp::kLt:
+        return Value::Bool(ln * rd < rn * ld);
+      case parser::BinaryOp::kLe:
+        return Value::Bool(ln * rd <= rn * ld);
+    }
+  }
+
+  if (is_complex(target)) {
     std::complex<double> lcv =
-        is_complex(lhs.type) ? lhs.complex : std::complex<double>(lhs.f64, 0.0);
+        target == DType::kC128 ? lcast.complex : std::complex<double>(lcast.f64, 0.0);
     std::complex<double> rcv =
-        is_complex(rhs.type) ? rhs.complex : std::complex<double>(rhs.f64, 0.0);
+        target == DType::kC128 ? rcast.complex : std::complex<double>(rcast.f64, 0.0);
     switch (expr.op) {
       case parser::BinaryOp::kAdd:
         return Value::Complex128(lcv + rcv);
@@ -227,9 +546,9 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
     }
   }
 
-  if (is_float(lhs.type) || is_float(rhs.type)) {
-    double lv = lhs.f64;
-    double rv = rhs.f64;
+  if (is_float(target)) {
+    double lv = lcast.f64;
+    double rv = rcast.f64;
     switch (expr.op) {
       case parser::BinaryOp::kAdd:
         return Value::F64(lv + rv);
@@ -254,47 +573,88 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
     }
   }
 
-  if (is_int(lhs.type) && is_int(rhs.type)) {
-    int64_t lv = lhs.i64;
-    int64_t rv = rhs.i64;
-    std::string res_type =
-        (lhs.type_name == rhs.type_name && !lhs.type_name.empty()) ? lhs.type_name : "i64";
-    switch (expr.op) {
-      case parser::BinaryOp::kAdd:
-        if (res_type == "i32") {
-          auto v = Value::I32(static_cast<int32_t>(lv + rv));
-          v.type_name = res_type;
-          return v;
-        }
-        return Value::I64(lv + rv);
-      case parser::BinaryOp::kSub:
-        if (res_type == "i32") {
-          auto v = Value::I32(static_cast<int32_t>(lv - rv));
-          v.type_name = res_type;
-          return v;
-        }
-        return Value::I64(lv - rv);
-      case parser::BinaryOp::kMul:
-        if (res_type == "i32") {
-          auto v = Value::I32(static_cast<int32_t>(lv * rv));
-          v.type_name = res_type;
-          return v;
-        }
-        return Value::I64(lv * rv);
-      case parser::BinaryOp::kDiv:
-        return Value::F64(static_cast<double>(lv) / static_cast<double>(rv));
-      case parser::BinaryOp::kEq:
-        return Value::Bool(lv == rv);
-      case parser::BinaryOp::kNe:
-        return Value::Bool(lv != rv);
-      case parser::BinaryOp::kGt:
-        return Value::Bool(lv > rv);
-      case parser::BinaryOp::kGe:
-        return Value::Bool(lv >= rv);
-      case parser::BinaryOp::kLt:
-        return Value::Bool(lv < rv);
-      case parser::BinaryOp::kLe:
-        return Value::Bool(lv <= rv);
+  if (is_int(target)) {
+    const bool is_unsigned = IsUnsignedInt(target);
+    if (is_unsigned) {
+      uint64_t lv = lcast.u64;
+      uint64_t rv = rcast.u64;
+      switch (expr.op) {
+        case parser::BinaryOp::kAdd:
+          return target == DType::kU32 ? Value::U32(static_cast<uint32_t>(lv + rv))
+                                       : Value::U64(lv + rv);
+        case parser::BinaryOp::kSub:
+          return target == DType::kU32 ? Value::U32(static_cast<uint32_t>(lv - rv))
+                                       : Value::U64(lv - rv);
+        case parser::BinaryOp::kMul:
+          return target == DType::kU32 ? Value::U32(static_cast<uint32_t>(lv * rv))
+                                       : Value::U64(lv * rv);
+        case parser::BinaryOp::kDiv:
+          return Value::F64(static_cast<double>(lv) / static_cast<double>(rv));
+        case parser::BinaryOp::kEq:
+          return Value::Bool(lv == rv);
+        case parser::BinaryOp::kNe:
+          return Value::Bool(lv != rv);
+        case parser::BinaryOp::kGt:
+          return Value::Bool(lv > rv);
+        case parser::BinaryOp::kGe:
+          return Value::Bool(lv >= rv);
+        case parser::BinaryOp::kLt:
+          return Value::Bool(lv < rv);
+        case parser::BinaryOp::kLe:
+          return Value::Bool(lv <= rv);
+      }
+    } else {
+      int64_t lv = lcast.i64;
+      int64_t rv = rcast.i64;
+      switch (expr.op) {
+        case parser::BinaryOp::kAdd:
+          switch (target) {
+            case DType::kI8:
+              return Value::I8(static_cast<int8_t>(lv + rv));
+            case DType::kI16:
+              return Value::I16(static_cast<int16_t>(lv + rv));
+            case DType::kI32:
+              return Value::I32(static_cast<int32_t>(lv + rv));
+            default:
+              return Value::I64(lv + rv);
+          }
+        case parser::BinaryOp::kSub:
+          switch (target) {
+            case DType::kI8:
+              return Value::I8(static_cast<int8_t>(lv - rv));
+            case DType::kI16:
+              return Value::I16(static_cast<int16_t>(lv - rv));
+            case DType::kI32:
+              return Value::I32(static_cast<int32_t>(lv - rv));
+            default:
+              return Value::I64(lv - rv);
+          }
+        case parser::BinaryOp::kMul:
+          switch (target) {
+            case DType::kI8:
+              return Value::I8(static_cast<int8_t>(lv * rv));
+            case DType::kI16:
+              return Value::I16(static_cast<int16_t>(lv * rv));
+            case DType::kI32:
+              return Value::I32(static_cast<int32_t>(lv * rv));
+            default:
+              return Value::I64(lv * rv);
+          }
+        case parser::BinaryOp::kDiv:
+          return Value::F64(static_cast<double>(lv) / static_cast<double>(rv));
+        case parser::BinaryOp::kEq:
+          return Value::Bool(lv == rv);
+        case parser::BinaryOp::kNe:
+          return Value::Bool(lv != rv);
+        case parser::BinaryOp::kGt:
+          return Value::Bool(lv > rv);
+        case parser::BinaryOp::kGe:
+          return Value::Bool(lv >= rv);
+        case parser::BinaryOp::kLt:
+          return Value::Bool(lv < rv);
+        case parser::BinaryOp::kLe:
+          return Value::Bool(lv <= rv);
+      }
     }
   }
 
