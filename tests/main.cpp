@@ -15,6 +15,7 @@ void RunPromotionTests(TestContext* ctx);
 void RunTypeCheckerTests(TestContext* ctx);
 void RunDecimalRationalTests(TestContext* ctx);
 void RunComplexTests(TestContext* ctx);
+void RunTensorTests(TestContext* ctx);
 }  // namespace test
 
 int main() {
@@ -31,6 +32,7 @@ int main() {
   test::RunTypeCheckerTests(&ctx);
   test::RunDecimalRationalTests(&ctx);
   test::RunComplexTests(&ctx);
+  test::RunTensorTests(&ctx);
 
   std::cout << "[RESULT] passed=" << ctx.passed << " failed=" << ctx.failed << "\n";
   return ctx.failed == 0 ? 0 : 1;

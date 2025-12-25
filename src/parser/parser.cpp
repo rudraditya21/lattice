@@ -31,6 +31,7 @@ std::optional<runtime::DType> LookupDType(const std::string& name) {
   if (name == "complex128") return DType::kC128;
   if (name == "decimal") return DType::kDecimal;
   if (name == "rational") return DType::kRational;
+  if (name == "tensor") return DType::kTensor;
   return std::nullopt;
 }
 }  // namespace

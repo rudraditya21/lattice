@@ -21,7 +21,8 @@ enum class DType {
   kC128,
   kDecimal,
   kRational,
-  kFunction
+  kFunction,
+  kTensor
 };
 
 }  // namespace lattice::runtime

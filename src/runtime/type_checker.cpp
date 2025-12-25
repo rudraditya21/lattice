@@ -43,6 +43,9 @@ TypeChecker::TypeChecker() {
   functions_["decimal"] = FunSig{{std::nullopt}, DType::kDecimal};
   functions_["rational"] = FunSig{{std::nullopt, std::nullopt}, DType::kRational};
   functions_["complex"] = FunSig{{std::nullopt, std::nullopt}, DType::kC128};
+  functions_["tensor"] = FunSig{{std::nullopt, std::nullopt}, DType::kTensor};
+  functions_["sum"] = FunSig{{DType::kTensor}, DType::kF64};
+  functions_["mean"] = FunSig{{DType::kTensor}, DType::kF64};
 }
 
 void TypeChecker::EnterScope() {
@@ -56,6 +59,9 @@ void TypeChecker::ExitScope() {
 bool TypeChecker::IsAssignable(std::optional<DType> from, std::optional<DType> to) {
   if (!to.has_value()) return true;
   if (!from.has_value()) return true;
+  if (to.value() == DType::kTensor) {
+    return from.value() == DType::kTensor;
+  }
   if (from.value() == to.value()) return true;
   return PromoteType(from.value(), to.value()) == to.value();
 }
@@ -132,6 +138,9 @@ std::optional<DType> TypeChecker::TypeOf(const parser::Expression* expr) {
         }
       }
       return sig.ret;
+    }
+    if (call->callee == "tensor") {
+      return DType::kTensor;
     }
     // Unknown function; assume dynamic return.
     return std::nullopt;

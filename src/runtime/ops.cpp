@@ -37,6 +37,49 @@ bool IsNumericTypeName(const std::string& name) {
       "f16", "f32", "f64", "bfloat16", "complex64", "complex128", "decimal", "rational"};
   return kNumeric.find(name) != kNumeric.end();
 }
+std::string DTypeToString(DType t) {
+  switch (t) {
+    case DType::kBool:
+      return "bool";
+    case DType::kI8:
+      return "i8";
+    case DType::kI16:
+      return "i16";
+    case DType::kI32:
+      return "i32";
+    case DType::kI64:
+      return "i64";
+    case DType::kU8:
+      return "u8";
+    case DType::kU16:
+      return "u16";
+    case DType::kU32:
+      return "u32";
+    case DType::kU64:
+      return "u64";
+    case DType::kF16:
+      return "f16";
+    case DType::kBF16:
+      return "bfloat16";
+    case DType::kF32:
+      return "f32";
+    case DType::kF64:
+      return "f64";
+    case DType::kC64:
+      return "complex64";
+    case DType::kC128:
+      return "complex128";
+    case DType::kDecimal:
+      return "decimal";
+    case DType::kRational:
+      return "rational";
+    case DType::kFunction:
+      return "function";
+    case DType::kTensor:
+      return "tensor";
+  }
+  return "";
+}
 
 bool ValueMatchesType(const Value& value, const std::string& type_name) {
   if (type_name.empty()) {
@@ -50,6 +93,9 @@ bool ValueMatchesType(const Value& value, const std::string& type_name) {
     if (value.type_name.empty()) return true;
     if (IsNumericTypeName(value.type_name)) return true;
     return value.type_name == type_name;
+  }
+  if (type_name == "tensor") {
+    return value.type == DType::kTensor;
   }
   // For now, unsupported or unknown types fail.
   return false;
@@ -164,6 +210,9 @@ DType PromoteType(DType a, DType b) {
   auto is_decimal_or_rational = [](DType t) {
     return t == DType::kDecimal || t == DType::kRational;
   };
+  if (a == DType::kTensor || b == DType::kTensor) {
+    return DType::kTensor;
+  }
   if (a == DType::kDecimal && b == DType::kDecimal) return DType::kDecimal;
   if (a == DType::kRational && b == DType::kRational) return DType::kRational;
   if (is_decimal_or_rational(a) || is_decimal_or_rational(b)) {
@@ -476,6 +525,64 @@ Value Evaluator::EvaluateUnary(const parser::UnaryExpression& expr) {
 Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
   Value lhs = Evaluate(*expr.lhs);
   Value rhs = Evaluate(*expr.rhs);
+  if (lhs.type == DType::kTensor || rhs.type == DType::kTensor) {
+    // Allow tensor with scalar broadcast.
+    Value tensor = lhs.type == DType::kTensor ? lhs : rhs;
+    Value scalar = lhs.type == DType::kTensor ? rhs : lhs;
+    if (lhs.type == DType::kTensor && rhs.type == DType::kTensor) {
+      if (lhs.tensor.shape != rhs.tensor.shape) {
+        throw util::Error("Tensor shapes must match for elementwise ops", 0, 0);
+      }
+      DType elem_target = PromoteType(lhs.tensor.elem_type, rhs.tensor.elem_type);
+      Value out = Value::Tensor(lhs.tensor.shape, elem_target, 0.0);
+      for (size_t i = 0; i < lhs.tensor.storage.size(); ++i) {
+        double lv = lhs.tensor.storage[i];
+        double rv = rhs.tensor.storage[i];
+        switch (expr.op) {
+          case parser::BinaryOp::kAdd:
+            out.tensor.storage[i] = lv + rv;
+            break;
+          case parser::BinaryOp::kSub:
+            out.tensor.storage[i] = lv - rv;
+            break;
+          case parser::BinaryOp::kMul:
+            out.tensor.storage[i] = lv * rv;
+            break;
+          case parser::BinaryOp::kDiv:
+            out.tensor.storage[i] = lv / rv;
+            break;
+          default:
+            throw util::Error("Tensor comparison not supported", 0, 0);
+        }
+      }
+      return out;
+    } else {
+      // Broadcast scalar to tensor shape.
+      Value out = Value::Tensor(tensor.tensor.shape,
+                                PromoteType(tensor.tensor.elem_type, scalar.type), 0.0);
+      for (size_t i = 0; i < tensor.tensor.storage.size(); ++i) {
+        double lv = tensor.tensor.storage[i];
+        double rv = scalar.f64;
+        switch (expr.op) {
+          case parser::BinaryOp::kAdd:
+            out.tensor.storage[i] = lv + rv;
+            break;
+          case parser::BinaryOp::kSub:
+            out.tensor.storage[i] = (lhs.type == DType::kTensor) ? lv - rv : rv - lv;
+            break;
+          case parser::BinaryOp::kMul:
+            out.tensor.storage[i] = lv * rv;
+            break;
+          case parser::BinaryOp::kDiv:
+            out.tensor.storage[i] = (lhs.type == DType::kTensor) ? lv / rv : rv / lv;
+            break;
+          default:
+            throw util::Error("Tensor comparison not supported", 0, 0);
+        }
+      }
+      return out;
+    }
+  }
   auto is_int = [](DType t) {
     return t == DType::kI8 || t == DType::kI16 || t == DType::kI32 || t == DType::kI64 ||
            t == DType::kU8 || t == DType::kU16 || t == DType::kU32 || t == DType::kU64;
@@ -868,14 +975,27 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     double im = args[1].f64;
     return Value::Complex128(std::complex<double>(re, im));
   }
-  if (name == "abs") {
-    expect_args(1, name);
-    if (args[0].type == DType::kC64 || args[0].type == DType::kC128) {
-      return Value::F64(std::abs(args[0].complex));
+  if (name == "tensor") {
+    if (args.size() < 2) {
+      throw util::Error("tensor expects at least shape and fill value", 0, 0);
     }
-    return Value::F64(std::fabs(args[0].f64));
+    std::vector<int64_t> shape;
+    shape.reserve(args.size() - 1);
+    for (size_t i = 0; i + 1 < args.size(); ++i) {
+      shape.push_back(static_cast<int64_t>(args[i].f64));
+    }
+    double fill = args.back().f64;
+    if (shape.empty()) {
+      throw util::Error("tensor shape cannot be empty", 0, 0);
+    }
+    for (int64_t dim : shape) {
+      if (dim <= 0) {
+        throw util::Error("tensor dimensions must be positive", 0, 0);
+      }
+    }
+    DType elem_type = DType::kF64;
+    return Value::Tensor(shape, elem_type, fill);
   }
-
   if (name == "pow") {
     expect_args(2, name);
     if ((args[0].type == DType::kC64 || args[0].type == DType::kC128) ||
@@ -903,6 +1023,9 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
   }
   if (name == "abs") {
     expect_args(1, name);
+    if (args[0].type == DType::kC64 || args[0].type == DType::kC128) {
+      return Value::F64(std::abs(args[0].complex));
+    }
     return Value::F64(std::fabs(args[0].f64));
   }
   if (name == "sign") {
@@ -918,6 +1041,31 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
       throw util::Error("mod divisor cannot be zero", 0, 0);
     }
     return Value::F64(std::fmod(args[0].f64, args[1].f64));
+  }
+  if (name == "sum") {
+    expect_args(1, name);
+    const Value& v = args[0];
+    if (v.type != DType::kTensor) {
+      return Value::F64(v.f64);
+    }
+    double total = 0.0;
+    for (double x : v.tensor.storage) {
+      total += x;
+    }
+    return Value::F64(total);
+  }
+  if (name == "mean") {
+    expect_args(1, name);
+    const Value& v = args[0];
+    if (v.type != DType::kTensor) {
+      return Value::F64(v.f64);
+    }
+    double total = 0.0;
+    for (double x : v.tensor.storage) {
+      total += x;
+    }
+    double mean = total / static_cast<double>(v.tensor.storage.size());
+    return Value::F64(mean);
   }
   if (name == "floor") {
     expect_args(1, name);
@@ -1131,6 +1279,16 @@ std::string Value::ToString() const {
     case DType::kRational: {
       std::ostringstream oss;
       oss << rational.num << "/" << rational.den;
+      return oss.str();
+    }
+    case DType::kTensor: {
+      std::ostringstream oss;
+      oss << "tensor[";
+      for (size_t i = 0; i < tensor.shape.size(); ++i) {
+        if (i > 0) oss << "x";
+        oss << tensor.shape[i];
+      }
+      oss << "]<" << static_cast<int>(tensor.elem_type) << ">";
       return oss.str();
     }
     case DType::kFunction:

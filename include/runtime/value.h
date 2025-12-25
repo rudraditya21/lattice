@@ -42,6 +42,12 @@ struct Value {
   std::complex<double> complex = {0.0, 0.0};
   bool boolean = false;
   std::shared_ptr<Function> function;
+  struct TensorInfo {
+    std::vector<int64_t> shape;
+    std::vector<int64_t> strides;
+    DType elem_type = DType::kF64;
+    std::vector<double> storage;  // row-major, flattened
+  } tensor;
   std::string type_name;
 
   /// Constructors for scalar types.
@@ -70,6 +76,7 @@ struct Value {
   static Value Decimal(long double v);
   static Value RationalValue(int64_t num, int64_t den);
   static Value RationalValueNormalized(int64_t num, int64_t den);
+  static Value Tensor(std::vector<int64_t> shape, DType elem_type, double fill_value);
   /// Convenience constructor for function values.
   static Value Func(std::shared_ptr<Function> fn);
   /// Legacy convenience constructor for numeric values (defaults to f64).
@@ -249,6 +256,25 @@ inline Value Value::Func(std::shared_ptr<Function> fn) {
   val.function = std::move(fn);
   val.number = 0.0;
   val.type_name = "function";
+  return val;
+}
+
+inline Value Value::Tensor(std::vector<int64_t> shape, DType elem_type, double fill_value) {
+  Value val;
+  val.type = DType::kTensor;
+  val.tensor.shape = std::move(shape);
+  val.tensor.elem_type = elem_type;
+  val.type_name = "tensor";
+  // Compute strides (row-major).
+  val.tensor.strides.resize(val.tensor.shape.size());
+  int64_t stride = 1;
+  for (int i = static_cast<int>(val.tensor.shape.size()) - 1; i >= 0; --i) {
+    val.tensor.strides[i] = stride;
+    stride *= val.tensor.shape[i];
+  }
+  const int64_t total = stride;
+  val.tensor.storage.assign(static_cast<size_t>(total), fill_value);
+  val.number = 0.0;
   return val;
 }
 

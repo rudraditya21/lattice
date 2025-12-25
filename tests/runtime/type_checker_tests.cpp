@@ -99,6 +99,23 @@ void RunTypeCheckerTests(TestContext* ctx) {
     decimal_cast_ok = false;
   }
   ExpectTrue(decimal_cast_ok, "typecheck_decimal_cast_allows_mix", ctx);
+
+  // Tensor annotations and misuse.
+  bool tensor_ok = true;
+  try {
+    TypeCheckStmt("x: tensor = tensor(2, 2, 0)");
+  } catch (const util::Error&) {
+    tensor_ok = false;
+  }
+  ExpectTrue(tensor_ok, "typecheck_tensor_annotation_ok", ctx);
+
+  bool tensor_mismatch = false;
+  try {
+    TypeCheckStmt("x: tensor = 1");
+  } catch (const util::Error&) {
+    tensor_mismatch = true;
+  }
+  ExpectTrue(tensor_mismatch, "typecheck_tensor_mismatch", ctx);
 }
 
 }  // namespace test
