@@ -22,6 +22,32 @@ void RunDecimalRationalTests(TestContext* ctx) {
 
   auto rat_add = EvalExpr("rational(1, 3) + rational(1, 6)", &env);
   ExpectTrue(rat_add.rational.num == 1 && rat_add.rational.den == 2, "rational_add", ctx);
+
+  // Mixing with floats/complex should be explicit only.
+  bool decimal_mix_error = false;
+  try {
+    EvalExpr("decimal(1.0) + 1.0", &env);
+  } catch (const util::Error&) {
+    decimal_mix_error = true;
+  }
+  ExpectTrue(decimal_mix_error, "decimal_float_mix_error", ctx);
+
+  bool rational_mix_error = false;
+  try {
+    EvalExpr("rational(1,2) + 1", &env);
+  } catch (const util::Error&) {
+    rational_mix_error = true;
+  }
+  ExpectTrue(rational_mix_error, "rational_int_mix_error", ctx);
+
+  // Explicit conversion works.
+  bool cast_ok = true;
+  try {
+    EvalExpr("cast(f64, decimal(1.25)) + 1.0", &env);
+  } catch (const util::Error&) {
+    cast_ok = false;
+  }
+  ExpectTrue(cast_ok, "explicit_cast_allows_mix", ctx);
 }
 
 }  // namespace test

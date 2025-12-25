@@ -720,6 +720,22 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
   if (env_ == nullptr) {
     throw util::Error("Environment is not configured", 0, 0);
   }
+  // Handle cast before evaluating all args to allow type-name first arg.
+  if (call.callee == "cast") {
+    if (call.args.size() != 2) {
+      throw util::Error("cast expects two arguments: type name and expression", 0, 0);
+    }
+    const auto* type_id = dynamic_cast<const parser::Identifier*>(call.args[0].get());
+    if (type_id == nullptr) {
+      throw util::Error("cast first argument must be a type name identifier", 0, 0);
+    }
+    auto dt = LookupDType(type_id->name);
+    if (!dt.has_value()) {
+      throw util::Error("Unknown cast target type: " + type_id->name, 0, 0);
+    }
+    Value v = Evaluate(*call.args[1]);
+    return CastTo(dt.value(), v);
+  }
   std::vector<Value> args;
   args.reserve(call.args.size());
   for (const auto& arg : call.args) {
