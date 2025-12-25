@@ -1022,6 +1022,26 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     DType elem_type = DType::kF64;
     return Value::Tensor(shape, elem_type, fill);
   }
+  if (name == "tensor_values") {
+    if (args.empty()) {
+      throw util::Error("tensor_values expects at least one value", 0, 0);
+    }
+    for (const auto& v : args) {
+      if (v.type == DType::kTensor) {
+        throw util::Error("tensor_values does not accept tensor arguments", 0, 0);
+      }
+    }
+    DType elem_type = args[0].type;
+    for (size_t i = 1; i < args.size(); ++i) {
+      elem_type = PromoteType(elem_type, args[i].type);
+    }
+    Value out = Value::Tensor({static_cast<int64_t>(args.size())}, elem_type, 0.0);
+    for (size_t i = 0; i < args.size(); ++i) {
+      out.tensor.storage[i] = CastTo(elem_type, args[i]).f64;
+    }
+    out.tensor.elem_type = elem_type;
+    return out;
+  }
   if (name == "pow") {
     expect_args(2, name);
     ensure_not_tensor(args[0], name);

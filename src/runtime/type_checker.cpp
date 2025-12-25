@@ -94,6 +94,7 @@ TypeChecker::TypeChecker() {
   functions_["rational"] = FunSig{{std::nullopt, std::nullopt}, DType::kRational};
   functions_["complex"] = FunSig{{std::nullopt, std::nullopt}, DType::kC128};
   functions_["tensor"] = FunSig{{std::nullopt, std::nullopt}, DType::kTensor};
+  functions_["tensor_values"] = FunSig{{std::nullopt}, DType::kTensor};
   functions_["sum"] = FunSig{{DType::kTensor}, DType::kF64};
   functions_["mean"] = FunSig{{DType::kTensor}, DType::kF64};
 }

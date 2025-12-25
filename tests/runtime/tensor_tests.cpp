@@ -37,6 +37,24 @@ void RunTensorTests(TestContext* ctx) {
 
   // Dtype metadata.
   ExpectTrue(t3.tensor.elem_type == rt::DType::kF64, "tensor_elem_dtype", ctx);
+
+  // Literal construction and dtype promotion.
+  auto tvals = EvalExpr("tensor_values(1, 2, 3)", &env);
+  ExpectTrue(tvals.tensor.shape[0] == 3, "tensor_values_shape", ctx);
+  ExpectTrue(tvals.tensor.elem_type == rt::DType::kI32 || tvals.tensor.elem_type == rt::DType::kI64,
+             "tensor_values_elem_type", ctx);
+  auto tvals_mix = EvalExpr("tensor_values(1, 2.5)", &env);
+  ExpectTrue(tvals_mix.tensor.elem_type == rt::DType::kF32 || tvals_mix.tensor.elem_type == rt::DType::kF64,
+             "tensor_values_promotion", ctx);
+
+  // Error on shape mismatch for elementwise tensor-tensor op.
+  bool shape_error = false;
+  try {
+    EvalExpr("tensor(2,2,1) + tensor(3,1)", &env);
+  } catch (const util::Error&) {
+    shape_error = true;
+  }
+  ExpectTrue(shape_error, "tensor_shape_mismatch_error", ctx);
 }
 
 }  // namespace test
