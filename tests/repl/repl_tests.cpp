@@ -53,6 +53,26 @@ void RunReplTests(TestContext* ctx) {
   std::string out2 = output2.str();
   bool has_block = out2.find("5.000000") != std::string::npos;
   ExpectTrue(has_block, "repl_handles_block_and_if", ctx);
+
+  std::istringstream input3("{ n = 0; while (n - 2) { n = n + 1; }; n }\nexit\n");
+  std::ostringstream output3;
+  StreamRedirect redirect3(std::cin, std::cout, input3, output3);
+  lattice::repl::Repl repl3;
+  repl3.Run();
+  redirect3.Restore(std::cin, std::cout);
+  std::string out3 = output3.str();
+  bool has_loop = out3.find("2.000000") != std::string::npos;
+  ExpectTrue(has_loop, "repl_handles_while", ctx);
+
+  std::istringstream input4("{ s = 0; for (i = 0; i - 3; i = i + 1) { if (i - 1) { } else { continue; } s = s + 1; }; s }\nexit\n");
+  std::ostringstream output4;
+  StreamRedirect redirect4(std::cin, std::cout, input4, output4);
+  lattice::repl::Repl repl4;
+  repl4.Run();
+  redirect4.Restore(std::cin, std::cout);
+  std::string out4 = output4.str();
+  bool has_for = out4.find("2.000000") != std::string::npos;
+  ExpectTrue(has_for, "repl_handles_for_and_continue", ctx);
 }
 
 }  // namespace test

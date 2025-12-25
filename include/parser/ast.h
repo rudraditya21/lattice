@@ -11,7 +11,7 @@
 namespace lattice::parser {
 
 enum class UnaryOp { kNegate };
-enum class BinaryOp { kAdd, kSub, kMul, kDiv };
+enum class BinaryOp { kAdd, kSub, kMul, kDiv, kEq, kNe, kGt, kGe, kLt, kLe };
 
 struct Expression {
   virtual ~Expression() = default;
@@ -21,6 +21,12 @@ struct Expression {
 struct NumberLiteral : public Expression {
   explicit NumberLiteral(double v) : value(v) {}
   double value;
+};
+
+/// Boolean literal value.
+struct BoolLiteral : public Expression {
+  explicit BoolLiteral(bool v) : value(v) {}
+  bool value;
 };
 
 /// Unary expression such as negation.
@@ -89,6 +95,50 @@ struct IfStatement : public Statement {
   std::unique_ptr<Expression> condition;
   std::unique_ptr<Statement> then_branch;
   std::unique_ptr<Statement> else_branch;
+};
+
+/// While loop with a condition and body.
+struct WhileStatement : public Statement {
+  WhileStatement(std::unique_ptr<Expression> cond, std::unique_ptr<Statement> body_stmt)
+      : condition(std::move(cond)), body(std::move(body_stmt)) {}
+  std::unique_ptr<Expression> condition;
+  std::unique_ptr<Statement> body;
+};
+
+/// For loop with optional init/condition/increment parts.
+struct ForStatement : public Statement {
+  ForStatement(std::unique_ptr<Statement> init_stmt, std::unique_ptr<Expression> cond_expr,
+               std::unique_ptr<Statement> incr_stmt, std::unique_ptr<Statement> body_stmt)
+      : init(std::move(init_stmt)),
+        condition(std::move(cond_expr)),
+        increment(std::move(incr_stmt)),
+        body(std::move(body_stmt)) {}
+  std::unique_ptr<Statement> init;
+  std::unique_ptr<Expression> condition;
+  std::unique_ptr<Statement> increment;
+  std::unique_ptr<Statement> body;
+};
+
+/// Break out of the nearest loop.
+struct BreakStatement : public Statement {};
+
+/// Continue to the next iteration of the nearest loop.
+struct ContinueStatement : public Statement {};
+
+/// Return from the nearest function.
+struct ReturnStatement : public Statement {
+  explicit ReturnStatement(std::unique_ptr<Expression> e) : expr(std::move(e)) {}
+  std::unique_ptr<Expression> expr;
+};
+
+/// Function definition statement.
+struct FunctionStatement : public Statement {
+  FunctionStatement(std::string n, std::vector<std::string> params,
+                    std::unique_ptr<Statement> b)
+      : name(std::move(n)), parameters(std::move(params)), body(std::move(b)) {}
+  std::string name;
+  std::vector<std::string> parameters;
+  std::unique_ptr<Statement> body;
 };
 
 }  // namespace lattice::parser

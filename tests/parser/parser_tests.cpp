@@ -21,7 +21,7 @@ void RunParserTests(TestContext* ctx) {
   try {
     auto val = EvalStmt("if (1) 2 else 3", &env);
     parsed_if = true;
-    ExpectNear(val.value().number, 2.0, "if_else_true_branch", ctx);
+    ExpectNear(val.value.value().number, 2.0, "if_else_true_branch", ctx);
   } catch (const util::Error&) {
   }
   ExpectTrue(parsed_if, "if_else_parsed", ctx);

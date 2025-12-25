@@ -30,9 +30,15 @@ class Parser {
 
   std::unique_ptr<Statement> StatementRule();
   std::unique_ptr<Statement> IfStatementRule();
+  std::unique_ptr<Statement> WhileStatementRule();
+  std::unique_ptr<Statement> ForStatementRule();
+  std::unique_ptr<Statement> FunctionStatementRule();
+  std::unique_ptr<Statement> ReturnStatementRule();
   std::unique_ptr<Statement> Block();
   std::unique_ptr<Statement> AssignmentOrExpression();
   std::unique_ptr<Expression> ExpressionRule();
+  std::unique_ptr<Expression> Equality();
+  std::unique_ptr<Expression> Comparison();
   std::unique_ptr<Expression> Term();
   std::unique_ptr<Expression> Factor();
   std::unique_ptr<Expression> Unary();

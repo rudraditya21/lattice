@@ -38,8 +38,14 @@ bool Repl::ProcessLine(const std::string& line) {
     auto stmt = parser.ParseStatement();
     runtime::Evaluator evaluator(&env_);
     auto result = evaluator.EvaluateStatement(*stmt);
-    if (result.has_value()) {
-      std::cout << result->ToString() << "\n";
+    if (result.control == runtime::ControlSignal::kBreak ||
+        result.control == runtime::ControlSignal::kContinue ||
+        result.control == runtime::ControlSignal::kReturn) {
+      std::cout << "Error: control flow (break/continue/return) not allowed at top level\n";
+      return false;
+    }
+    if (result.value.has_value()) {
+      std::cout << result.value->ToString() << "\n";
     }
   } catch (const util::Error& err) {
     std::cout << err.formatted() << "\n";

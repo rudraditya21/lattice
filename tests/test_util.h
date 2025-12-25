@@ -31,7 +31,7 @@ void ExpectNear(double actual, double expected, const std::string& name, TestCon
 void ExpectTrue(bool value, const std::string& name, TestContext* ctx);
 
 rt::Value EvalExpr(const std::string& expr, rt::Environment* env);
-std::optional<rt::Value> EvalStmt(const std::string& stmt, rt::Environment* env);
+rt::ExecResult EvalStmt(const std::string& stmt, rt::Environment* env);
 
 }  // namespace test
 

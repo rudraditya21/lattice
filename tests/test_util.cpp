@@ -30,7 +30,7 @@ rt::Value EvalExpr(const std::string& expr, rt::Environment* env) {
   return evaluator.Evaluate(*ast);
 }
 
-std::optional<rt::Value> EvalStmt(const std::string& stmt, rt::Environment* env) {
+rt::ExecResult EvalStmt(const std::string& stmt, rt::Environment* env) {
   lx::Lexer lex(stmt);
   ps::Parser parser(std::move(lex));
   auto parsed = parser.ParseStatement();

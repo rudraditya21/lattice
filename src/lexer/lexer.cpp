@@ -72,6 +72,30 @@ Token Lexer::IdentifierToken() {
   if (lexeme == "else") {
     return Token{TokenType::kElse, lexeme, token_line, token_column};
   }
+  if (lexeme == "while") {
+    return Token{TokenType::kWhile, lexeme, token_line, token_column};
+  }
+  if (lexeme == "for") {
+    return Token{TokenType::kFor, lexeme, token_line, token_column};
+  }
+  if (lexeme == "func") {
+    return Token{TokenType::kFunc, lexeme, token_line, token_column};
+  }
+  if (lexeme == "return") {
+    return Token{TokenType::kReturn, lexeme, token_line, token_column};
+  }
+  if (lexeme == "break") {
+    return Token{TokenType::kBreak, lexeme, token_line, token_column};
+  }
+  if (lexeme == "continue") {
+    return Token{TokenType::kContinue, lexeme, token_line, token_column};
+  }
+  if (lexeme == "true") {
+    return Token{TokenType::kTrue, lexeme, token_line, token_column};
+  }
+  if (lexeme == "false") {
+    return Token{TokenType::kFalse, lexeme, token_line, token_column};
+  }
   return Token{TokenType::kIdentifier, lexeme, token_line, token_column};
 }
 
@@ -99,15 +123,37 @@ Token Lexer::NextToken() {
     case ';':
       return Token{TokenType::kSemicolon, ";", token_line, token_column};
     case '=':
+      if (Peek() == '=') {
+        Advance();
+        return Token{TokenType::kEqualEqual, "==", token_line, token_column};
+      }
       return Token{TokenType::kEqual, "=", token_line, token_column};
     case '(':
       return Token{TokenType::kLParen, "(", token_line, token_column};
     case ')':
       return Token{TokenType::kRParen, ")", token_line, token_column};
+    case '>':
+      if (Peek() == '=') {
+        Advance();
+        return Token{TokenType::kGreaterEqual, ">=", token_line, token_column};
+      }
+      return Token{TokenType::kGreater, ">", token_line, token_column};
+    case '<':
+      if (Peek() == '=') {
+        Advance();
+        return Token{TokenType::kLessEqual, "<=", token_line, token_column};
+      }
+      return Token{TokenType::kLess, "<", token_line, token_column};
     case '{':
       return Token{TokenType::kLBrace, "{", token_line, token_column};
     case '}':
       return Token{TokenType::kRBrace, "}", token_line, token_column};
+    case '!':
+      if (Peek() == '=') {
+        Advance();
+        return Token{TokenType::kBangEqual, "!=", token_line, token_column};
+      }
+      return Token{TokenType::kInvalid, "!", token_line, token_column};
     default:
       break;
   }

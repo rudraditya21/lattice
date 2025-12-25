@@ -2,7 +2,7 @@
 
 Lattice is a small scientific computing language aimed at reproducible numerics and statistical workflows. It ships a REPL and embeddable library with:
 - Arithmetic expressions with identifiers, unary minus, calls, assignments, and blocks.
-- Control flow via `if/else` statements and nested blocks.
+- Control flow via `if/else` statements, nested blocks, `while` loops, `for` loops, and `break`/`continue`.
 - Built-in constants `pi`, `e`, `gamma`, `inf` and math helpers `pow`, `gcd`, `lcm`, `abs`, `sign`, `mod`, `floor`, `ceil`, `round`, `clamp`, `min`, `max`.
 The project is organized with headers in `include/` and sources in `src/`.
 
@@ -40,6 +40,16 @@ lattice> lcm(3, 5)
 15.000000
 lattice> exit
 ```
+
+## Control Flow
+- `if/else`: `if (condition) { expr_or_stmt } else { other_stmt }`. Any non-zero/`true` value is truthy.
+- Comparisons: `==`, `!=`, `>`, `<`, `>=`, `<=` yield booleans (`true`/`false`, internally `1`/`0`).
+- Boolean literals: `true`, `false`; they participate in expressions and control flow like C++ (converted to `1`/`0` in arithmetic).
+- `while`: `while (condition) body`. Condition re-evaluated each iteration.
+- `for`: `for (init; condition; increment) body`. Any of the three clauses may be empty (e.g., `for (; cond; )`).
+- `break` / `continue`: only valid inside loops; `continue` skips to the next iteration; `break` exits the nearest loop. At the REPL top level they print an error.
+- Blocks: `{ stmt1; stmt2; ... }` with optional semicolons after statements.
+- Functions: `func name(param1, param2) { ... }` defines a function; `return expr;` exits with a value. Without `return`, the last statement value is used if present, otherwise `0`. User functions share the C++-style semantics for truthiness and comparisons and can call other functions or builtins.
 
 ## Tests
 ```bash

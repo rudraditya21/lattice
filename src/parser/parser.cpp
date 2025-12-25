@@ -70,8 +70,26 @@ std::unique_ptr<Statement> Parser::StatementRule() {
   if (Match(lexer::TokenType::kIf)) {
     return IfStatementRule();
   }
+  if (Match(lexer::TokenType::kWhile)) {
+    return WhileStatementRule();
+  }
+  if (Match(lexer::TokenType::kFor)) {
+    return ForStatementRule();
+  }
+  if (Match(lexer::TokenType::kFunc)) {
+    return FunctionStatementRule();
+  }
+  if (Match(lexer::TokenType::kReturn)) {
+    return ReturnStatementRule();
+  }
   if (Match(lexer::TokenType::kLBrace)) {
     return Block();
+  }
+  if (Match(lexer::TokenType::kBreak)) {
+    return std::make_unique<BreakStatement>();
+  }
+  if (Match(lexer::TokenType::kContinue)) {
+    return std::make_unique<ContinueStatement>();
   }
   return AssignmentOrExpression();
 }
@@ -87,6 +105,69 @@ std::unique_ptr<Statement> Parser::IfStatementRule() {
   }
   return std::make_unique<IfStatement>(std::move(condition), std::move(then_branch),
                                        std::move(else_branch));
+}
+
+std::unique_ptr<Statement> Parser::WhileStatementRule() {
+  Consume(lexer::TokenType::kLParen, "Expected '(' after 'while'");
+  auto condition = ExpressionRule();
+  Consume(lexer::TokenType::kRParen, "Expected ')' after condition");
+  auto body = StatementRule();
+  return std::make_unique<WhileStatement>(std::move(condition), std::move(body));
+}
+
+std::unique_ptr<Statement> Parser::FunctionStatementRule() {
+  Consume(lexer::TokenType::kIdentifier, "Expected function name");
+  std::string name = Previous().lexeme;
+  Consume(lexer::TokenType::kLParen, "Expected '(' after function name");
+  std::vector<std::string> params;
+  if (!Match(lexer::TokenType::kRParen)) {
+    while (true) {
+      Consume(lexer::TokenType::kIdentifier, "Expected parameter name");
+      params.push_back(Previous().lexeme);
+      if (Match(lexer::TokenType::kRParen)) {
+        break;
+      }
+      Consume(lexer::TokenType::kComma, "Expected ',' between parameters");
+    }
+  }
+  auto body = StatementRule();
+  return std::make_unique<FunctionStatement>(std::move(name), std::move(params), std::move(body));
+}
+
+std::unique_ptr<Statement> Parser::ReturnStatementRule() {
+  if (Peek().type == lexer::TokenType::kSemicolon || Peek().type == lexer::TokenType::kRBrace) {
+    return std::make_unique<ReturnStatement>(nullptr);
+  }
+  auto expr = ExpressionRule();
+  return std::make_unique<ReturnStatement>(std::move(expr));
+}
+
+std::unique_ptr<Statement> Parser::ForStatementRule() {
+  Consume(lexer::TokenType::kLParen, "Expected '(' after 'for'");
+
+  std::unique_ptr<Statement> init;
+  if (!Match(lexer::TokenType::kSemicolon)) {
+    init = AssignmentOrExpression();
+    Consume(lexer::TokenType::kSemicolon, "Expected ';' after for-loop initializer");
+  }
+
+  std::unique_ptr<Expression> condition;
+  if (!Match(lexer::TokenType::kSemicolon)) {
+    condition = ExpressionRule();
+    Consume(lexer::TokenType::kSemicolon, "Expected ';' after for-loop condition");
+  }
+
+  std::unique_ptr<Statement> increment;
+  if (Match(lexer::TokenType::kRParen)) {
+    // no increment
+  } else {
+    increment = AssignmentOrExpression();
+    Consume(lexer::TokenType::kRParen, "Expected ')' after for-loop increment");
+  }
+
+  auto body = StatementRule();
+  return std::make_unique<ForStatement>(std::move(init), std::move(condition),
+                                        std::move(increment), std::move(body));
 }
 
 std::unique_ptr<Statement> Parser::Block() {
@@ -114,7 +195,54 @@ std::unique_ptr<Statement> Parser::AssignmentOrExpression() {
 }
 
 std::unique_ptr<Expression> Parser::ExpressionRule() {
-  return Term();
+  return Equality();
+}
+
+std::unique_ptr<Expression> Parser::Equality() {
+  auto expr = Comparison();
+  while (true) {
+    if (Match(lexer::TokenType::kEqualEqual)) {
+      auto rhs = Comparison();
+      expr = std::make_unique<BinaryExpression>(BinaryOp::kEq, std::move(expr), std::move(rhs));
+      continue;
+    }
+    if (Match(lexer::TokenType::kBangEqual)) {
+      auto rhs = Comparison();
+      expr = std::make_unique<BinaryExpression>(BinaryOp::kNe, std::move(expr), std::move(rhs));
+      continue;
+    }
+    break;
+  }
+  return expr;
+}
+
+std::unique_ptr<Expression> Parser::Comparison() {
+  auto expr = Term();
+  while (true) {
+    if (Match(lexer::TokenType::kGreater)) {
+      auto rhs = Term();
+      expr = std::make_unique<BinaryExpression>(BinaryOp::kGt, std::move(expr), std::move(rhs));
+      continue;
+    }
+    if (Match(lexer::TokenType::kGreaterEqual)) {
+      auto rhs = Term();
+      expr =
+          std::make_unique<BinaryExpression>(BinaryOp::kGe, std::move(expr), std::move(rhs));
+      continue;
+    }
+    if (Match(lexer::TokenType::kLess)) {
+      auto rhs = Term();
+      expr = std::make_unique<BinaryExpression>(BinaryOp::kLt, std::move(expr), std::move(rhs));
+      continue;
+    }
+    if (Match(lexer::TokenType::kLessEqual)) {
+      auto rhs = Term();
+      expr = std::make_unique<BinaryExpression>(BinaryOp::kLe, std::move(expr), std::move(rhs));
+      continue;
+    }
+    break;
+  }
+  return expr;
 }
 
 std::unique_ptr<Expression> Parser::Term() {
@@ -167,6 +295,13 @@ std::unique_ptr<Expression> Parser::Primary() {
     const auto& tok = Previous();
     double value = std::strtod(tok.lexeme.c_str(), nullptr);
     return std::make_unique<NumberLiteral>(value);
+  }
+
+  if (Match(lexer::TokenType::kTrue)) {
+    return std::make_unique<BoolLiteral>(true);
+  }
+  if (Match(lexer::TokenType::kFalse)) {
+    return std::make_unique<BoolLiteral>(false);
   }
 
   if (Match(lexer::TokenType::kIdentifier)) {

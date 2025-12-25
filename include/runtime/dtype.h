@@ -3,7 +3,7 @@
 
 namespace lattice::runtime {
 
-enum class DType { kNumber };
+enum class DType { kNumber, kBool, kFunction };
 
 }  // namespace lattice::runtime
 

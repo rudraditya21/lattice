@@ -11,6 +11,8 @@ namespace lattice::runtime {
 
 class Environment {
  public:
+  explicit Environment(Environment* parent = nullptr) : parent_(parent) {}
+
   /// Stores or replaces a named value.
   void Define(const std::string& name, const Value& value) { values_[name] = value; }
 
@@ -18,13 +20,17 @@ class Environment {
   std::optional<Value> Get(const std::string& name) const {
     auto it = values_.find(name);
     if (it == values_.end()) {
-      return std::nullopt;
+      if (parent_ == nullptr) {
+        return std::nullopt;
+      }
+      return parent_->Get(name);
     }
     return it->second;
   }
 
  private:
   std::unordered_map<std::string, Value> values_;
+  Environment* parent_;
 };
 
 }  // namespace lattice::runtime
