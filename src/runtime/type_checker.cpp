@@ -40,6 +40,8 @@ TypeChecker::TypeChecker() {
   functions_["abs"] = FunSig{{std::nullopt}, std::nullopt};
   functions_["set_decimal_precision"] = FunSig{{DType::kI32}, std::nullopt};
   functions_["get_decimal_precision"] = FunSig{{}, DType::kI32};
+  functions_["int"] = FunSig{{std::nullopt}, DType::kI64};
+  functions_["float"] = FunSig{{std::nullopt}, DType::kF64};
   functions_["decimal"] = FunSig{{std::nullopt}, DType::kDecimal};
   functions_["rational"] = FunSig{{std::nullopt, std::nullopt}, DType::kRational};
   functions_["complex"] = FunSig{{std::nullopt, std::nullopt}, DType::kC128};

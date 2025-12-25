@@ -955,6 +955,14 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     expect_args(0, name);
     return Value::I32(GetDecimalPrecision());
   }
+  if (name == "int") {
+    expect_args(1, name);
+    return CastTo(DType::kI64, args[0]);
+  }
+  if (name == "float") {
+    expect_args(1, name);
+    return CastTo(DType::kF64, args[0]);
+  }
   if (name == "decimal") {
     expect_args(1, name);
     long double v = static_cast<long double>(args[0].f64);

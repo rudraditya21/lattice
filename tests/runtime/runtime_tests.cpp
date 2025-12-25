@@ -12,6 +12,8 @@ void RunRuntimeTests(TestContext* ctx) {
   ExpectNear(EvalExpr("pow(2, 3)", &env).number, 8.0, "pow", ctx);
   ExpectNear(EvalExpr("gcd(12, 8)", &env).number, 4.0, "gcd", ctx);
   ExpectNear(EvalExpr("lcm(3, 5)", &env).number, 15.0, "lcm", ctx);
+  ExpectTrue(EvalExpr("int(2.9)", &env).type == rt::DType::kI64, "int_cast_type", ctx);
+  ExpectTrue(EvalExpr("float(2)", &env).type == rt::DType::kF64, "float_cast_type", ctx);
   ExpectNear(EvalExpr("abs(-3)", &env).number, 3.0, "abs", ctx);
   ExpectNear(EvalExpr("sign(-2)", &env).number, -1.0, "sign_neg", ctx);
   ExpectNear(EvalExpr("sign(0)", &env).number, 0.0, "sign_zero", ctx);
