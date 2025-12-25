@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <numeric>
 #include <sstream>
@@ -989,16 +990,25 @@ std::string Value::ToString() const {
     case DType::kF16:
     case DType::kBF16:
     case DType::kF32:
-    case DType::kF64:
-      return std::to_string(f64);
+    case DType::kF64: {
+      std::ostringstream oss;
+      int precision = 6;
+      if (type == DType::kF32) precision = 7;
+      if (type == DType::kF64) precision = 15;
+      oss << std::setprecision(precision) << f64;
+      return oss.str();
+    }
     case DType::kC64:
     case DType::kC128: {
       std::ostringstream oss;
-      oss << complex.real() << "+" << complex.imag() << "i";
+      oss << std::setprecision(10) << complex.real() << "+" << complex.imag() << "i";
       return oss.str();
     }
-    case DType::kDecimal:
-      return std::to_string(static_cast<double>(decimal));
+    case DType::kDecimal: {
+      std::ostringstream oss;
+      oss << std::setprecision(18) << static_cast<double>(decimal);
+      return oss.str();
+    }
     case DType::kRational: {
       std::ostringstream oss;
       oss << rational.num << "/" << rational.den;
