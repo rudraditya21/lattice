@@ -35,4 +35,4 @@
 ## Standard Library Considerations
 - Math functions overload across the numeric tower where meaningful (dtype-aware `abs`, `pow`, `gcd`, `lcm`, `mod`, `clamp`, `min`, `max`, `sum`, `mean`); exact types use exact algorithms when possible.
 - Conversions: `int()`, `float()`, `complex()`, `decimal()`, `rational()`, `tensor()` with explicit semantics; `cast(type, expr)` available.
-- Random module returns typed tensors/scalars respecting dtype parameters (future).
+- Random features (e.g., typed RNG) are deferred until later; modules/imports are out of scope for now.
