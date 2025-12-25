@@ -19,4 +19,15 @@ void InstallBuiltins(runtime::Environment* env) {
   env->Define("inf", runtime::Value::Number(inf));
 }
 
+void InstallPrint(runtime::Environment* env) {
+  if (env == nullptr) {
+    return;
+  }
+  auto print_fn = std::make_shared<runtime::Function>();
+  print_fn->parameters = {"x"};
+  print_fn->body = nullptr;  // Special-cased in evaluator.
+  print_fn->defining_env = env;
+  env->Define("print", runtime::Value::Func(print_fn));
+}
+
 }  // namespace lattice::builtin

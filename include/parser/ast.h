@@ -133,8 +133,7 @@ struct ReturnStatement : public Statement {
 
 /// Function definition statement.
 struct FunctionStatement : public Statement {
-  FunctionStatement(std::string n, std::vector<std::string> params,
-                    std::unique_ptr<Statement> b)
+  FunctionStatement(std::string n, std::vector<std::string> params, std::unique_ptr<Statement> b)
       : name(std::move(n)), parameters(std::move(params)), body(std::move(b)) {}
   std::string name;
   std::vector<std::string> parameters;

@@ -11,6 +11,7 @@ add_library(lattice_lib
     src/parser/parser.cpp
     src/repl/repl.cpp
     src/runtime/ops.cpp
+    src/runtime/runner.cpp
     src/builtin/builtins.cpp
 )
 
@@ -30,8 +31,10 @@ add_executable(lattice_tests
     tests/parser/parser_tests.cpp
     tests/runtime/runtime_tests.cpp
     tests/builtin/builtin_tests.cpp
+    tests/builtin/print_tests.cpp
     tests/util/util_tests.cpp
     tests/repl/repl_tests.cpp
+    tests/interpreter/interpreter_tests.cpp
 )
 target_include_directories(lattice_tests PRIVATE tests)
 target_link_libraries(lattice_tests PRIVATE lattice_lib)

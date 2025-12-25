@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <numeric>
 #include <stdexcept>
 
@@ -145,11 +146,17 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
       throw util::Error("Function is null: " + name, 0, 0);
     }
     if (fn->body == nullptr) {
+      if (name == "print") {
+        if (args.size() != 1) {
+          throw util::Error("print expects 1 argument", 0, 0);
+        }
+        std::cout << args[0].ToString() << "\n";
+        return Value::Number(0.0);
+      }
       throw util::Error("Function has no body: " + name, 0, 0);
     }
     if (fn->parameters.size() != args.size()) {
-      throw util::Error(name + " expects " + std::to_string(fn->parameters.size()) +
-                            " arguments",
+      throw util::Error(name + " expects " + std::to_string(fn->parameters.size()) + " arguments",
                         0, 0);
     }
     Environment fn_env(fn->defining_env);

@@ -8,6 +8,7 @@ namespace lattice::repl {
 
 Repl::Repl() {
   builtin::InstallBuiltins(&env_);
+  builtin::InstallPrint(&env_);
 }
 
 void Repl::Run() {

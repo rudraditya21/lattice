@@ -5,8 +5,8 @@
 #include <string>
 #include <vector>
 
-#include "runtime/dtype.h"
 #include "parser/ast.h"
+#include "runtime/dtype.h"
 
 namespace lattice {
 namespace parser {

@@ -166,8 +166,8 @@ std::unique_ptr<Statement> Parser::ForStatementRule() {
   }
 
   auto body = StatementRule();
-  return std::make_unique<ForStatement>(std::move(init), std::move(condition),
-                                        std::move(increment), std::move(body));
+  return std::make_unique<ForStatement>(std::move(init), std::move(condition), std::move(increment),
+                                        std::move(body));
 }
 
 std::unique_ptr<Statement> Parser::Block() {
@@ -226,8 +226,7 @@ std::unique_ptr<Expression> Parser::Comparison() {
     }
     if (Match(lexer::TokenType::kGreaterEqual)) {
       auto rhs = Term();
-      expr =
-          std::make_unique<BinaryExpression>(BinaryOp::kGe, std::move(expr), std::move(rhs));
+      expr = std::make_unique<BinaryExpression>(BinaryOp::kGe, std::move(expr), std::move(rhs));
       continue;
     }
     if (Match(lexer::TokenType::kLess)) {
