@@ -47,6 +47,33 @@ void RunTypeCheckerTests(TestContext* ctx) {
     dynamic_ok = false;
   }
   ExpectTrue(dynamic_ok, "typecheck_dynamic_unannotated_ok", ctx);
+
+  // Return type enforcement.
+  bool ret_mismatch = false;
+  try {
+    TypeCheckStmt("{ func g() -> i32 { return 1.5; } }");
+  } catch (const util::Error&) {
+    ret_mismatch = true;
+  }
+  ExpectTrue(ret_mismatch, "typecheck_return_mismatch", ctx);
+
+  // Binding enforcement with later use.
+  bool binding_enforced = true;
+  try {
+    TypeCheckStmt("{ x: f64 = 1.0; x = 2.0; }");
+  } catch (const util::Error&) {
+    binding_enforced = false;
+  }
+  ExpectTrue(binding_enforced, "typecheck_binding_enforced", ctx);
+
+  // Mixed annotated/unannotated call: annotated param enforced, unannotated param dynamic.
+  bool mixed_ok = true;
+  try {
+    TypeCheckStmt("{ func h(a: i32, b) -> i32 { return a; } h(1, 2.5); }");
+  } catch (const util::Error&) {
+    mixed_ok = false;
+  }
+  ExpectTrue(mixed_ok, "typecheck_mixed_params", ctx);
 }
 
 }  // namespace test
