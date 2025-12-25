@@ -944,6 +944,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
       throw util::Error(func + " expects " + std::to_string(count) + " arguments", 0, 0);
     }
   };
+  auto ensure_not_tensor = [&](const Value& v, const std::string& func) {
+    if (v.type == DType::kTensor) {
+      throw util::Error(func + " does not support tensor arguments", 0, 0);
+    }
+  };
 
   if (name == "set_decimal_precision") {
     expect_args(1, name);
@@ -1006,6 +1011,8 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
   }
   if (name == "pow") {
     expect_args(2, name);
+    ensure_not_tensor(args[0], name);
+    ensure_not_tensor(args[1], name);
     if ((args[0].type == DType::kC64 || args[0].type == DType::kC128) ||
         (args[1].type == DType::kC64 || args[1].type == DType::kC128)) {
       std::complex<double> base =
@@ -1019,25 +1026,61 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
   }
   if (name == "gcd") {
     expect_args(2, name);
-    auto a = static_cast<long long>(args[0].f64);
-    auto b = static_cast<long long>(args[1].f64);
+    ensure_not_tensor(args[0], name);
+    ensure_not_tensor(args[1], name);
+    if (IsComplex(args[0].type) || IsComplex(args[1].type) || IsFloat(args[0].type) ||
+        IsFloat(args[1].type) || args[0].type == DType::kDecimal ||
+        args[0].type == DType::kRational || args[1].type == DType::kDecimal ||
+        args[1].type == DType::kRational) {
+      throw util::Error("gcd requires integer arguments", 0, 0);
+    }
+    auto a = static_cast<long long>(CastTo(DType::kI64, args[0]).i64);
+    auto b = static_cast<long long>(CastTo(DType::kI64, args[1]).i64);
     return Value::I64(std::gcd(a, b));
   }
   if (name == "lcm") {
     expect_args(2, name);
-    auto a = static_cast<long long>(args[0].f64);
-    auto b = static_cast<long long>(args[1].f64);
+    ensure_not_tensor(args[0], name);
+    ensure_not_tensor(args[1], name);
+    if (IsComplex(args[0].type) || IsComplex(args[1].type) || IsFloat(args[0].type) ||
+        IsFloat(args[1].type) || args[0].type == DType::kDecimal ||
+        args[0].type == DType::kRational || args[1].type == DType::kDecimal ||
+        args[1].type == DType::kRational) {
+      throw util::Error("lcm requires integer arguments", 0, 0);
+    }
+    auto a = static_cast<long long>(CastTo(DType::kI64, args[0]).i64);
+    auto b = static_cast<long long>(CastTo(DType::kI64, args[1]).i64);
     return Value::I64(std::lcm(a, b));
   }
   if (name == "abs") {
     expect_args(1, name);
-    if (args[0].type == DType::kC64 || args[0].type == DType::kC128) {
-      return Value::F64(std::abs(args[0].complex));
+    ensure_not_tensor(args[0], name);
+    switch (args[0].type) {
+      case DType::kC64:
+      case DType::kC128:
+        return Value::F64(std::abs(args[0].complex));
+      case DType::kDecimal:
+        return Value::Decimal(std::fabsl(args[0].decimal));
+      case DType::kRational:
+        return Value::RationalValueNormalized(std::abs(args[0].rational.num),
+                                              std::abs(args[0].rational.den));
+      case DType::kI8:
+      case DType::kI16:
+      case DType::kI32:
+      case DType::kI64:
+        return Value::I64(std::abs(args[0].i64));
+      case DType::kU8:
+      case DType::kU16:
+      case DType::kU32:
+      case DType::kU64:
+        return args[0];
+      default:
+        return Value::F64(std::fabs(args[0].f64));
     }
-    return Value::F64(std::fabs(args[0].f64));
   }
   if (name == "sign") {
     expect_args(1, name);
+    ensure_not_tensor(args[0], name);
     double v = args[0].f64;
     if (v > 0) return Value::I32(1);
     if (v < 0) return Value::I32(-1);
@@ -1045,8 +1088,18 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
   }
   if (name == "mod") {
     expect_args(2, name);
+    ensure_not_tensor(args[0], name);
+    ensure_not_tensor(args[1], name);
     if (args[1].f64 == 0.0) {
       throw util::Error("mod divisor cannot be zero", 0, 0);
+    }
+    if (!IsFloat(args[0].type) && !IsFloat(args[1].type) && !IsComplex(args[0].type) &&
+        !IsComplex(args[1].type) && args[0].type != DType::kDecimal &&
+        args[0].type != DType::kRational && args[1].type != DType::kDecimal &&
+        args[1].type != DType::kRational) {
+      auto lhs = CastTo(DType::kI64, args[0]).i64;
+      auto rhs = CastTo(DType::kI64, args[1]).i64;
+      return Value::I64(lhs % rhs);
     }
     return Value::F64(std::fmod(args[0].f64, args[1].f64));
   }
@@ -1077,27 +1130,71 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
   }
   if (name == "floor") {
     expect_args(1, name);
-    return Value::F64(std::floor(args[0].f64));
+    ensure_not_tensor(args[0], name);
+    if (IsFloat(args[0].type) || args[0].type == DType::kDecimal) {
+      return Value::F64(std::floor(args[0].f64));
+    }
+    return args[0];
   }
   if (name == "ceil") {
     expect_args(1, name);
-    return Value::F64(std::ceil(args[0].f64));
+    ensure_not_tensor(args[0], name);
+    if (IsFloat(args[0].type) || args[0].type == DType::kDecimal) {
+      return Value::F64(std::ceil(args[0].f64));
+    }
+    return args[0];
   }
   if (name == "round") {
     expect_args(1, name);
-    return Value::F64(std::round(args[0].f64));
+    ensure_not_tensor(args[0], name);
+    if (IsFloat(args[0].type) || args[0].type == DType::kDecimal) {
+      return Value::F64(std::round(args[0].f64));
+    }
+    return args[0];
   }
   if (name == "clamp") {
     expect_args(3, name);
-    return Value::F64(std::clamp(args[0].f64, args[1].f64, args[2].f64));
+    ensure_not_tensor(args[0], name);
+    ensure_not_tensor(args[1], name);
+    ensure_not_tensor(args[2], name);
+    DType target = PromoteType(PromoteType(args[0].type, args[1].type), args[2].type);
+    Value v0 = CastTo(target, args[0]);
+    Value v1 = CastTo(target, args[1]);
+    Value v2 = CastTo(target, args[2]);
+    if (IsFloat(target)) {
+      double res = std::clamp(v0.f64, v1.f64, v2.f64);
+      return target == DType::kF32 ? Value::F32(static_cast<float>(res)) : Value::F64(res);
+    }
+    int64_t res = std::clamp(v0.i64, v1.i64, v2.i64);
+    return Value::I64(res);
   }
   if (name == "min") {
     expect_args(2, name);
-    return Value::F64(std::min(args[0].f64, args[1].f64));
+    ensure_not_tensor(args[0], name);
+    ensure_not_tensor(args[1], name);
+    DType target = PromoteType(args[0].type, args[1].type);
+    Value v0 = CastTo(target, args[0]);
+    Value v1 = CastTo(target, args[1]);
+    if (IsFloat(target)) {
+      double res = std::min(v0.f64, v1.f64);
+      return target == DType::kF32 ? Value::F32(static_cast<float>(res)) : Value::F64(res);
+    }
+    int64_t res = std::min(v0.i64, v1.i64);
+    return Value::I64(res);
   }
   if (name == "max") {
     expect_args(2, name);
-    return Value::F64(std::max(args[0].f64, args[1].f64));
+    ensure_not_tensor(args[0], name);
+    ensure_not_tensor(args[1], name);
+    DType target = PromoteType(args[0].type, args[1].type);
+    Value v0 = CastTo(target, args[0]);
+    Value v1 = CastTo(target, args[1]);
+    if (IsFloat(target)) {
+      double res = std::max(v0.f64, v1.f64);
+      return target == DType::kF32 ? Value::F32(static_cast<float>(res)) : Value::F64(res);
+    }
+    int64_t res = std::max(v0.i64, v1.i64);
+    return Value::I64(res);
   }
   throw util::Error("Unknown function: " + name, 0, 0);
 }

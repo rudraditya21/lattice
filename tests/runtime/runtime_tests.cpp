@@ -14,6 +14,26 @@ void RunRuntimeTests(TestContext* ctx) {
   ExpectNear(EvalExpr("lcm(3, 5)", &env).number, 15.0, "lcm", ctx);
   ExpectTrue(EvalExpr("int(2.9)", &env).type == rt::DType::kI64, "int_cast_type", ctx);
   ExpectTrue(EvalExpr("float(2)", &env).type == rt::DType::kF64, "float_cast_type", ctx);
+
+  // Overload/error paths for math builtins.
+  bool gcd_rejects_decimal = false;
+  try {
+    EvalExpr("gcd(decimal(1.0), 2)", &env);
+  } catch (const util::Error&) {
+    gcd_rejects_decimal = true;
+  }
+  ExpectTrue(gcd_rejects_decimal, "gcd_rejects_decimal", ctx);
+
+  auto abs_cmplx = EvalExpr("abs(complex(3, 4))", &env);
+  ExpectNear(abs_cmplx.f64, 5.0, "abs_complex_magnitude", ctx);
+
+  bool mod_zero = false;
+  try {
+    EvalExpr("mod(1, 0)", &env);
+  } catch (const util::Error&) {
+    mod_zero = true;
+  }
+  ExpectTrue(mod_zero, "mod_zero_errors", ctx);
   ExpectNear(EvalExpr("abs(-3)", &env).number, 3.0, "abs", ctx);
   ExpectNear(EvalExpr("sign(-2)", &env).number, -1.0, "sign_neg", ctx);
   ExpectNear(EvalExpr("sign(0)", &env).number, 0.0, "sign_zero", ctx);
