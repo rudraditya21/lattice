@@ -28,6 +28,54 @@ std::optional<DType> LookupDType(const std::string& name) {
   if (name == "rational") return DType::kRational;
   return std::nullopt;
 }
+
+std::string DTypeName(DType t) {
+  switch (t) {
+    case DType::kBool:
+      return "bool";
+    case DType::kI8:
+      return "i8";
+    case DType::kI16:
+      return "i16";
+    case DType::kI32:
+      return "i32";
+    case DType::kI64:
+      return "i64";
+    case DType::kU8:
+      return "u8";
+    case DType::kU16:
+      return "u16";
+    case DType::kU32:
+      return "u32";
+    case DType::kU64:
+      return "u64";
+    case DType::kF16:
+      return "f16";
+    case DType::kBF16:
+      return "bfloat16";
+    case DType::kF32:
+      return "f32";
+    case DType::kF64:
+      return "f64";
+    case DType::kC64:
+      return "complex64";
+    case DType::kC128:
+      return "complex128";
+    case DType::kDecimal:
+      return "decimal";
+    case DType::kRational:
+      return "rational";
+    case DType::kFunction:
+      return "function";
+    case DType::kTensor:
+      return "tensor";
+  }
+  return "unknown";
+}
+
+std::string OptTypeName(const std::optional<DType>& t) {
+  return t.has_value() ? DTypeName(t.value()) : "dynamic";
+}
 }  // namespace
 
 TypeChecker::TypeChecker() {
@@ -133,9 +181,10 @@ std::optional<DType> TypeChecker::TypeOf(const parser::Expression* expr) {
         for (size_t i = 0; i < call->args.size(); ++i) {
           auto arg_t = TypeOf(call->args[i].get());
           if (!IsAssignable(arg_t, sig.params[i])) {
-            throw util::Error(
-                "Type mismatch for argument " + std::to_string(i + 1) + " to " + call->callee, 0,
-                0);
+            throw util::Error("Type mismatch for argument " + std::to_string(i + 1) + " to " +
+                                  call->callee + " (expected " + OptTypeName(sig.params[i]) +
+                                  ", got " + OptTypeName(arg_t) + ")",
+                              0, 0);
           }
         }
       }
@@ -212,7 +261,7 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
   if (auto* ws = dynamic_cast<WhileStatement*>(stmt)) {
     auto cond_t = TypeOf(ws->condition.get());
     if (cond_t.has_value() && cond_t.value() != DType::kBool) {
-      throw util::Error("Condition must be bool", 0, 0);
+      throw util::Error("Condition must be bool (got " + OptTypeName(cond_t) + ")", 0, 0);
     }
     CheckStatement(ws->body.get());
     return;
@@ -223,7 +272,7 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
     if (fs->condition) {
       auto cond_t = TypeOf(fs->condition.get());
       if (cond_t.has_value() && cond_t.value() != DType::kBool) {
-        throw util::Error("Condition must be bool", 0, 0);
+        throw util::Error("Condition must be bool (got " + OptTypeName(cond_t) + ")", 0, 0);
       }
     }
     if (fs->increment) CheckStatement(fs->increment.get());
@@ -236,7 +285,9 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
       if (ret->expr) {
         auto rt = TypeOf(ret->expr.get());
         if (!IsAssignable(rt, expected_return_)) {
-          throw util::Error("Return type mismatch", 0, 0);
+          throw util::Error("Return type mismatch (expected " + OptTypeName(expected_return_) +
+                                ", got " + OptTypeName(rt) + ")",
+                            0, 0);
         }
       } else {
         throw util::Error("Missing return value", 0, 0);
@@ -256,7 +307,9 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
     }
     if (annot.has_value()) {
       if (!IsAssignable(val_t, annot)) {
-        throw util::Error("Type mismatch in assignment to " + asn->name, 0, 0);
+        throw util::Error("Type mismatch in assignment to " + asn->name + " (expected " +
+                              OptTypeName(annot) + ", got " + OptTypeName(val_t) + ")",
+                          0, 0);
       }
       scopes_.back()[asn->name] = annot;
     } else {

@@ -101,6 +101,11 @@ bool ValueMatchesType(const Value& value, const std::string& type_name) {
   return false;
 }
 
+std::string ValueTypeName(const Value& v) {
+  if (!v.type_name.empty()) return v.type_name;
+  return DTypeToString(v.type);
+}
+
 std::string CombineNumericType(const Value& lhs, const Value& rhs) {
   auto is_floatish = [](const std::string& t) {
     return t == "f16" || t == "f32" || t == "f64" || t == "bfloat16" || t.rfind("complex", 0) == 0;
@@ -911,7 +916,9 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
       if (!fn->parameter_types.empty() && i < fn->parameter_types.size()) {
         const std::string& annot = fn->parameter_types[i];
         if (!annot.empty() && !ValueMatchesType(args[i], annot)) {
-          throw util::Error("Type mismatch for parameter '" + fn->parameters[i] + "'", 0, 0);
+          throw util::Error("Type mismatch for parameter '" + fn->parameters[i] + "' (expected " +
+                                annot + ", got " + ValueTypeName(args[i]) + ")",
+                            0, 0);
         }
       }
       fn_env.Define(fn->parameters[i], args[i]);
@@ -921,12 +928,18 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     if (!fn->return_type.empty()) {
       if (body_result.control == ControlSignal::kReturn && body_result.value.has_value()) {
         if (!ValueMatchesType(body_result.value.value(), fn->return_type)) {
-          throw util::Error("Return type mismatch in function " + name, 0, 0);
+          throw util::Error("Return type mismatch in function " + name + " (expected " +
+                                fn->return_type + ", got " +
+                                ValueTypeName(body_result.value.value()) + ")",
+                            0, 0);
         }
         body_result.value->type_name = fn->return_type;
       } else if (body_result.value.has_value()) {
         if (!ValueMatchesType(body_result.value.value(), fn->return_type)) {
-          throw util::Error("Return type mismatch in function " + name, 0, 0);
+          throw util::Error("Return type mismatch in function " + name + " (expected " +
+                                fn->return_type + ", got " +
+                                ValueTypeName(body_result.value.value()) + ")",
+                            0, 0);
         }
         body_result.value->type_name = fn->return_type;
       }

@@ -3,7 +3,9 @@
 Lattice is a small scientific computing language aimed at reproducible numerics and statistical workflows. It ships a REPL and embeddable library with:
 - Arithmetic expressions with identifiers, unary minus, calls, assignments, and blocks.
 - Control flow via `if/else` statements, nested blocks, `while` loops, `for` loops, and `break`/`continue`.
-- Built-in constants `pi`, `e`, `gamma`, `inf` and math helpers `pow`, `gcd`, `lcm`, `abs`, `sign`, `mod`, `floor`, `ceil`, `round`, `clamp`, `min`, `max`.
+- Strict typing with optional annotations and a numeric tower (ints, floats, complex, decimals, rationals) plus tensors.
+- Built-in constants `pi`, `e`, `gamma`, `inf` and math helpers `pow`, `gcd`, `lcm`, `abs`, `sign`, `mod`, `floor`, `ceil`, `round`, `clamp`, `min`, `max`, `sum`, `mean`.
+- Typed constructors/casts: `int()`, `float()`, `complex()`, `decimal()`, `rational()`, `tensor()`.
 The project is organized with headers in `include/` and sources in `src/`.
 
 ## Layout
@@ -24,32 +26,37 @@ cmake --build build
 ```bash
 ./build/lattice
 ```
-Example session:
+Example session (typed values, complex/tensors):
 ```
 lattice> x = 3
-3.000000
+3
 lattice> x + 2
-5.000000
-lattice> pi * 2
-6.283185
-lattice> pow(2, 3)
-8.000000
-lattice> gcd(12, 8)
-4.000000
-lattice> lcm(3, 5)
-15.000000
+5
+lattice> complex(1, -2)
+1+-2i
+lattice> tensor(2, 2, 1)
+tensor[2x2]<12>
+lattice> sum(tensor(2, 2, 1))
+4
 lattice> exit
 ```
 
 ## Control Flow
-- `if/else`: `if (condition) { expr_or_stmt } else { other_stmt }`. Any non-zero/`true` value is truthy.
-- Comparisons: `==`, `!=`, `>`, `<`, `>=`, `<=` yield booleans (`true`/`false`, internally `1`/`0`).
-- Boolean literals: `true`, `false`; they participate in expressions and control flow like C++ (converted to `1`/`0` in arithmetic).
+- `if/else`: `if (condition) { expr_or_stmt } else { other_stmt }`. Conditions must be `bool`.
+- Comparisons: `==`, `!=`, `>`, `<`, `>=`, `<=` yield booleans (`true`/`false`).
+- Boolean literals: `true`, `false`; arithmetic on bools is allowed (1/0) but control-flow requires `bool`.
 - `while`: `while (condition) body`. Condition re-evaluated each iteration.
 - `for`: `for (init; condition; increment) body`. Any of the three clauses may be empty (e.g., `for (; cond; )`).
 - `break` / `continue`: only valid inside loops; `continue` skips to the next iteration; `break` exits the nearest loop. At the REPL top level they print an error.
 - Blocks: `{ stmt1; stmt2; ... }` with optional semicolons after statements.
-- Functions: `func name(param1, param2) { ... }` defines a function; `return expr;` exits with a value. Without `return`, the last statement value is used if present, otherwise `0`. User functions share the C++-style semantics for truthiness and comparisons and can call other functions or builtins.
+- Functions: `func name(param1, param2) { ... }` defines a function; `return expr;` exits with a value. Without `return`, the last statement value is used if present, otherwise `0`. Functions may carry type annotations on params/returns; annotated boundaries are enforced, unannotated code remains dynamic.
+
+## Types and Promotion
+- Numeric tower: `i8/i16/i32/i64/u8/u16/u32/u64`, `f16/bfloat16/f32/f64`, `complex64/complex128`, `decimal`, `rational`, `bool`.
+- Aggregates: `tensor` with shape/row-major strides and element dtype (default `f64`).
+- Constructors/casts: `int`, `float`, `complex`, `decimal`, `rational`, `tensor`.
+- Promotion: complex > float > int; signed/unsigned width-aware; decimal↔decimal and rational↔rational only; tensor ops promote element dtype; implicit narrowing is rejected (use `cast`/constructors).
+- Math builtins enforce dtype expectations (e.g., `gcd/lcm` require integers, `abs` handles complex/decimal/rational, `pow` supports complex).
 
 ## Tests
 ```bash

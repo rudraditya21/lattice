@@ -57,9 +57,14 @@ type_annot    → ":" IDENTIFIER ;
 - Blocks do not currently introduce new variable scopes (all bindings are in the current environment).
 
 ## Truthiness
-- `false` and numeric zero are falsey; everything else is truthy. Comparisons yield booleans (`true`/`false`).
+- Control flow requires `bool` conditions. Arithmetic still treats `true/false` as `1/0`. Comparisons yield booleans (`true`/`false`).
 
 ## Functions
 - Defined with `func name(params) { ... }`.
 - `return expr;` exits the function; if omitted, the last statement value is returned if present, otherwise `0`.
-- Functions capture their defining environment and can call other user or builtin functions (e.g., `print`).
+- Functions capture their defining environment and can call other user or builtin functions (e.g., `print`). Annotations on params/returns are enforced; unannotated code remains dynamic.
+
+## Types
+- Type annotations use built-in names: `bool`, `i8/i16/i32/i64/u8/u16/u32/u64`, `f16/bfloat16/f32/f64`, `complex64/complex128`, `decimal`, `rational`, `tensor`.
+- Typed constructors/casts: `int()`, `float()`, `complex()`, `decimal()`, `rational()`, `tensor()`.
+- Promotion: complex > float > int; signed/unsigned width-aware; decimal↔decimal and rational↔rational only; tensor ops promote element dtype; implicit narrowing is rejected (use casts).
