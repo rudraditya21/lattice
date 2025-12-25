@@ -42,6 +42,7 @@ TypeChecker::TypeChecker() {
   functions_["get_decimal_precision"] = FunSig{{}, DType::kI32};
   functions_["decimal"] = FunSig{{std::nullopt}, DType::kDecimal};
   functions_["rational"] = FunSig{{std::nullopt, std::nullopt}, DType::kRational};
+  functions_["complex"] = FunSig{{std::nullopt, std::nullopt}, DType::kC128};
 }
 
 void TypeChecker::EnterScope() {

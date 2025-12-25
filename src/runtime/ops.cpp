@@ -311,8 +311,21 @@ Value CastTo(DType target, const Value& v) {
     case DType::kF64:
       return Value::F64(as_double());
     case DType::kC64:
+      if (v.type == DType::kC64) {
+        return v;
+      }
+      if (v.type == DType::kC128) {
+        return Value::Complex64(std::complex<float>(static_cast<float>(v.complex.real()),
+                                                    static_cast<float>(v.complex.imag())));
+      }
       return Value::Complex64(std::complex<float>(static_cast<float>(as_double()), 0.0f));
     case DType::kC128:
+      if (v.type == DType::kC128) {
+        return v;
+      }
+      if (v.type == DType::kC64) {
+        return Value::Complex128(std::complex<double>(v.complex.real(), v.complex.imag()));
+      }
       return Value::Complex128(std::complex<double>(as_double(), 0.0));
     case DType::kDecimal:
       return Value::Decimal(static_cast<long double>(as_double()));
@@ -541,18 +554,42 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
 
   if (is_complex(target)) {
     std::complex<double> lcv =
-        target == DType::kC128 ? lcast.complex : std::complex<double>(lcast.f64, 0.0);
+        target == DType::kC128 ? lcast.complex
+                               : std::complex<double>(static_cast<double>(lcast.complex.real()),
+                                                      static_cast<double>(lcast.complex.imag()));
     std::complex<double> rcv =
-        target == DType::kC128 ? rcast.complex : std::complex<double>(rcast.f64, 0.0);
+        target == DType::kC128 ? rcast.complex
+                               : std::complex<double>(static_cast<double>(rcast.complex.real()),
+                                                      static_cast<double>(rcast.complex.imag()));
     switch (expr.op) {
-      case parser::BinaryOp::kAdd:
-        return Value::Complex128(lcv + rcv);
-      case parser::BinaryOp::kSub:
-        return Value::Complex128(lcv - rcv);
-      case parser::BinaryOp::kMul:
-        return Value::Complex128(lcv * rcv);
-      case parser::BinaryOp::kDiv:
-        return Value::Complex128(lcv / rcv);
+      case parser::BinaryOp::kAdd: {
+        auto res = lcv + rcv;
+        return target == DType::kC64
+                   ? Value::Complex64(std::complex<float>(static_cast<float>(res.real()),
+                                                          static_cast<float>(res.imag())))
+                   : Value::Complex128(res);
+      }
+      case parser::BinaryOp::kSub: {
+        auto res = lcv - rcv;
+        return target == DType::kC64
+                   ? Value::Complex64(std::complex<float>(static_cast<float>(res.real()),
+                                                          static_cast<float>(res.imag())))
+                   : Value::Complex128(res);
+      }
+      case parser::BinaryOp::kMul: {
+        auto res = lcv * rcv;
+        return target == DType::kC64
+                   ? Value::Complex64(std::complex<float>(static_cast<float>(res.real()),
+                                                          static_cast<float>(res.imag())))
+                   : Value::Complex128(res);
+      }
+      case parser::BinaryOp::kDiv: {
+        auto res = lcv / rcv;
+        return target == DType::kC64
+                   ? Value::Complex64(std::complex<float>(static_cast<float>(res.real()),
+                                                          static_cast<float>(res.imag())))
+                   : Value::Complex128(res);
+      }
       case parser::BinaryOp::kEq:
         return Value::Bool(lcv == rcv);
       case parser::BinaryOp::kNe:
@@ -824,6 +861,12 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
       throw util::Error("rational denominator cannot be zero", 0, 0);
     }
     return Value::RationalValueNormalized(num, den);
+  }
+  if (name == "complex") {
+    expect_args(2, name);
+    double re = args[0].f64;
+    double im = args[1].f64;
+    return Value::Complex128(std::complex<double>(re, im));
   }
 
   if (name == "pow") {
