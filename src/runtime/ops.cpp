@@ -868,9 +868,25 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     double im = args[1].f64;
     return Value::Complex128(std::complex<double>(re, im));
   }
+  if (name == "abs") {
+    expect_args(1, name);
+    if (args[0].type == DType::kC64 || args[0].type == DType::kC128) {
+      return Value::F64(std::abs(args[0].complex));
+    }
+    return Value::F64(std::fabs(args[0].f64));
+  }
 
   if (name == "pow") {
     expect_args(2, name);
+    if ((args[0].type == DType::kC64 || args[0].type == DType::kC128) ||
+        (args[1].type == DType::kC64 || args[1].type == DType::kC128)) {
+      std::complex<double> base =
+          args[0].type == DType::kC128 ? args[0].complex : std::complex<double>(args[0].f64, 0.0);
+      std::complex<double> expv =
+          args[1].type == DType::kC128 ? args[1].complex : std::complex<double>(args[1].f64, 0.0);
+      auto res = std::pow(base, expv);
+      return Value::Complex128(res);
+    }
     return Value::F64(std::pow(args[0].f64, args[1].f64));
   }
   if (name == "gcd") {
