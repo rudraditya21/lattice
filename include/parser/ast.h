@@ -2,11 +2,16 @@
 #define LATTICE_PARSER_AST_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 // AST nodes for expressions and statements.
+
+namespace lattice::runtime {
+enum class DType;
+}
 
 namespace lattice::parser {
 
@@ -57,8 +62,10 @@ struct Identifier : public Expression {
 
 /// Type annotation identifier.
 struct TypeName {
-  explicit TypeName(std::string n) : name(std::move(n)) {}
+  explicit TypeName(std::string n, std::optional<runtime::DType> dt = std::nullopt)
+      : name(std::move(n)), dtype(dt) {}
   std::string name;
+  std::optional<runtime::DType> dtype;
 };
 
 /// Function call with positional arguments.

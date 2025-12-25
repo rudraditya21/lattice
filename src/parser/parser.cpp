@@ -2,11 +2,38 @@
 
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "runtime/dtype.h"
+
 namespace lattice::parser {
+
+namespace {
+std::optional<runtime::DType> LookupDType(const std::string& name) {
+  using runtime::DType;
+  if (name == "bool") return DType::kBool;
+  if (name == "i8") return DType::kI8;
+  if (name == "i16") return DType::kI16;
+  if (name == "i32") return DType::kI32;
+  if (name == "i64") return DType::kI64;
+  if (name == "u8") return DType::kU8;
+  if (name == "u16") return DType::kU16;
+  if (name == "u32") return DType::kU32;
+  if (name == "u64") return DType::kU64;
+  if (name == "f16") return DType::kF16;
+  if (name == "bfloat16") return DType::kBF16;
+  if (name == "f32") return DType::kF32;
+  if (name == "f64") return DType::kF64;
+  if (name == "complex64") return DType::kC64;
+  if (name == "complex128") return DType::kC128;
+  if (name == "decimal") return DType::kDecimal;
+  if (name == "rational") return DType::kRational;
+  return std::nullopt;
+}
+}  // namespace
 
 Parser::Parser(lexer::Lexer lexer)
     : lexer_(std::move(lexer)),
@@ -363,7 +390,12 @@ std::unique_ptr<TypeName> Parser::ParseTypeName() {
   if (!Match(lexer::TokenType::kIdentifier)) {
     throw util::Error("Expected type name", Peek().line, Peek().column);
   }
-  return std::make_unique<TypeName>(Previous().lexeme);
+  std::string name = Previous().lexeme;
+  auto dtype = LookupDType(name);
+  if (!dtype.has_value()) {
+    throw util::Error("Unknown type: " + name, Previous().line, Previous().column);
+  }
+  return std::make_unique<TypeName>(std::move(name), dtype);
 }
 
 BindingAnnotation Parser::ParseBindingAnnotation() {
