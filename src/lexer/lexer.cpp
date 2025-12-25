@@ -34,6 +34,11 @@ void Lexer::SkipWhitespace() {
     char ch = Peek();
     if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
       Advance();
+    } else if (ch == '/' && index_ + 1 < source_.size() && source_[index_ + 1] == '/') {
+      // Skip line comment.
+      while (!IsAtEnd() && Peek() != '\n') {
+        Advance();
+      }
     } else {
       break;
     }
