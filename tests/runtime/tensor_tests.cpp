@@ -11,7 +11,7 @@ void RunTensorTests(TestContext* ctx) {
   ExpectTrue(t1.tensor.shape.size() == 1 && t1.tensor.shape[0] == 3, "tensor_shape_1d", ctx);
   ExpectTrue(t1.tensor.elem_type == rt::DType::kI32 || t1.tensor.elem_type == rt::DType::kF64,
              "tensor_elem_type", ctx);
-  ExpectTrue(t1.tensor.storage.size() == 3, "tensor_storage_size", ctx);
+  ExpectTrue(t1.tensor.size == 3, "tensor_storage_size", ctx);
 
   auto t2 = EvalExpr("tensor(2, 3, 0)", &env);  // shape (2,3) fill 0
   ExpectTrue(t2.tensor.shape.size() == 2 && t2.tensor.shape[0] == 2 && t2.tensor.shape[1] == 3,
@@ -20,7 +20,7 @@ void RunTensorTests(TestContext* ctx) {
   ExpectTrue(t2.tensor.strides.size() == 2 && t2.tensor.strides[0] == 3 &&
                  t2.tensor.strides[1] == 1,
              "tensor_strides_row_major", ctx);
-  ExpectTrue(t2.tensor.storage.size() == 6, "tensor_storage_size_2d", ctx);
+  ExpectTrue(t2.tensor.size == 6, "tensor_storage_size_2d", ctx);
   auto desc = t2.ToString();
   ExpectTrue(desc.find("tensor") != std::string::npos, "tensor_to_string", ctx);
 
@@ -28,8 +28,9 @@ void RunTensorTests(TestContext* ctx) {
   auto t3_stmt = EvalStmt("{ t3 = tensor(2, 2, 1); t3; }", &env);
   auto t3 = t3_stmt.value.value();
   auto t4 = EvalExpr("t3 + 1", &env);
-  ExpectTrue(t4.tensor.storage.size() == 4 && t4.tensor.storage[0] == 2.0, "tensor_broadcast_add",
-             ctx);
+  ExpectTrue(t4.tensor.size == 4, "tensor_broadcast_size", ctx);
+  double first_val = t4.tensor.using_inline ? t4.tensor.inline_storage[0] : t4.tensor.storage[0];
+  ExpectNear(first_val, 2.0, "tensor_broadcast_add", ctx);
   auto tsum = EvalExpr("sum(t3)", &env);
   ExpectNear(tsum.f64, 4.0, "tensor_sum", ctx);
   auto tmean = EvalExpr("mean(t3)", &env);

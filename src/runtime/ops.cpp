@@ -648,21 +648,21 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
       }
       DType elem_target = PromoteType(lhs.tensor.elem_type, rhs.tensor.elem_type);
       Value out = Value::Tensor(lhs.tensor.shape, elem_target, 0.0);
-      for (size_t i = 0; i < lhs.tensor.storage.size(); ++i) {
-        double lv = lhs.tensor.storage[i];
-        double rv = rhs.tensor.storage[i];
+      for (int64_t i = 0; i < lhs.tensor.size; ++i) {
+        double lv = lhs.tensor.Data()[i];
+        double rv = rhs.tensor.Data()[i];
         switch (expr.op) {
           case parser::BinaryOp::kAdd:
-            out.tensor.storage[i] = lv + rv;
+            out.tensor.Data()[i] = lv + rv;
             break;
           case parser::BinaryOp::kSub:
-            out.tensor.storage[i] = lv - rv;
+            out.tensor.Data()[i] = lv - rv;
             break;
           case parser::BinaryOp::kMul:
-            out.tensor.storage[i] = lv * rv;
+            out.tensor.Data()[i] = lv * rv;
             break;
           case parser::BinaryOp::kDiv:
-            out.tensor.storage[i] = lv / rv;
+            out.tensor.Data()[i] = lv / rv;
             break;
           default:
             throw util::Error("Tensor comparison not supported", 0, 0);
@@ -673,21 +673,21 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
       // Broadcast scalar to tensor shape.
       Value out = Value::Tensor(tensor.tensor.shape,
                                 PromoteType(tensor.tensor.elem_type, scalar.type), 0.0);
-      for (size_t i = 0; i < tensor.tensor.storage.size(); ++i) {
-        double lv = tensor.tensor.storage[i];
+      for (int64_t i = 0; i < tensor.tensor.size; ++i) {
+        double lv = tensor.tensor.Data()[i];
         double rv = scalar.f64;
         switch (expr.op) {
           case parser::BinaryOp::kAdd:
-            out.tensor.storage[i] = lv + rv;
+            out.tensor.Data()[i] = lv + rv;
             break;
           case parser::BinaryOp::kSub:
-            out.tensor.storage[i] = (lhs.type == DType::kTensor) ? lv - rv : rv - lv;
+            out.tensor.Data()[i] = (lhs.type == DType::kTensor) ? lv - rv : rv - lv;
             break;
           case parser::BinaryOp::kMul:
-            out.tensor.storage[i] = lv * rv;
+            out.tensor.Data()[i] = lv * rv;
             break;
           case parser::BinaryOp::kDiv:
-            out.tensor.storage[i] = (lhs.type == DType::kTensor) ? lv / rv : rv / lv;
+            out.tensor.Data()[i] = (lhs.type == DType::kTensor) ? lv / rv : rv / lv;
             break;
           default:
             throw util::Error("Tensor comparison not supported", 0, 0);
@@ -1145,7 +1145,7 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     }
     Value out = Value::Tensor({static_cast<int64_t>(args.size())}, elem_type, 0.0);
     for (size_t i = 0; i < args.size(); ++i) {
-      out.tensor.storage[i] = CastTo(elem_type, args[i]).f64;
+      out.tensor.Data()[i] = CastTo(elem_type, args[i]).f64;
     }
     out.tensor.elem_type = elem_type;
     return out;
@@ -1251,8 +1251,8 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
       return Value::F64(v.f64);
     }
     double total = 0.0;
-    for (double x : v.tensor.storage) {
-      total += x;
+    for (int64_t i = 0; i < v.tensor.size; ++i) {
+      total += v.tensor.Data()[i];
     }
     return Value::F64(total);
   }
@@ -1263,10 +1263,10 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
       return Value::F64(v.f64);
     }
     double total = 0.0;
-    for (double x : v.tensor.storage) {
-      total += x;
+    for (int64_t i = 0; i < v.tensor.size; ++i) {
+      total += v.tensor.Data()[i];
     }
-    double mean = total / static_cast<double>(v.tensor.storage.size());
+    double mean = total / static_cast<double>(v.tensor.size);
     return Value::F64(mean);
   }
   if (name == "floor") {

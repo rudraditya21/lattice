@@ -46,7 +46,12 @@ struct Value {
     std::vector<int64_t> shape;
     std::vector<int64_t> strides;
     DType elem_type = DType::kF64;
-    std::vector<double> storage;  // row-major, flattened
+    int64_t size = 0;
+    bool using_inline = false;
+    std::array<double, 8> inline_storage{};
+    std::vector<double> storage;  // row-major, flattened if not inline
+    double* Data() { return using_inline ? inline_storage.data() : storage.data(); }
+    const double* Data() const { return using_inline ? inline_storage.data() : storage.data(); }
   } tensor;
   std::string type_name;
 
@@ -273,7 +278,15 @@ inline Value Value::Tensor(std::vector<int64_t> shape, DType elem_type, double f
     stride *= val.tensor.shape[i];
   }
   const int64_t total = stride;
-  val.tensor.storage.assign(static_cast<size_t>(total), fill_value);
+  val.tensor.size = total;
+  if (total <= static_cast<int64_t>(val.tensor.inline_storage.size())) {
+    val.tensor.using_inline = true;
+    for (int64_t i = 0; i < total; ++i) {
+      val.tensor.inline_storage[static_cast<size_t>(i)] = fill_value;
+    }
+  } else {
+    val.tensor.storage.assign(static_cast<size_t>(total), fill_value);
+  }
   val.number = 0.0;
   return val;
 }
