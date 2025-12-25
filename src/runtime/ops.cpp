@@ -530,6 +530,114 @@ Value Evaluator::EvaluateUnary(const parser::UnaryExpression& expr) {
 Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
   Value lhs = Evaluate(*expr.lhs);
   Value rhs = Evaluate(*expr.rhs);
+  // Hot path for identical common types.
+  if (lhs.type == rhs.type) {
+    switch (lhs.type) {
+      case DType::kI32: {
+        int32_t lv = static_cast<int32_t>(lhs.i64);
+        int32_t rv = static_cast<int32_t>(rhs.i64);
+        switch (expr.op) {
+          case parser::BinaryOp::kAdd:
+            return Value::I32(lv + rv);
+          case parser::BinaryOp::kSub:
+            return Value::I32(lv - rv);
+          case parser::BinaryOp::kMul:
+            return Value::I32(lv * rv);
+          case parser::BinaryOp::kDiv:
+            return Value::F64(static_cast<double>(lv) / static_cast<double>(rv));
+          case parser::BinaryOp::kEq:
+            return Value::Bool(lv == rv);
+          case parser::BinaryOp::kNe:
+            return Value::Bool(lv != rv);
+          case parser::BinaryOp::kGt:
+            return Value::Bool(lv > rv);
+          case parser::BinaryOp::kGe:
+            return Value::Bool(lv >= rv);
+          case parser::BinaryOp::kLt:
+            return Value::Bool(lv < rv);
+          case parser::BinaryOp::kLe:
+            return Value::Bool(lv <= rv);
+        }
+      } break;
+      case DType::kI64: {
+        int64_t lv = lhs.i64;
+        int64_t rv = rhs.i64;
+        switch (expr.op) {
+          case parser::BinaryOp::kAdd:
+            return Value::I64(lv + rv);
+          case parser::BinaryOp::kSub:
+            return Value::I64(lv - rv);
+          case parser::BinaryOp::kMul:
+            return Value::I64(lv * rv);
+          case parser::BinaryOp::kDiv:
+            return Value::F64(static_cast<double>(lv) / static_cast<double>(rv));
+          case parser::BinaryOp::kEq:
+            return Value::Bool(lv == rv);
+          case parser::BinaryOp::kNe:
+            return Value::Bool(lv != rv);
+          case parser::BinaryOp::kGt:
+            return Value::Bool(lv > rv);
+          case parser::BinaryOp::kGe:
+            return Value::Bool(lv >= rv);
+          case parser::BinaryOp::kLt:
+            return Value::Bool(lv < rv);
+          case parser::BinaryOp::kLe:
+            return Value::Bool(lv <= rv);
+        }
+      } break;
+      case DType::kF64: {
+        double lv = lhs.f64;
+        double rv = rhs.f64;
+        switch (expr.op) {
+          case parser::BinaryOp::kAdd:
+            return Value::F64(lv + rv);
+          case parser::BinaryOp::kSub:
+            return Value::F64(lv - rv);
+          case parser::BinaryOp::kMul:
+            return Value::F64(lv * rv);
+          case parser::BinaryOp::kDiv:
+            return Value::F64(lv / rv);
+          case parser::BinaryOp::kEq:
+            return Value::Bool(lv == rv);
+          case parser::BinaryOp::kNe:
+            return Value::Bool(lv != rv);
+          case parser::BinaryOp::kGt:
+            return Value::Bool(lv > rv);
+          case parser::BinaryOp::kGe:
+            return Value::Bool(lv >= rv);
+          case parser::BinaryOp::kLt:
+            return Value::Bool(lv < rv);
+          case parser::BinaryOp::kLe:
+            return Value::Bool(lv <= rv);
+        }
+      } break;
+      case DType::kC128: {
+        const auto& lv = lhs.complex;
+        const auto& rv = rhs.complex;
+        switch (expr.op) {
+          case parser::BinaryOp::kAdd:
+            return Value::Complex128(lv + rv);
+          case parser::BinaryOp::kSub:
+            return Value::Complex128(lv - rv);
+          case parser::BinaryOp::kMul:
+            return Value::Complex128(lv * rv);
+          case parser::BinaryOp::kDiv:
+            return Value::Complex128(lv / rv);
+          case parser::BinaryOp::kEq:
+            return Value::Bool(lv == rv);
+          case parser::BinaryOp::kNe:
+            return Value::Bool(lv != rv);
+          case parser::BinaryOp::kGt:
+          case parser::BinaryOp::kGe:
+          case parser::BinaryOp::kLt:
+          case parser::BinaryOp::kLe:
+            throw util::Error("Complex comparison not supported", 0, 0);
+        }
+      } break;
+      default:
+        break;
+    }
+  }
   if (lhs.type == DType::kTensor || rhs.type == DType::kTensor) {
     // Allow tensor with scalar broadcast.
     Value tensor = lhs.type == DType::kTensor ? lhs : rhs;
