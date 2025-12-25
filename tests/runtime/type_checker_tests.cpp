@@ -74,6 +74,31 @@ void RunTypeCheckerTests(TestContext* ctx) {
     mixed_ok = false;
   }
   ExpectTrue(mixed_ok, "typecheck_mixed_params", ctx);
+
+  // Decimal/rational mixing requires casts.
+  bool decimal_mix_reject = false;
+  try {
+    TypeCheckStmt("decimal(1.0) + 1.0");
+  } catch (const util::Error&) {
+    decimal_mix_reject = true;
+  }
+  ExpectTrue(decimal_mix_reject, "typecheck_decimal_mix_reject", ctx);
+
+  bool rational_mix_reject = false;
+  try {
+    TypeCheckStmt("rational(1,2) + 1");
+  } catch (const util::Error&) {
+    rational_mix_reject = true;
+  }
+  ExpectTrue(rational_mix_reject, "typecheck_rational_mix_reject", ctx);
+
+  bool decimal_cast_ok = true;
+  try {
+    TypeCheckStmt("cast(f64, decimal(1.0)) + 1.0");
+  } catch (const util::Error&) {
+    decimal_cast_ok = false;
+  }
+  ExpectTrue(decimal_cast_ok, "typecheck_decimal_cast_allows_mix", ctx);
 }
 
 }  // namespace test

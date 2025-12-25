@@ -22,6 +22,7 @@ void RunDecimalRationalTests(TestContext* ctx) {
 
   auto rat_add = EvalExpr("rational(1, 3) + rational(1, 6)", &env);
   ExpectTrue(rat_add.rational.num == 1 && rat_add.rational.den == 2, "rational_add", ctx);
+  ExpectTrue(rat_add.ToString() == "1/2", "rational_to_string", ctx);
 
   // Mixing with floats/complex should be explicit only.
   bool decimal_mix_error = false;
@@ -48,6 +49,11 @@ void RunDecimalRationalTests(TestContext* ctx) {
     cast_ok = false;
   }
   ExpectTrue(cast_ok, "explicit_cast_allows_mix", ctx);
+
+  // ToString respects precision.
+  EvalStmt("set_decimal_precision(3)", &env);
+  auto dec_str = EvalExpr("decimal(1.23456)", &env).ToString();
+  ExpectTrue(dec_str.find("1.235") != std::string::npos, "decimal_precision_string", ctx);
 }
 
 }  // namespace test

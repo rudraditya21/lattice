@@ -1065,7 +1065,8 @@ std::string Value::ToString() const {
     }
     case DType::kDecimal: {
       std::ostringstream oss;
-      oss << std::setprecision(GetDecimalPrecision()) << static_cast<double>(RoundDecimal(decimal));
+      oss << std::fixed << std::setprecision(GetDecimalPrecision())
+          << static_cast<double>(RoundDecimal(decimal));
       return oss.str();
     }
     case DType::kRational: {

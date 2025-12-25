@@ -38,6 +38,10 @@ TypeChecker::TypeChecker() {
   functions_["gcd"] = FunSig{{std::nullopt, std::nullopt}, DType::kI64};
   functions_["lcm"] = FunSig{{std::nullopt, std::nullopt}, DType::kI64};
   functions_["abs"] = FunSig{{std::nullopt}, std::nullopt};
+  functions_["set_decimal_precision"] = FunSig{{DType::kI32}, std::nullopt};
+  functions_["get_decimal_precision"] = FunSig{{}, DType::kI32};
+  functions_["decimal"] = FunSig{{std::nullopt}, DType::kDecimal};
+  functions_["rational"] = FunSig{{std::nullopt, std::nullopt}, DType::kRational};
 }
 
 void TypeChecker::EnterScope() {
