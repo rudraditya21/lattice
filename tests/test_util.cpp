@@ -2,6 +2,8 @@
 
 #include <iostream>
 
+#include "runtime/type_checker.h"
+
 namespace test {
 
 void ExpectNear(double actual, double expected, const std::string& name, TestContext* ctx) {
@@ -36,6 +38,14 @@ rt::ExecResult EvalStmt(const std::string& stmt, rt::Environment* env) {
   auto parsed = parser.ParseStatement();
   rt::Evaluator evaluator(env);
   return evaluator.EvaluateStatement(*parsed);
+}
+
+void TypeCheckStmt(const std::string& stmt) {
+  lx::Lexer lex(stmt);
+  ps::Parser parser(std::move(lex));
+  auto parsed = parser.ParseStatement();
+  rt::TypeChecker checker;
+  checker.Check(parsed.get());
 }
 
 }  // namespace test

@@ -12,6 +12,7 @@ add_library(lattice_lib
     src/repl/repl.cpp
     src/runtime/ops.cpp
     src/runtime/runner.cpp
+    src/runtime/type_checker.cpp
     src/builtin/builtins.cpp
 )
 
@@ -30,6 +31,7 @@ add_executable(lattice_tests
     tests/lexer/lexer_tests.cpp
     tests/parser/parser_tests.cpp
     tests/runtime/runtime_tests.cpp
+    tests/runtime/type_checker_tests.cpp
     tests/builtin/builtin_tests.cpp
     tests/builtin/print_tests.cpp
     tests/util/util_tests.cpp

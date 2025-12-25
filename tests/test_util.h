@@ -32,6 +32,7 @@ void ExpectTrue(bool value, const std::string& name, TestContext* ctx);
 
 rt::Value EvalExpr(const std::string& expr, rt::Environment* env);
 rt::ExecResult EvalStmt(const std::string& stmt, rt::Environment* env);
+void TypeCheckStmt(const std::string& stmt);
 
 }  // namespace test
 
