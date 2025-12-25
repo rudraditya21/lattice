@@ -2,6 +2,7 @@
 #define LATTICE_RUNTIME_VALUE_H_
 
 #include <complex>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -51,12 +52,19 @@ struct Value {
     val.type_name = "bool";
     return val;
   }
+  static Value I8(int8_t v);
+  static Value I16(int16_t v);
   static Value I32(int32_t v);
   static Value I64(int64_t v);
+  static Value U8(uint8_t v);
+  static Value U16(uint16_t v);
   static Value U32(uint32_t v);
   static Value U64(uint64_t v);
+  static Value F16(float v);
+  static Value BF16(float v);
   static Value F32(float v);
   static Value F64(double v);
+  static Value Complex64(std::complex<float> v);
   static Value Complex128(std::complex<double> v);
   static Value Decimal(long double v);
   static Value RationalValue(int64_t num, int64_t den);
@@ -109,6 +117,64 @@ inline Value Value::U64(uint64_t v) {
   return val;
 }
 
+inline Value Value::I8(int8_t v) {
+  Value val;
+  val.type = DType::kI8;
+  val.i64 = v;
+  val.f64 = static_cast<double>(v);
+  val.number = val.f64;
+  val.type_name = "i8";
+  return val;
+}
+
+inline Value Value::I16(int16_t v) {
+  Value val;
+  val.type = DType::kI16;
+  val.i64 = v;
+  val.f64 = static_cast<double>(v);
+  val.number = val.f64;
+  val.type_name = "i16";
+  return val;
+}
+
+inline Value Value::U8(uint8_t v) {
+  Value val;
+  val.type = DType::kU8;
+  val.u64 = v;
+  val.f64 = static_cast<double>(v);
+  val.number = val.f64;
+  val.type_name = "u8";
+  return val;
+}
+
+inline Value Value::U16(uint16_t v) {
+  Value val;
+  val.type = DType::kU16;
+  val.u64 = v;
+  val.f64 = static_cast<double>(v);
+  val.number = val.f64;
+  val.type_name = "u16";
+  return val;
+}
+
+inline Value Value::F16(float v) {
+  Value val;
+  val.type = DType::kF16;
+  val.f64 = static_cast<double>(v);
+  val.number = val.f64;
+  val.type_name = "f16";
+  return val;
+}
+
+inline Value Value::BF16(float v) {
+  Value val;
+  val.type = DType::kBF16;
+  val.f64 = static_cast<double>(v);
+  val.number = val.f64;
+  val.type_name = "bfloat16";
+  return val;
+}
+
 inline Value Value::F32(float v) {
   Value val;
   val.type = DType::kF32;
@@ -124,6 +190,14 @@ inline Value Value::F64(double v) {
   val.f64 = v;
   val.number = val.f64;
   val.type_name = "f64";
+  return val;
+}
+
+inline Value Value::Complex64(std::complex<float> v) {
+  Value val;
+  val.type = DType::kC64;
+  val.complex = std::complex<double>(v.real(), v.imag());
+  val.type_name = "complex64";
   return val;
 }
 
