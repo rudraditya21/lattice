@@ -37,6 +37,16 @@ bool IsNumericTypeName(const std::string& name) {
       "f16", "f32", "f64", "bfloat16", "complex64", "complex128", "decimal", "rational"};
   return kNumeric.find(name) != kNumeric.end();
 }
+std::string ShapeToString(const std::vector<int64_t>& shape) {
+  std::ostringstream oss;
+  oss << "[";
+  for (size_t i = 0; i < shape.size(); ++i) {
+    if (i > 0) oss << "x";
+    oss << shape[i];
+  }
+  oss << "]";
+  return oss.str();
+}
 std::string DTypeToString(DType t) {
   switch (t) {
     case DType::kBool:
@@ -644,7 +654,10 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
     Value scalar = lhs.type == DType::kTensor ? rhs : lhs;
     if (lhs.type == DType::kTensor && rhs.type == DType::kTensor) {
       if (lhs.tensor.shape != rhs.tensor.shape) {
-        throw util::Error("Tensor shapes must match for elementwise ops", 0, 0);
+        throw util::Error("Tensor shapes must match for elementwise ops (lhs " +
+                              ShapeToString(lhs.tensor.shape) + ", rhs " +
+                              ShapeToString(rhs.tensor.shape) + ")",
+                          0, 0);
       }
       DType elem_target = PromoteType(lhs.tensor.elem_type, rhs.tensor.elem_type);
       Value out = Value::Tensor(lhs.tensor.shape, elem_target, 0.0);
@@ -1124,7 +1137,8 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     }
     for (int64_t dim : shape) {
       if (dim <= 0) {
-        throw util::Error("tensor dimensions must be positive", 0, 0);
+        throw util::Error("tensor dimensions must be positive (got " + std::to_string(dim) + ")", 0,
+                          0);
       }
     }
     DType elem_type = DType::kF64;
@@ -1529,12 +1543,8 @@ std::string Value::ToString() const {
     }
     case DType::kTensor: {
       std::ostringstream oss;
-      oss << "tensor[";
-      for (size_t i = 0; i < tensor.shape.size(); ++i) {
-        if (i > 0) oss << "x";
-        oss << tensor.shape[i];
-      }
-      oss << "]<" << static_cast<int>(tensor.elem_type) << ">";
+      oss << "tensor" << ShapeToString(tensor.shape) << "<" << DTypeToString(tensor.elem_type)
+          << ">";
       return oss.str();
     }
     case DType::kFunction:
