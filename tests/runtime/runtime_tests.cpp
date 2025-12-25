@@ -100,6 +100,40 @@ void RunRuntimeTests(TestContext* ctx) {
       "{ func fact(n) { if (n <= 1) { return 1; } else { return n * fact(n - 1); } } fact(5); }",
       &env);
   ExpectNear(func_nested.value.value().number, 120.0, "func_recursion", ctx);
+
+  // Type annotations enforcement.
+  bool caught_assign = false;
+  try {
+    EvalStmt("x: bool = 3", &env);
+  } catch (const util::Error&) {
+    caught_assign = true;
+  }
+  ExpectTrue(caught_assign, "annotated_assign_mismatch", ctx);
+
+  bool caught_param = false;
+  try {
+    EvalStmt("{ func addi(a: i32) { return a; } addi(true); }", &env);
+  } catch (const util::Error&) {
+    caught_param = true;
+  }
+  ExpectTrue(caught_param, "annotated_param_mismatch", ctx);
+
+  bool caught_ret = false;
+  try {
+    EvalStmt("{ func give_bool(): bool { return 3; } give_bool(); }", &env);
+  } catch (const util::Error&) {
+    caught_ret = true;
+  }
+  ExpectTrue(caught_ret, "annotated_return_mismatch", ctx);
+
+  // Type metadata propagates.
+  auto typed_val = EvalStmt("{ y: i32 = 5; y + 1; }", &env);
+  auto tn = typed_val.value.value().type_name;
+  ExpectTrue(tn == "i32" || tn == "i64", "typed_value_annotation", ctx);
+  auto typed_ret = EvalStmt("{ func addi(a: i32, b: i32) -> i32 { return a + b; } addi(1, 2); }",
+                            &env);
+  auto tn2 = typed_ret.value.value().type_name;
+  ExpectTrue(tn2 == "i32" || tn2 == "i64", "typed_return_annotation", ctx);
 }
 
 }  // namespace test

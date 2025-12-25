@@ -122,6 +122,8 @@ Token Lexer::NextToken() {
       return Token{TokenType::kComma, ",", token_line, token_column};
     case ';':
       return Token{TokenType::kSemicolon, ";", token_line, token_column};
+    case ':':
+      return Token{TokenType::kColon, ":", token_line, token_column};
     case '=':
       if (Peek() == '=') {
         Advance();

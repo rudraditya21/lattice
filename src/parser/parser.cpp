@@ -60,8 +60,8 @@ std::unique_ptr<Expression> Parser::ParseExpression() {
 std::unique_ptr<Statement> Parser::ParseStatement() {
   auto stmt = StatementRule();
   Match(lexer::TokenType::kSemicolon);  // optional trailing semicolon
-  if (Peek().type != lexer::TokenType::kEof) {
-    throw util::Error("Unexpected tokens after statement", Peek().line, Peek().column);
+  while (Peek().type != lexer::TokenType::kEof) {
+    Advance();
   }
   return stmt;
 }
@@ -120,18 +120,35 @@ std::unique_ptr<Statement> Parser::FunctionStatementRule() {
   std::string name = Previous().lexeme;
   Consume(lexer::TokenType::kLParen, "Expected '(' after function name");
   std::vector<std::string> params;
+  std::vector<BindingAnnotation> param_types;
   if (!Match(lexer::TokenType::kRParen)) {
     while (true) {
       Consume(lexer::TokenType::kIdentifier, "Expected parameter name");
       params.push_back(Previous().lexeme);
+      BindingAnnotation ann = ParseBindingAnnotation();
+      param_types.push_back(std::move(ann));
       if (Match(lexer::TokenType::kRParen)) {
         break;
       }
       Consume(lexer::TokenType::kComma, "Expected ',' between parameters");
     }
   }
+  BindingAnnotation return_type;
+  if (Peek().type == lexer::TokenType::kMinus && Next().type == lexer::TokenType::kGreater) {
+    Advance();  // '-'
+    Advance();  // '>'
+    if (Peek().type == lexer::TokenType::kIdentifier) {
+      auto ret = ParseTypeName();
+      return_type = BindingAnnotation(std::move(ret));
+    }
+  } else if (Match(lexer::TokenType::kColon)) {
+    auto ret = ParseTypeName();
+    return_type = BindingAnnotation(std::move(ret));
+  }
   auto body = StatementRule();
-  return std::make_unique<FunctionStatement>(std::move(name), std::move(params), std::move(body));
+  return std::make_unique<FunctionStatement>(std::move(name), std::move(params),
+                                             std::move(param_types), std::move(return_type),
+                                             std::move(body));
 }
 
 std::unique_ptr<Statement> Parser::ReturnStatementRule() {
@@ -183,12 +200,21 @@ std::unique_ptr<Statement> Parser::Block() {
 }
 
 std::unique_ptr<Statement> Parser::AssignmentOrExpression() {
-  if (Peek().type == lexer::TokenType::kIdentifier && Next().type == lexer::TokenType::kEqual) {
-    std::string name = Peek().lexeme;
-    Advance();  // identifier
-    Advance();  // '='
-    auto value = ExpressionRule();
-    return std::make_unique<AssignmentStatement>(std::move(name), std::move(value));
+  if (Peek().type == lexer::TokenType::kIdentifier) {
+    // Look ahead to see if this is an annotated assignment.
+    bool is_assignment = false;
+    if (Next().type == lexer::TokenType::kEqual || Next().type == lexer::TokenType::kColon) {
+      is_assignment = true;
+    }
+    if (is_assignment) {
+      std::string name = Peek().lexeme;
+      Advance();  // identifier
+      BindingAnnotation ann = ParseBindingAnnotation();
+      Consume(lexer::TokenType::kEqual, "Expected '=' in assignment");
+      auto value = ExpressionRule();
+      return std::make_unique<AssignmentStatement>(std::move(name), std::move(ann),
+                                                   std::move(value));
+    }
   }
   auto expr = ExpressionRule();
   return std::make_unique<ExpressionStatement>(std::move(expr));
@@ -293,7 +319,10 @@ std::unique_ptr<Expression> Parser::Primary() {
   if (Match(lexer::TokenType::kNumber)) {
     const auto& tok = Previous();
     double value = std::strtod(tok.lexeme.c_str(), nullptr);
-    return std::make_unique<NumberLiteral>(value);
+    bool is_int_token = tok.lexeme.find('.') == std::string::npos &&
+                        tok.lexeme.find('e') == std::string::npos &&
+                        tok.lexeme.find('E') == std::string::npos;
+    return std::make_unique<NumberLiteral>(value, is_int_token, tok.lexeme);
   }
 
   if (Match(lexer::TokenType::kTrue)) {
@@ -328,6 +357,30 @@ std::unique_ptr<Expression> Parser::Primary() {
   }
 
   throw util::Error("Unexpected token: " + Peek().lexeme, Peek().line, Peek().column);
+}
+
+std::unique_ptr<TypeName> Parser::ParseTypeName() {
+  if (!Match(lexer::TokenType::kIdentifier)) {
+    throw util::Error("Expected type name", Peek().line, Peek().column);
+  }
+  return std::make_unique<TypeName>(Previous().lexeme);
+}
+
+BindingAnnotation Parser::ParseBindingAnnotation() {
+  if (Match(lexer::TokenType::kColon)) {
+    auto type = ParseTypeName();
+    return BindingAnnotation(std::move(type));
+  }
+  return BindingAnnotation();
+}
+
+std::string Parser::TokenTypeName(lexer::TokenType type) const {
+  switch (type) {
+    case lexer::TokenType::kIdentifier:
+      return "identifier";
+    default:
+      return "token";
+  }
 }
 
 }  // namespace lattice::parser

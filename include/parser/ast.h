@@ -19,8 +19,11 @@ struct Expression {
 
 /// Numeric literal value.
 struct NumberLiteral : public Expression {
-  explicit NumberLiteral(double v) : value(v) {}
+  NumberLiteral(double v, bool is_int_token, std::string lex)
+      : value(v), is_integer_token(is_int_token), lexeme(std::move(lex)) {}
   double value;
+  bool is_integer_token;
+  std::string lexeme;
 };
 
 /// Boolean literal value.
@@ -52,12 +55,25 @@ struct Identifier : public Expression {
   std::string name;
 };
 
+/// Type annotation identifier.
+struct TypeName {
+  explicit TypeName(std::string n) : name(std::move(n)) {}
+  std::string name;
+};
+
 /// Function call with positional arguments.
 struct CallExpression : public Expression {
   CallExpression(std::string callee_name, std::vector<std::unique_ptr<Expression>> arguments)
       : callee(std::move(callee_name)), args(std::move(arguments)) {}
   std::string callee;
   std::vector<std::unique_ptr<Expression>> args;
+};
+
+/// Optional type annotation for bindings.
+struct BindingAnnotation {
+  BindingAnnotation() = default;
+  explicit BindingAnnotation(std::unique_ptr<TypeName> tn) : type(std::move(tn)) {}
+  std::unique_ptr<TypeName> type;
 };
 
 struct Statement {
@@ -72,9 +88,10 @@ struct ExpressionStatement : public Statement {
 
 /// Assignment to a named identifier.
 struct AssignmentStatement : public Statement {
-  AssignmentStatement(std::string n, std::unique_ptr<Expression> v)
-      : name(std::move(n)), value(std::move(v)) {}
+  AssignmentStatement(std::string n, BindingAnnotation ann, std::unique_ptr<Expression> v)
+      : name(std::move(n)), annotation(std::move(ann)), value(std::move(v)) {}
   std::string name;
+  BindingAnnotation annotation;
   std::unique_ptr<Expression> value;
 };
 
@@ -133,10 +150,18 @@ struct ReturnStatement : public Statement {
 
 /// Function definition statement.
 struct FunctionStatement : public Statement {
-  FunctionStatement(std::string n, std::vector<std::string> params, std::unique_ptr<Statement> b)
-      : name(std::move(n)), parameters(std::move(params)), body(std::move(b)) {}
+  FunctionStatement(std::string n, std::vector<std::string> params,
+                    std::vector<BindingAnnotation> param_types, BindingAnnotation ret_type,
+                    std::unique_ptr<Statement> b)
+      : name(std::move(n)),
+        parameters(std::move(params)),
+        parameter_types(std::move(param_types)),
+        return_type(std::move(ret_type)),
+        body(std::move(b)) {}
   std::string name;
   std::vector<std::string> parameters;
+  std::vector<BindingAnnotation> parameter_types;
+  BindingAnnotation return_type;
   std::unique_ptr<Statement> body;
 };
 

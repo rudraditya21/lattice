@@ -44,6 +44,9 @@ class Parser {
   std::unique_ptr<Expression> Unary();
   std::unique_ptr<Expression> Primary();
   std::unique_ptr<Expression> FinishCall(std::string callee);
+  std::unique_ptr<TypeName> ParseTypeName();
+  BindingAnnotation ParseBindingAnnotation();
+  std::string TokenTypeName(lexer::TokenType type) const;
 
   lexer::Lexer lexer_;
   lexer::Token current_;

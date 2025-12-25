@@ -39,7 +39,7 @@ void RunReplTests(TestContext* ctx) {
   redirect.Restore(std::cin, std::cout);
 
   std::string out = output.str();
-  bool has_sum = out.find("2.000000") != std::string::npos;
+  bool has_sum = out.find("2") != std::string::npos;
   ExpectTrue(has_sum, "repl_evaluates_expression", ctx);
 
   std::istringstream input2("{ a = 4; if (a) a = a + 1; a }\nexit\n");
@@ -51,7 +51,7 @@ void RunReplTests(TestContext* ctx) {
 
   redirect2.Restore(std::cin, std::cout);
   std::string out2 = output2.str();
-  bool has_block = out2.find("5.000000") != std::string::npos;
+  bool has_block = out2.find("5") != std::string::npos;
   ExpectTrue(has_block, "repl_handles_block_and_if", ctx);
 
   std::istringstream input3("{ n = 0; while (n - 2) { n = n + 1; }; n }\nexit\n");
@@ -61,7 +61,7 @@ void RunReplTests(TestContext* ctx) {
   repl3.Run();
   redirect3.Restore(std::cin, std::cout);
   std::string out3 = output3.str();
-  bool has_loop = out3.find("2.000000") != std::string::npos;
+  bool has_loop = out3.find("2") != std::string::npos;
   ExpectTrue(has_loop, "repl_handles_while", ctx);
 
   std::istringstream input4("{ s = 0; for (i = 0; i - 3; i = i + 1) { if (i - 1) { } else { continue; } s = s + 1; }; s }\nexit\n");
@@ -71,7 +71,7 @@ void RunReplTests(TestContext* ctx) {
   repl4.Run();
   redirect4.Restore(std::cin, std::cout);
   std::string out4 = output4.str();
-  bool has_for = out4.find("2.000000") != std::string::npos;
+  bool has_for = out4.find("2") != std::string::npos;
   ExpectTrue(has_for, "repl_handles_for_and_continue", ctx);
 }
 

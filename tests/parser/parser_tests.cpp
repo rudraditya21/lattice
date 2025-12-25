@@ -25,6 +25,16 @@ void RunParserTests(TestContext* ctx) {
   } catch (const util::Error&) {
   }
   ExpectTrue(parsed_if, "if_else_parsed", ctx);
+
+  // Type-annotated function and variable parse and enforce.
+  bool parsed_types = true;
+  try {
+    EvalStmt("func add(a: i32, b: f64) -> f64 { return a + b; }", &env);
+    EvalStmt("x: i32 = 3", &env);
+  } catch (const util::Error&) {
+    parsed_types = false;
+  }
+  ExpectTrue(parsed_types, "annotated_syntax_parses", ctx);
 }
 
 }  // namespace test

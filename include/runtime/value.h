@@ -1,6 +1,7 @@
 #ifndef LATTICE_RUNTIME_VALUE_H_
 #define LATTICE_RUNTIME_VALUE_H_
 
+#include <complex>
 #include <memory>
 #include <string>
 #include <vector>
@@ -18,29 +19,149 @@ class Environment;
 
 struct Function {
   std::vector<std::string> parameters;
+  std::vector<std::string> parameter_types;
+  std::string return_type;
   std::unique_ptr<parser::Statement> body;
   Environment* defining_env;
 };
 
 struct Value {
   DType type;
-  double number;
-  bool boolean;
+  // Storage for different kinds; only some are active depending on type.
+  int64_t i64 = 0;
+  uint64_t u64 = 0;
+  double f64 = 0.0;
+  double number = 0.0;  // compatibility alias
+  long double decimal = 0.0;
+  struct Rational {
+    int64_t num = 0;
+    int64_t den = 1;
+  } rational;
+  std::complex<double> complex = {0.0, 0.0};
+  bool boolean = false;
   std::shared_ptr<Function> function;
+  std::string type_name;
 
-  /// Convenience constructor for numeric values.
-  static Value Number(double v) { return Value{DType::kNumber, v, v != 0.0, nullptr}; }
-  /// Convenience constructor for boolean values.
-  static Value Bool(bool v) { return Value{DType::kBool, v ? 1.0 : 0.0, v, nullptr}; }
+  /// Constructors for scalar types.
+  static Value Bool(bool v) {
+    Value val;
+    val.type = DType::kBool;
+    val.boolean = v;
+    val.number = v ? 1.0 : 0.0;
+    val.type_name = "bool";
+    return val;
+  }
+  static Value I32(int32_t v);
+  static Value I64(int64_t v);
+  static Value U32(uint32_t v);
+  static Value U64(uint64_t v);
+  static Value F32(float v);
+  static Value F64(double v);
+  static Value Complex128(std::complex<double> v);
+  static Value Decimal(long double v);
+  static Value RationalValue(int64_t num, int64_t den);
   /// Convenience constructor for function values.
   static Value Func(std::shared_ptr<Function> fn);
+  /// Legacy convenience constructor for numeric values (defaults to f64).
+  static Value Number(double v) { return F64(v); }
 
   /// Formats the value for display in the REPL.
   std::string ToString() const;
 };
 
+inline Value Value::I32(int32_t v) {
+  Value val;
+  val.type = DType::kI32;
+  val.i64 = v;
+  val.f64 = static_cast<double>(v);
+  val.number = val.f64;
+  val.type_name = "i32";
+  return val;
+}
+
+inline Value Value::I64(int64_t v) {
+  Value val;
+  val.type = DType::kI64;
+  val.i64 = v;
+  val.f64 = static_cast<double>(v);
+  val.number = val.f64;
+  val.type_name = "i64";
+  return val;
+}
+
+inline Value Value::U32(uint32_t v) {
+  Value val;
+  val.type = DType::kU32;
+  val.u64 = v;
+  val.f64 = static_cast<double>(v);
+  val.number = val.f64;
+  val.type_name = "u32";
+  return val;
+}
+
+inline Value Value::U64(uint64_t v) {
+  Value val;
+  val.type = DType::kU64;
+  val.u64 = v;
+  val.f64 = static_cast<double>(v);
+  val.number = val.f64;
+  val.type_name = "u64";
+  return val;
+}
+
+inline Value Value::F32(float v) {
+  Value val;
+  val.type = DType::kF32;
+  val.f64 = static_cast<double>(v);
+  val.number = val.f64;
+  val.type_name = "f32";
+  return val;
+}
+
+inline Value Value::F64(double v) {
+  Value val;
+  val.type = DType::kF64;
+  val.f64 = v;
+  val.number = val.f64;
+  val.type_name = "f64";
+  return val;
+}
+
+inline Value Value::Complex128(std::complex<double> v) {
+  Value val;
+  val.type = DType::kC128;
+  val.complex = v;
+  val.type_name = "complex128";
+  return val;
+}
+
+inline Value Value::Decimal(long double v) {
+  Value val;
+  val.type = DType::kDecimal;
+  val.decimal = v;
+  val.number = static_cast<double>(v);
+  val.type_name = "decimal";
+  return val;
+}
+
+inline Value Value::RationalValue(int64_t num, int64_t den) {
+  Value val;
+  val.type = DType::kRational;
+  val.rational.num = num;
+  val.rational.den = den == 0 ? 1 : den;
+  val.f64 = static_cast<double>(num) / static_cast<double>(den == 0 ? 1 : den);
+  val.number = val.f64;
+  val.type_name = "rational";
+  return val;
+}
+
 inline Value Value::Func(std::shared_ptr<Function> fn) {
-  return Value{DType::kFunction, 0.0, false, std::move(fn)};
+  Value val;
+  val.type = DType::kFunction;
+  val.function = std::move(fn);
+  val.number = 0.0;
+  val.type_name = "function";
+  return val;
 }
 
 }  // namespace runtime

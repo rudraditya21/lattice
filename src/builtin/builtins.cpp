@@ -25,6 +25,8 @@ void InstallPrint(runtime::Environment* env) {
   }
   auto print_fn = std::make_shared<runtime::Function>();
   print_fn->parameters = {"x"};
+  print_fn->parameter_types = {""};
+  print_fn->return_type = "";
   print_fn->body = nullptr;  // Special-cased in evaluator.
   print_fn->defining_env = env;
   env->Define("print", runtime::Value::Func(print_fn));

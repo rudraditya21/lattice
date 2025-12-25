@@ -20,6 +20,7 @@ enum class TokenType {
   kRParen,
   kLBrace,
   kRBrace,
+  kColon,
   kIf,
   kElse,
   kWhile,
