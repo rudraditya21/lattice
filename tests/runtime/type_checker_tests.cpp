@@ -38,6 +38,15 @@ void RunTypeCheckerTests(TestContext* ctx) {
     allows_cast = false;
   }
   ExpectTrue(allows_cast, "typecheck_allows_cast", ctx);
+
+  // Dynamic/unannotated code remains permissive.
+  bool dynamic_ok = true;
+  try {
+    TypeCheckStmt("{ x = 1; x = 2.5; y = x + 3; }");
+  } catch (const util::Error&) {
+    dynamic_ok = false;
+  }
+  ExpectTrue(dynamic_ok, "typecheck_dynamic_unannotated_ok", ctx);
 }
 
 }  // namespace test

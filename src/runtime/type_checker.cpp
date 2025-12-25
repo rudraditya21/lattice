@@ -149,7 +149,7 @@ void TypeChecker::CheckFunction(parser::FunctionStatement* fn) {
     if (ann.type && ann.type->dtype) {
       sig.params.push_back(ann.type->dtype);
     } else {
-      sig.params.push_back(std::nullopt);
+      sig.params.push_back(std::nullopt);  // dynamic parameter
     }
   }
   if (fn->return_type.type && fn->return_type.type->dtype) {
@@ -244,7 +244,8 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
       }
       scopes_.back()[asn->name] = annot;
     } else {
-      scopes_.back()[asn->name] = val_t;
+      // Unannotated bindings remain dynamic.
+      scopes_.back()[asn->name] = std::nullopt;
     }
     return;
   }
