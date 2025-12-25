@@ -4,6 +4,7 @@
 #include <complex>
 #include <cstdint>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -68,6 +69,7 @@ struct Value {
   static Value Complex128(std::complex<double> v);
   static Value Decimal(long double v);
   static Value RationalValue(int64_t num, int64_t den);
+  static Value RationalValueNormalized(int64_t num, int64_t den);
   /// Convenience constructor for function values.
   static Value Func(std::shared_ptr<Function> fn);
   /// Legacy convenience constructor for numeric values (defaults to f64).
@@ -227,6 +229,18 @@ inline Value Value::RationalValue(int64_t num, int64_t den) {
   val.number = val.f64;
   val.type_name = "rational";
   return val;
+}
+
+inline Value Value::RationalValueNormalized(int64_t num, int64_t den) {
+  if (den == 0) den = 1;
+  int64_t g = std::gcd(num, den);
+  num /= g;
+  den /= g;
+  if (den < 0) {
+    num = -num;
+    den = -den;
+  }
+  return RationalValue(num, den);
 }
 
 inline Value Value::Func(std::shared_ptr<Function> fn) {

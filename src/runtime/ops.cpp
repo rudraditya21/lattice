@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <unordered_set>
 
+#include "runtime/decimal.h"
 #include "util/error.h"
 
 namespace lattice::runtime {
@@ -81,6 +82,27 @@ int FloatRank(DType t) {
   if (t == DType::kBF16) return 2;
   if (t == DType::kF16) return 1;
   return 0;
+}
+
+std::optional<DType> LookupDType(const std::string& name) {
+  if (name == "bool") return DType::kBool;
+  if (name == "i8") return DType::kI8;
+  if (name == "i16") return DType::kI16;
+  if (name == "i32") return DType::kI32;
+  if (name == "i64") return DType::kI64;
+  if (name == "u8") return DType::kU8;
+  if (name == "u16") return DType::kU16;
+  if (name == "u32") return DType::kU32;
+  if (name == "u64") return DType::kU64;
+  if (name == "f16") return DType::kF16;
+  if (name == "bfloat16") return DType::kBF16;
+  if (name == "f32") return DType::kF32;
+  if (name == "f64") return DType::kF64;
+  if (name == "complex64") return DType::kC64;
+  if (name == "complex128") return DType::kC128;
+  if (name == "decimal") return DType::kDecimal;
+  if (name == "rational") return DType::kRational;
+  return std::nullopt;
 }
 
 int SignedRank(DType t) {
@@ -295,8 +317,11 @@ Value CastTo(DType target, const Value& v) {
     case DType::kDecimal:
       return Value::Decimal(static_cast<long double>(as_double()));
     case DType::kRational: {
+      if (v.type == DType::kRational) {
+        return v;
+      }
       int64_t num = static_cast<int64_t>(as_signed());
-      return Value::RationalValue(num, 1);
+      return Value::RationalValueNormalized(num, 1);
     }
     default:
       throw util::Error("Unsupported cast target", 0, 0);
@@ -454,16 +479,18 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
   if (target == DType::kDecimal) {
     long double lv = lcast.decimal;
     long double rv = rcast.decimal;
+    lv = RoundDecimal(lv);
+    rv = RoundDecimal(rv);
     switch (expr.op) {
       case parser::BinaryOp::kAdd:
-        return Value::Decimal(lv + rv);
+        return Value::Decimal(RoundDecimal(lv + rv));
       case parser::BinaryOp::kSub:
-        return Value::Decimal(lv - rv);
+        return Value::Decimal(RoundDecimal(lv - rv));
       case parser::BinaryOp::kMul:
-        return Value::Decimal(lv * rv);
+        return Value::Decimal(RoundDecimal(lv * rv));
       case parser::BinaryOp::kDiv:
         if (rv == 0.0L) throw util::Error("Division by zero", 0, 0);
-        return Value::Decimal(lv / rv);
+        return Value::Decimal(RoundDecimal(lv / rv));
       case parser::BinaryOp::kEq:
         return Value::Bool(lv == rv);
       case parser::BinaryOp::kNe:
@@ -482,14 +509,7 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
   if (target == DType::kRational) {
     auto simplify = [](int64_t num, int64_t den) -> Value {
       if (den == 0) throw util::Error("Division by zero", 0, 0);
-      int64_t g = std::gcd(num, den);
-      num /= g;
-      den /= g;
-      if (den < 0) {
-        num = -num;
-        den = -den;
-      }
-      return Value::RationalValue(num, den);
+      return Value::RationalValueNormalized(num, den);
     };
     int64_t ln = lcast.rational.num;
     int64_t ld = lcast.rational.den;
@@ -765,6 +785,31 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     }
   };
 
+  if (name == "set_decimal_precision") {
+    expect_args(1, name);
+    int p = static_cast<int>(args[0].f64);
+    SetDecimalPrecision(p);
+    return Value::Number(0.0);
+  }
+  if (name == "get_decimal_precision") {
+    expect_args(0, name);
+    return Value::I32(GetDecimalPrecision());
+  }
+  if (name == "decimal") {
+    expect_args(1, name);
+    long double v = static_cast<long double>(args[0].f64);
+    return Value::Decimal(RoundDecimal(v));
+  }
+  if (name == "rational") {
+    expect_args(2, name);
+    int64_t num = static_cast<int64_t>(args[0].f64);
+    int64_t den = static_cast<int64_t>(args[1].f64);
+    if (den == 0) {
+      throw util::Error("rational denominator cannot be zero", 0, 0);
+    }
+    return Value::RationalValueNormalized(num, den);
+  }
+
   if (name == "pow") {
     expect_args(2, name);
     return Value::F64(std::pow(args[0].f64, args[1].f64));
@@ -1004,7 +1049,7 @@ std::string Value::ToString() const {
     }
     case DType::kDecimal: {
       std::ostringstream oss;
-      oss << std::setprecision(18) << static_cast<double>(decimal);
+      oss << std::setprecision(GetDecimalPrecision()) << static_cast<double>(RoundDecimal(decimal));
       return oss.str();
     }
     case DType::kRational: {
