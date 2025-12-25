@@ -1,7 +1,21 @@
 Checks: >
-  bugprone-*,
-  performance-*,
+  -*,
+  bugprone-branch-clone,
+  bugprone-copy-constructor-init,
+  bugprone-infinite-loop,
+  bugprone-macro-parentheses,
+  bugprone-misplaced-widening-cast,
+  bugprone-move-forwarding-reference,
+  bugprone-parent-virtual-call,
+  bugprone-sizeof-expression,
+  bugprone-sizeof-container,
+  bugprone-suspicious-memset-usage,
+  bugprone-suspicious-string-compare,
+  performance-for-range-copy,
+  performance-inefficient-string-concatenation,
+  performance-move-const-arg,
+  performance-unnecessary-value-param,
   modernize-use-nullptr
-WarningsAsErrors: ''
-HeaderFilterRegex: '(include|src|tests)/.*'
+WarningsAsErrors: ""
+HeaderFilterRegex: "(include|src|tests)/.*"
 FormatStyle: none

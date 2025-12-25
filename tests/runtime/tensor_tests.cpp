@@ -17,9 +17,9 @@ void RunTensorTests(TestContext* ctx) {
   ExpectTrue(t2.tensor.shape.size() == 2 && t2.tensor.shape[0] == 2 && t2.tensor.shape[1] == 3,
              "tensor_shape_2d", ctx);
   // Row-major strides: [3,1]
-  ExpectTrue(t2.tensor.strides.size() == 2 && t2.tensor.strides[0] == 3 &&
-                 t2.tensor.strides[1] == 1,
-             "tensor_strides_row_major", ctx);
+  ExpectTrue(
+      t2.tensor.strides.size() == 2 && t2.tensor.strides[0] == 3 && t2.tensor.strides[1] == 1,
+      "tensor_strides_row_major", ctx);
   ExpectTrue(t2.tensor.size == 6, "tensor_storage_size_2d", ctx);
   auto desc = t2.ToString();
   ExpectTrue(desc.find("tensor") != std::string::npos, "tensor_to_string", ctx);
@@ -45,7 +45,8 @@ void RunTensorTests(TestContext* ctx) {
   ExpectTrue(tvals.tensor.elem_type == rt::DType::kI32 || tvals.tensor.elem_type == rt::DType::kI64,
              "tensor_values_elem_type", ctx);
   auto tvals_mix = EvalExpr("tensor_values(1, 2.5)", &env);
-  ExpectTrue(tvals_mix.tensor.elem_type == rt::DType::kF32 || tvals_mix.tensor.elem_type == rt::DType::kF64,
+  ExpectTrue(tvals_mix.tensor.elem_type == rt::DType::kF32 ||
+                 tvals_mix.tensor.elem_type == rt::DType::kF64,
              "tensor_values_promotion", ctx);
 
   // Broadcast across higher ranks.

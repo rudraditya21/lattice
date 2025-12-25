@@ -573,7 +573,7 @@ Value Evaluator::EvaluateUnary(const parser::UnaryExpression& expr) {
         case DType::kF64:
           return Value::F64(-operand.f64);
         default:
-          return Value::F64(-operand.f64);
+          throw util::Error("Unary negate not supported for type " + ValueTypeName(operand), 0, 0);
       }
   }
   throw std::runtime_error("Unhandled unary operator");
@@ -1090,24 +1090,14 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     }
     Evaluator fn_evaluator(&fn_env);
     ExecResult body_result = fn_evaluator.EvaluateStatement(*fn->body);
-    if (!fn->return_type.empty()) {
-      if (body_result.control == ControlSignal::kReturn && body_result.value.has_value()) {
-        if (!ValueMatchesType(body_result.value.value(), fn->return_type)) {
-          throw util::Error("Return type mismatch in function " + name + " (expected " +
-                                fn->return_type + ", got " +
-                                ValueTypeName(body_result.value.value()) + ")",
-                            0, 0);
-        }
-        body_result.value->type_name = fn->return_type;
-      } else if (body_result.value.has_value()) {
-        if (!ValueMatchesType(body_result.value.value(), fn->return_type)) {
-          throw util::Error("Return type mismatch in function " + name + " (expected " +
-                                fn->return_type + ", got " +
-                                ValueTypeName(body_result.value.value()) + ")",
-                            0, 0);
-        }
-        body_result.value->type_name = fn->return_type;
+    if (!fn->return_type.empty() && body_result.value.has_value()) {
+      if (!ValueMatchesType(body_result.value.value(), fn->return_type)) {
+        throw util::Error("Return type mismatch in function " + name + " (expected " +
+                              fn->return_type + ", got " +
+                              ValueTypeName(body_result.value.value()) + ")",
+                          0, 0);
       }
+      body_result.value->type_name = fn->return_type;
     }
     if (body_result.control == ControlSignal::kReturn && body_result.value.has_value()) {
       return body_result.value.value();

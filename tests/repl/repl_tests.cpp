@@ -1,10 +1,9 @@
-#include "test_util.h"
-
 #include <istream>
 #include <ostream>
 #include <sstream>
 
 #include "repl/repl.h"
+#include "test_util.h"
 
 namespace test {
 
@@ -64,7 +63,9 @@ void RunReplTests(TestContext* ctx) {
   bool has_loop = out3.find("2") != std::string::npos;
   ExpectTrue(has_loop, "repl_handles_while", ctx);
 
-  std::istringstream input4("{ s = 0; for (i = 0; i - 3; i = i + 1) { if (i - 1) { } else { continue; } s = s + 1; }; s }\nexit\n");
+  std::istringstream input4(
+      "{ s = 0; for (i = 0; i - 3; i = i + 1) { if (i - 1) { } else { continue; } s = s + 1; }; s "
+      "}\nexit\n");
   std::ostringstream output4;
   StreamRedirect redirect4(std::cin, std::cout, input4, output4);
   lattice::repl::Repl repl4;

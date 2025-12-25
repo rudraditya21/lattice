@@ -1,6 +1,6 @@
-#include "test_util.h"
-
 #include <vector>
+
+#include "test_util.h"
 
 namespace test {
 
@@ -14,10 +14,10 @@ void RunLexerTests(TestContext* ctx) {
       break;
     }
   }
-  std::vector<lx::TokenType> expected = {lx::TokenType::kPlus, lx::TokenType::kMinus,
-                                         lx::TokenType::kStar, lx::TokenType::kSlash,
+  std::vector<lx::TokenType> expected = {lx::TokenType::kPlus,   lx::TokenType::kMinus,
+                                         lx::TokenType::kStar,   lx::TokenType::kSlash,
                                          lx::TokenType::kLParen, lx::TokenType::kRParen,
-                                         lx::TokenType::kComma, lx::TokenType::kIdentifier,
+                                         lx::TokenType::kComma,  lx::TokenType::kIdentifier,
                                          lx::TokenType::kNumber, lx::TokenType::kEof};
   ExpectTrue(types == expected, "basic_tokenization", ctx);
 }

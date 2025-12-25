@@ -47,9 +47,11 @@ void RunParserTests(TestContext* ctx) {
     auto dt_b = fn->parameter_types[1].type->dtype;
     auto dt_ret = fn->return_type.type->dtype;
     ExpectTrue(dt_a.has_value() && dt_a.value() == rt::DType::kI32, "dtype_param_a_i32", ctx);
-    ExpectTrue(dt_b.has_value() && (dt_b.value() == rt::DType::kF32 || dt_b.value() == rt::DType::kF64),
-               "dtype_param_b_float", ctx);
-    ExpectTrue(dt_ret.has_value() && (dt_ret.value() == rt::DType::kF32 || dt_ret.value() == rt::DType::kF64),
+    ExpectTrue(
+        dt_b.has_value() && (dt_b.value() == rt::DType::kF32 || dt_b.value() == rt::DType::kF64),
+        "dtype_param_b_float", ctx);
+    ExpectTrue(dt_ret.has_value() &&
+                   (dt_ret.value() == rt::DType::kF32 || dt_ret.value() == rt::DType::kF64),
                "dtype_return_float", ctx);
   } catch (const util::Error&) {
     ExpectTrue(false, "dtype_resolution_failed", ctx);

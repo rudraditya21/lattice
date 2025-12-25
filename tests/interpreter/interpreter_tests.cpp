@@ -1,10 +1,9 @@
-#include "test_util.h"
-
 #include <fstream>
 #include <sstream>
 #include <string>
 
 #include "runtime/runner.h"
+#include "test_util.h"
 
 namespace test {
 

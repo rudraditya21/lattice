@@ -75,17 +75,24 @@ void RunRuntimeTests(TestContext* ctx) {
   ExpectNear(zero_loop.value.value().number, 0.0, "while_does_not_run_on_false", ctx);
 
   // Break/continue in while.
-  auto with_break = EvalStmt("{ k = 0; while (1) { k = k + 1; if (k - 2) { } else { break; } }; k }", &env);
+  auto with_break =
+      EvalStmt("{ k = 0; while (1) { k = k + 1; if (k - 2) { } else { break; } }; k }", &env);
   ExpectNear(with_break.value.value().number, 2.0, "while_break", ctx);
-  auto with_continue = EvalStmt("{ s = 0; t = 0; while (s - 3) { s = s + 1; if (s - 2) { } else { continue; } t = t + 1; }; t }", &env);
+  auto with_continue = EvalStmt(
+      "{ s = 0; t = 0; while (s - 3) { s = s + 1; if (s - 2) { } else { continue; } t = t + 1; }; "
+      "t }",
+      &env);
   ExpectNear(with_continue.value.value().number, 2.0, "while_continue", ctx);
 
   // For loops.
-  auto for_sum = EvalStmt("{ acc = 0; for (i = 0; i - 4; i = i + 1) { acc = acc + i; }; acc }", &env);
+  auto for_sum =
+      EvalStmt("{ acc = 0; for (i = 0; i - 4; i = i + 1) { acc = acc + i; }; acc }", &env);
   ExpectNear(for_sum.value.value().number, 6.0, "for_loop_sum", ctx);
   auto for_no_cond = EvalStmt("{ n = 0; for (; n - 2; ) { n = n + 1; }; n }", &env);
   ExpectNear(for_no_cond.value.value().number, 2.0, "for_loop_no_cond", ctx);
-  auto for_break = EvalStmt("{ x = 0; for (i = 0; i - 5; i = i + 1) { if (i - 3) { } else { break; } x = x + 1; }; x }", &env);
+  auto for_break = EvalStmt(
+      "{ x = 0; for (i = 0; i - 5; i = i + 1) { if (i - 3) { } else { break; } x = x + 1; }; x }",
+      &env);
   ExpectNear(for_break.value.value().number, 3.0, "for_break", ctx);
 
   // Equality/inequality and comparisons.
@@ -110,8 +117,7 @@ void RunRuntimeTests(TestContext* ctx) {
   ExpectNear(if_bool.value.value().number, 2.0, "if_with_false_literal", ctx);
 
   // Functions.
-  auto func_simple =
-      EvalStmt("{ func add(a, b) { return a + b; } add(2, 3); }", &env);
+  auto func_simple = EvalStmt("{ func add(a, b) { return a + b; } add(2, 3); }", &env);
   ExpectNear(func_simple.value.value().number, 5.0, "func_add", ctx);
 
   auto func_no_return = EvalStmt("{ func inc(x) { x = x + 1; } inc(4); }", &env);
@@ -152,8 +158,8 @@ void RunRuntimeTests(TestContext* ctx) {
   auto typed_val = EvalStmt("{ y: i32 = 5; y + 1; }", &env);
   auto tn = typed_val.value.value().type_name;
   ExpectTrue(tn == "i32" || tn == "i64", "typed_value_annotation", ctx);
-  auto typed_ret = EvalStmt("{ func addi(a: i32, b: i32) -> i32 { return a + b; } addi(1, 2); }",
-                            &env);
+  auto typed_ret =
+      EvalStmt("{ func addi(a: i32, b: i32) -> i32 { return a + b; } addi(1, 2); }", &env);
   auto tn2 = typed_ret.value.value().type_name;
   ExpectTrue(tn2 == "i32" || tn2 == "i64", "typed_return_annotation", ctx);
 }

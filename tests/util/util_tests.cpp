@@ -1,5 +1,4 @@
 #include "test_util.h"
-
 #include "util/string.h"
 
 namespace test {
