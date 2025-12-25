@@ -11,6 +11,7 @@ void RunUtilTests(TestContext* ctx);
 void RunReplTests(TestContext* ctx);
 void RunInterpreterTests(TestContext* ctx);
 void RunPrintTests(TestContext* ctx);
+void RunPromotionTests(TestContext* ctx);
 }  // namespace test
 
 int main() {
@@ -23,6 +24,7 @@ int main() {
   test::RunReplTests(&ctx);
   test::RunInterpreterTests(&ctx);
   test::RunPrintTests(&ctx);
+  test::RunPromotionTests(&ctx);
 
   std::cout << "[RESULT] passed=" << ctx.passed << " failed=" << ctx.failed << "\n";
   return ctx.failed == 0 ? 0 : 1;

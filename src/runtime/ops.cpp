@@ -13,7 +13,6 @@
 
 namespace lattice::runtime {
 
-namespace {
 bool IsComplex(DType t) {
   return t == DType::kC64 || t == DType::kC128;
 }
@@ -330,7 +329,6 @@ std::string DeriveTypeName(const Value& v) {
   }
   return "";
 }
-}  // namespace
 
 Evaluator::Evaluator(Environment* env) : env_(env) {}
 

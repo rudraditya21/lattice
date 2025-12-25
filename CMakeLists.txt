@@ -35,6 +35,7 @@ add_executable(lattice_tests
     tests/util/util_tests.cpp
     tests/repl/repl_tests.cpp
     tests/interpreter/interpreter_tests.cpp
+    tests/runtime/promotion_tests.cpp
 )
 target_include_directories(lattice_tests PRIVATE tests)
 target_link_libraries(lattice_tests PRIVATE lattice_lib)

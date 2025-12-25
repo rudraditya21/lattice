@@ -17,6 +17,10 @@ struct ExecResult {
   ControlSignal control = ControlSignal::kNone;
 };
 
+// Promotion/casting helpers (exposed for tests).
+DType PromoteType(DType a, DType b);
+Value CastTo(DType target, const Value& v);
+
 class Evaluator {
  public:
   /// Evaluates AST nodes against the provided environment (not owned).
