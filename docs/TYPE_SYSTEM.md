@@ -14,10 +14,11 @@
   - complex > float > int; signed/unsigned width-aware.
   - `decimal`↔`decimal` and `rational`↔`rational` only; cross with other numerics requires explicit cast.
   - bfloat16/f16 promote to f32+ when mixing with ≥ f32 to avoid loss.
+- IEEE semantics: NaN/inf propagate per host platform; deterministic printing is preserved.
 
 ## Aggregates
 - Scalars above plus tensors with shape/dtype metadata.
-- Row-major default; basic elementwise ops with scalar broadcast; sum/mean builtins; dtype promotion applied to elementwise operations.
+- Row-major default; elementwise ops support full NumPy-style broadcasting (trailing dimensions align, `1` expands, otherwise error). Sum/mean builtins; dtype promotion applied to elementwise operations.
 - Future: sparse/ragged variants gated behind flags.
 
 ## Type Hints and Inference

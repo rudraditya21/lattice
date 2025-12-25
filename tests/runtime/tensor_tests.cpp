@@ -48,7 +48,15 @@ void RunTensorTests(TestContext* ctx) {
   ExpectTrue(tvals_mix.tensor.elem_type == rt::DType::kF32 || tvals_mix.tensor.elem_type == rt::DType::kF64,
              "tensor_values_promotion", ctx);
 
-  // Error on shape mismatch for elementwise tensor-tensor op.
+  // Broadcast across higher ranks.
+  auto tb = EvalExpr("tensor(2, 1, 1) + tensor(1, 3, 2)", &env);  // (2,1) + (1,3)
+  ExpectTrue(tb.tensor.shape.size() == 2 && tb.tensor.shape[0] == 2 && tb.tensor.shape[1] == 3,
+             "tensor_broadcast_shape", ctx);
+  double* tb_data = tb.tensor.Data();
+  ExpectNear(tb_data[0], 3.0, "tensor_broadcast_value_0", ctx);
+  ExpectNear(tb_data[tb.tensor.size - 1], 3.0, "tensor_broadcast_value_last", ctx);
+
+  // Error on incompatible shapes for elementwise tensor-tensor op.
   bool shape_error = false;
   try {
     EvalExpr("tensor(2,2,1) + tensor(3,1)", &env);
@@ -56,6 +64,14 @@ void RunTensorTests(TestContext* ctx) {
     shape_error = true;
   }
   ExpectTrue(shape_error, "tensor_shape_mismatch_error", ctx);
+
+  bool broadcast_error = false;
+  try {
+    EvalExpr("tensor(2, 3, 1) + tensor(4, 1)", &env);
+  } catch (const util::Error&) {
+    broadcast_error = true;
+  }
+  ExpectTrue(broadcast_error, "tensor_broadcast_incompatible_error", ctx);
 }
 
 }  // namespace test

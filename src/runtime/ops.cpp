@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <iostream>
 #include <numeric>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_set>
@@ -46,6 +47,47 @@ std::string ShapeToString(const std::vector<int64_t>& shape) {
   }
   oss << "]";
   return oss.str();
+}
+
+std::optional<std::vector<int64_t>> BroadcastShape(const std::vector<int64_t>& a,
+                                                   const std::vector<int64_t>& b) {
+  const size_t out_rank = std::max(a.size(), b.size());
+  std::vector<int64_t> result(out_rank, 1);
+  for (size_t i = 0; i < out_rank; ++i) {
+    const bool a_has_dim = a.size() > i;
+    const bool b_has_dim = b.size() > i;
+    const int64_t a_dim = a_has_dim ? a[a.size() - 1 - i] : 1;
+    const int64_t b_dim = b_has_dim ? b[b.size() - 1 - i] : 1;
+    if (a_dim == b_dim || a_dim == 1 || b_dim == 1) {
+      result[out_rank - 1 - i] = std::max(a_dim, b_dim);
+    } else {
+      return std::nullopt;
+    }
+  }
+  return result;
+}
+
+std::vector<int64_t> BroadcastStrides(const std::vector<int64_t>& shape,
+                                      const std::vector<int64_t>& strides, size_t out_rank) {
+  std::vector<int64_t> out(out_rank, 0);
+  const size_t offset = out_rank - shape.size();
+  for (size_t i = 0; i < shape.size(); ++i) {
+    out[offset + i] = (shape[i] == 1) ? 0 : strides[i];
+  }
+  return out;
+}
+
+int64_t OffsetFromFlatIndex(int64_t flat, const std::vector<int64_t>& out_strides,
+                            const std::vector<int64_t>& broadcast_strides) {
+  int64_t offset = 0;
+  int64_t idx = flat;
+  for (size_t dim = 0; dim < out_strides.size(); ++dim) {
+    const int64_t stride = out_strides[dim];
+    const int64_t coord = stride == 0 ? 0 : idx / stride;
+    idx -= coord * stride;
+    offset += coord * broadcast_strides[dim];
+  }
+  return offset;
 }
 std::string DTypeToString(DType t) {
   switch (t) {
@@ -649,65 +691,67 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
     }
   }
   if (lhs.type == DType::kTensor || rhs.type == DType::kTensor) {
-    // Allow tensor with scalar broadcast.
-    Value tensor = lhs.type == DType::kTensor ? lhs : rhs;
-    Value scalar = lhs.type == DType::kTensor ? rhs : lhs;
-    if (lhs.type == DType::kTensor && rhs.type == DType::kTensor) {
-      if (lhs.tensor.shape != rhs.tensor.shape) {
-        throw util::Error("Tensor shapes must match for elementwise ops (lhs " +
-                              ShapeToString(lhs.tensor.shape) + ", rhs " +
-                              ShapeToString(rhs.tensor.shape) + ")",
-                          0, 0);
-      }
-      DType elem_target = PromoteType(lhs.tensor.elem_type, rhs.tensor.elem_type);
-      Value out = Value::Tensor(lhs.tensor.shape, elem_target, 0.0);
-      for (int64_t i = 0; i < lhs.tensor.size; ++i) {
-        double lv = lhs.tensor.Data()[i];
-        double rv = rhs.tensor.Data()[i];
-        switch (expr.op) {
-          case parser::BinaryOp::kAdd:
-            out.tensor.Data()[i] = lv + rv;
-            break;
-          case parser::BinaryOp::kSub:
-            out.tensor.Data()[i] = lv - rv;
-            break;
-          case parser::BinaryOp::kMul:
-            out.tensor.Data()[i] = lv * rv;
-            break;
-          case parser::BinaryOp::kDiv:
-            out.tensor.Data()[i] = lv / rv;
-            break;
-          default:
-            throw util::Error("Tensor comparison not supported", 0, 0);
-        }
-      }
-      return out;
-    } else {
-      // Broadcast scalar to tensor shape.
-      Value out = Value::Tensor(tensor.tensor.shape,
-                                PromoteType(tensor.tensor.elem_type, scalar.type), 0.0);
-      for (int64_t i = 0; i < tensor.tensor.size; ++i) {
-        double lv = tensor.tensor.Data()[i];
-        double rv = scalar.f64;
-        switch (expr.op) {
-          case parser::BinaryOp::kAdd:
-            out.tensor.Data()[i] = lv + rv;
-            break;
-          case parser::BinaryOp::kSub:
-            out.tensor.Data()[i] = (lhs.type == DType::kTensor) ? lv - rv : rv - lv;
-            break;
-          case parser::BinaryOp::kMul:
-            out.tensor.Data()[i] = lv * rv;
-            break;
-          case parser::BinaryOp::kDiv:
-            out.tensor.Data()[i] = (lhs.type == DType::kTensor) ? lv / rv : rv / lv;
-            break;
-          default:
-            throw util::Error("Tensor comparison not supported", 0, 0);
-        }
-      }
-      return out;
+    const std::vector<int64_t> lhs_shape =
+        lhs.type == DType::kTensor ? lhs.tensor.shape : std::vector<int64_t>{};
+    const std::vector<int64_t> rhs_shape =
+        rhs.type == DType::kTensor ? rhs.tensor.shape : std::vector<int64_t>{};
+    auto broadcast_shape = BroadcastShape(lhs_shape, rhs_shape);
+    if (!broadcast_shape.has_value()) {
+      throw util::Error("Tensor shapes are not broadcastable (lhs " + ShapeToString(lhs_shape) +
+                            ", rhs " + ShapeToString(rhs_shape) + ")",
+                        0, 0);
     }
+    const std::vector<int64_t>& out_shape = *broadcast_shape;
+    DType elem_target;
+    if (lhs.type == DType::kTensor && rhs.type == DType::kTensor) {
+      elem_target = PromoteType(lhs.tensor.elem_type, rhs.tensor.elem_type);
+    } else if (lhs.type == DType::kTensor) {
+      elem_target = PromoteType(lhs.tensor.elem_type, rhs.type);
+    } else {
+      elem_target = PromoteType(rhs.tensor.elem_type, lhs.type);
+    }
+    Value out = Value::Tensor(out_shape, elem_target, 0.0);
+    std::vector<int64_t> lhs_bstrides =
+        lhs.type == DType::kTensor
+            ? BroadcastStrides(lhs.tensor.shape, lhs.tensor.strides, out_shape.size())
+            : std::vector<int64_t>(out_shape.size(), 0);
+    std::vector<int64_t> rhs_bstrides =
+        rhs.type == DType::kTensor
+            ? BroadcastStrides(rhs.tensor.shape, rhs.tensor.strides, out_shape.size())
+            : std::vector<int64_t>(out_shape.size(), 0);
+
+    auto lhs_data = [&](int64_t idx) -> double {
+      if (lhs.type != DType::kTensor) return lhs.f64;
+      const int64_t offset = OffsetFromFlatIndex(idx, out.tensor.strides, lhs_bstrides);
+      return lhs.tensor.Data()[offset];
+    };
+    auto rhs_data = [&](int64_t idx) -> double {
+      if (rhs.type != DType::kTensor) return rhs.f64;
+      const int64_t offset = OffsetFromFlatIndex(idx, out.tensor.strides, rhs_bstrides);
+      return rhs.tensor.Data()[offset];
+    };
+
+    for (int64_t i = 0; i < out.tensor.size; ++i) {
+      double lv = lhs_data(i);
+      double rv = rhs_data(i);
+      switch (expr.op) {
+        case parser::BinaryOp::kAdd:
+          out.tensor.Data()[i] = lv + rv;
+          break;
+        case parser::BinaryOp::kSub:
+          out.tensor.Data()[i] = lv - rv;
+          break;
+        case parser::BinaryOp::kMul:
+          out.tensor.Data()[i] = lv * rv;
+          break;
+        case parser::BinaryOp::kDiv:
+          out.tensor.Data()[i] = lv / rv;
+          break;
+        default:
+          throw util::Error("Tensor comparison not supported", 0, 0);
+      }
+    }
+    return out;
   }
   auto is_int = [](DType t) {
     return t == DType::kI8 || t == DType::kI16 || t == DType::kI32 || t == DType::kI64 ||
