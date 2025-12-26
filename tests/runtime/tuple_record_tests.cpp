@@ -42,6 +42,12 @@ void RunTupleRecordTests(TestContext* ctx) {
   ExpectTrue(tup_eq.boolean, "tuple_equality_true", ctx);
   auto rec_eq = EvalExpr("{a: 1} == {a: 2}", &env);
   ExpectTrue(!rec_eq.boolean, "record_equality_false", ctx);
+  auto tup_ne_len = EvalExpr("(1, 2) == (1, 2, 3)", &env);
+  ExpectTrue(!tup_ne_len.boolean, "tuple_equality_length_mismatch", ctx);
+  auto rec_ne_fields = EvalExpr("{a: 1} == {a: 1, b: 2}", &env);
+  ExpectTrue(!rec_ne_fields.boolean, "record_equality_field_mismatch", ctx);
+  auto str_eq = EvalExpr("\"hi\" == \"hi\"", &env);
+  ExpectTrue(str_eq.boolean, "string_equality_true", ctx);
 
   // Builtins.
   auto l1 = EvalExpr("len((1,2,3))", &env);
@@ -52,6 +58,19 @@ void RunTupleRecordTests(TestContext* ctx) {
   ExpectTrue(v1.type == rt::DType::kTuple, "values_tuple_type", ctx);
   auto hk = EvalExpr("has_key({x:1}, \"x\")", &env);
   ExpectTrue(hk.boolean, "has_key_true", ctx);
+  auto hk_false = EvalExpr("has_key({x:1}, \"z\")", &env);
+  ExpectTrue(!hk_false.boolean, "has_key_false", ctx);
+  auto rec_str_val = EvalExpr("{\"name\": \"alice\"}[\"name\"]", &env);
+  ExpectTrue(rec_str_val.type == rt::DType::kString, "record_access_string_type", ctx);
+
+  // len errors.
+  bool len_err = false;
+  try {
+    EvalExpr("len(1)", &env);
+  } catch (const util::Error&) {
+    len_err = true;
+  }
+  ExpectTrue(len_err, "len_error_non_aggregate", ctx);
 }
 
 }  // namespace test

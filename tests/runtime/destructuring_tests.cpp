@@ -20,6 +20,13 @@ void RunDestructuringTests(TestContext* ctx) {
     tuple_err = true;
   }
   ExpectTrue(tuple_err, "destructure_tuple_wrong_rhs", ctx);
+  bool tuple_arity_err = false;
+  try {
+    EvalStmt("(m, n, o) = (1, 2)", &env);
+  } catch (const util::Error&) {
+    tuple_arity_err = true;
+  }
+  ExpectTrue(tuple_arity_err, "destructure_tuple_arity_mismatch", ctx);
 
   // Record destructuring.
   EvalStmt("{x, y} = {x: 3, y: 4}", &env);
@@ -35,6 +42,14 @@ void RunDestructuringTests(TestContext* ctx) {
     record_err = true;
   }
   ExpectTrue(record_err, "destructure_record_missing", ctx);
+
+  bool record_type_err = false;
+  try {
+    EvalStmt("{a} = (1,)", &env);
+  } catch (const util::Error&) {
+    record_type_err = true;
+  }
+  ExpectTrue(record_type_err, "destructure_record_wrong_type", ctx);
 }
 
 }  // namespace test

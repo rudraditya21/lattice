@@ -116,6 +116,31 @@ void RunTypeCheckerTests(TestContext* ctx) {
     tensor_mismatch = true;
   }
   ExpectTrue(tensor_mismatch, "typecheck_tensor_mismatch", ctx);
+
+  // Tuple/record inference and access.
+  bool tuple_access_ok = true;
+  try {
+    TypeCheckStmt("{ t = (1, 2.0); t[0]; t[1]; }");
+  } catch (const util::Error&) {
+    tuple_access_ok = false;
+  }
+  ExpectTrue(tuple_access_ok, "typecheck_tuple_access_ok", ctx);
+
+  bool record_access_ok = true;
+  try {
+    TypeCheckStmt("{ r = {\"x\": 1, \"y\": 2.0}; r[\"x\"]; r[\"y\"]; }");
+  } catch (const util::Error&) {
+    record_access_ok = false;
+  }
+  ExpectTrue(record_access_ok, "typecheck_record_access_ok", ctx);
+
+  bool record_access_err = false;
+  try {
+    TypeCheckStmt("{ r = {\"x\": 1}; r[\"missing\"]; }");
+  } catch (const util::Error&) {
+    record_access_err = true;
+  }
+  ExpectTrue(record_access_err, "typecheck_record_access_error", ctx);
 }
 
 }  // namespace test
