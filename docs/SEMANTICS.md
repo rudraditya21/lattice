@@ -37,6 +37,17 @@
   - Records: immutable, ordered fields `{x: a, y: b}`; keys are identifiers or strings. Access via `r["x"]`; missing keys are errors. Equality is structural (field names/order and values).
   - Strings: immutable; only `==/!=` supported.
 
+## Tensors and Broadcasting
+- Dense, row-major storage with explicit shape metadata; dimensions must be positive.
+- Elementwise ops (`+ - * /`) follow NumPy-style broadcasting: align trailing dimensions; a
+  dimension may be `1` or equal to the other operand; scalar `()` broadcasts to any shape. Any other
+  mismatch raises a runtime error with the expression location.
+- Reductions (`sum`, `mean`) reduce all elements; dtype promotion follows scalar promotion rules.
+- Tensor literals use `tensor(...)` and `tensor_values(...)`; creation errors (empty shape, bad
+  dims) report source locations.
+- Comparisons on tensors are not supported; elementwise results are scalars/tensors depending on
+  operands.
+
 ## Error Model
 - Errors are fatal for the current execution: evaluation stops and reports `Error at line:col - message`.
 - Type errors: mismatched annotations, illegal promotions, or invalid operations on types.
