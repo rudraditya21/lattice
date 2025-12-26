@@ -8,7 +8,6 @@ Checks: >
   bugprone-move-forwarding-reference,
   bugprone-parent-virtual-call,
   bugprone-unchecked-optional-access,
-  bugprone-easily-swappable-parameters,
   bugprone-narrowing-conversions,
   bugprone-sizeof-expression,
   bugprone-sizeof-container,

@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_set>
+#include <utility>
 
 #include "runtime/decimal.h"
 #include "util/error.h"
@@ -35,6 +36,76 @@ bool IsDenseTensor(const Value& v) {
 
 DType PromoteTensorElem(DType a, DType b, int line, int column) {
   return PromoteType(a, b, line, column);
+}
+
+// Philox2x32-10 and Threefry2x32 implementations for deterministic RNG.
+uint64_t MulHi32(uint32_t a, uint32_t b) {
+  uint64_t res = static_cast<uint64_t>(a) * static_cast<uint64_t>(b);
+  return res >> 32;
+}
+
+uint64_t Philox2x32(uint64_t counter, uint64_t key) {
+  uint32_t c0 = static_cast<uint32_t>(counter);
+  uint32_t c1 = static_cast<uint32_t>(counter >> 32);
+  uint32_t k0 = static_cast<uint32_t>(key);
+  uint32_t k1 = static_cast<uint32_t>(key >> 32);
+  constexpr uint32_t kPhiloxW = 0x9E3779B9;
+  constexpr uint32_t kPhiloxM0 = 0xD256D193;
+  for (int round = 0; round < 10; ++round) {
+    uint64_t hi = MulHi32(c0, kPhiloxM0);
+    uint64_t lo = static_cast<uint64_t>(c0) * kPhiloxM0;
+    uint32_t new_c0 = static_cast<uint32_t>(hi) ^ k0 ^ c1;
+    uint32_t new_c1 = static_cast<uint32_t>(lo);
+    c0 = new_c0;
+    c1 = new_c1;
+    k0 += kPhiloxW;
+    k1 += kPhiloxW;
+  }
+  return (static_cast<uint64_t>(c1) << 32) | c0;
+}
+
+uint64_t Threefry2x32(uint64_t counter, uint64_t key) {
+  uint32_t x0 = static_cast<uint32_t>(counter);
+  uint32_t x1 = static_cast<uint32_t>(counter >> 32);
+  uint32_t k0 = static_cast<uint32_t>(key);
+  uint32_t k1 = static_cast<uint32_t>(key >> 32);
+  constexpr uint32_t kConst = 0x1BD11BDA;
+  uint32_t k2 = kConst ^ k0 ^ k1;
+  auto rotl = [](uint32_t v, uint32_t r) { return (v << r) | (v >> (32 - r)); };
+  auto inject_key = [&](int s) {
+    switch (s % 3) {
+      case 0:
+        x0 += k0;
+        x1 += k1;
+        break;
+      case 1:
+        x0 += k1;
+        x1 += k2;
+        break;
+      case 2:
+        x0 += k2;
+        x1 += k0;
+        break;
+    }
+    x1 += static_cast<uint32_t>(s);
+  };
+  inject_key(0);
+  const uint32_t R[8] = {13, 15, 26, 6, 17, 29, 16, 24};
+  for (int round = 0; round < 8; ++round) {
+    x0 += x1;
+    x1 = rotl(x1, R[round]);
+    x1 ^= x0;
+    if ((round & 1) == 1) {
+      inject_key((round + 1) / 2);
+    }
+  }
+  return (static_cast<uint64_t>(x1) << 32) | x0;
+}
+
+double Uint64ToUnitDouble(uint64_t v) {
+  // Use upper 53 bits for a double in [0,1).
+  constexpr double kInv = 1.0 / static_cast<double>(uint64_t{1} << 53);
+  return (static_cast<double>(v >> 11)) * kInv;
 }
 
 Value ToDenseTensor(const Value& v, int line, int column) {
@@ -189,11 +260,8 @@ std::vector<int64_t> BroadcastStrides(const std::vector<int64_t>& shape,
   return out;
 }
 
-int64_t OffsetFromFlatIndex(
-    int64_t flat,
-    const std::vector<int64_t>& out_strides,  // NOLINT(bugprone-easily-swappable-parameters)
-    const std::vector<int64_t>&
-        broadcast_strides) {  // NOLINT(bugprone-easily-swappable-parameters)
+int64_t OffsetFromFlatIndex(int64_t flat, const std::vector<int64_t>& out_strides,
+                            const std::vector<int64_t>& broadcast_strides) {
   int64_t offset = 0;
   int64_t idx = flat;
   for (size_t dim = 0; dim < out_strides.size(); ++dim) {
@@ -2429,6 +2497,24 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     Value s_t = make_dense_tensor(S, {2, 2}, A.tensor.elem_type);
     Value v_t = make_dense_tensor(v_flat, {2, 2}, A.tensor.elem_type);
     return Value::Tuple({u_t, s_t, v_t});
+  }
+  if (name == "philox") {
+    expect_args(3, name);
+    uint64_t seed = static_cast<uint64_t>(CastTo(DType::kU64, args[0], call_line, call_col).u64);
+    uint64_t stream = static_cast<uint64_t>(CastTo(DType::kU64, args[1], call_line, call_col).u64);
+    uint64_t ctr = static_cast<uint64_t>(CastTo(DType::kU64, args[2], call_line, call_col).u64);
+    uint64_t key = seed ^ (stream + 0x9E3779B97F4A7C15ULL);
+    double out = Uint64ToUnitDouble(Philox2x32(ctr, key));
+    return Value::F64(out);
+  }
+  if (name == "threefry") {
+    expect_args(3, name);
+    uint64_t seed = static_cast<uint64_t>(CastTo(DType::kU64, args[0], call_line, call_col).u64);
+    uint64_t stream = static_cast<uint64_t>(CastTo(DType::kU64, args[1], call_line, call_col).u64);
+    uint64_t ctr = static_cast<uint64_t>(CastTo(DType::kU64, args[2], call_line, call_col).u64);
+    uint64_t key = seed ^ (stream + 0x9E3779B97F4A7C15ULL);
+    double out = Uint64ToUnitDouble(Threefry2x32(ctr, key));
+    return Value::F64(out);
   }
   if (name == "keys") {
     expect_args(1, name);

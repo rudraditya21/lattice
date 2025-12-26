@@ -217,6 +217,10 @@ TypeChecker::TypeChecker() {
   functions_["max_pool2d"] = FunSig{{Type{DType::kTensor}, Type{DType::kI64}, Type{DType::kI64}},
                                     tensor_type(TensorKind::kDense)};
   functions_["fft1d"] = FunSig{{Type{DType::kTensor}}, Type{DType::kTuple}};
+  functions_["philox"] =
+      FunSig{{Type{DType::kU64}, Type{DType::kU64}, Type{DType::kU64}}, Type{DType::kF64}};
+  functions_["threefry"] =
+      FunSig{{Type{DType::kU64}, Type{DType::kU64}, Type{DType::kU64}}, Type{DType::kF64}};
   functions_["len"] = FunSig{{std::nullopt}, Type{DType::kI64}};
   functions_["keys"] = FunSig{{Type{DType::kRecord}}, Type{DType::kTuple}};
   functions_["values"] = FunSig{{Type{DType::kRecord}}, Type{DType::kTuple}};
