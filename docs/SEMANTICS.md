@@ -42,9 +42,20 @@
 - Elementwise ops (`+ - * /`) follow NumPy-style broadcasting: align trailing dimensions; a
   dimension may be `1` or equal to the other operand; scalar `()` broadcasts to any shape. Any other
   mismatch raises a runtime error with the expression location.
-- Reductions (`sum`, `mean`) reduce all elements; dtype promotion follows scalar promotion rules.
-- Tensor literals use `tensor(...)` and `tensor_values(...)`; creation errors (empty shape, bad
-  dims) report source locations.
+- Reductions (`sum`, `mean`, `var`, `std`) reduce all elements; dtype promotion follows scalar
+  promotion rules; results are cast back to the element dtype. Sparse reductions treat missing
+  entries as zero; ragged reductions operate over the flattened values buffer.
+- Tensor literals use `tensor(...)` and `tensor_values(...)`; use nested tuples for multi-dimensional
+  data (e.g., `tensor_values(((1,2),(3,4)))`). Square-bracket list literals are not supported. Creation
+  errors (empty shape, bad dims) report source locations.
+- Sparse and ragged: `tensor_sparse_csr`, `tensor_sparse_coo`, `tensor_ragged`, and conversions
+  `to_dense`, `to_sparse_csr`, `to_sparse_coo`. Ragged elementwise ops require matching
+  `row_splits`; sparse formats must match for sparse⊕sparse; dense⊕sparse densifies sparse.
+- Linear algebra: `matmul` and `transpose` support 2D dense tensors (sparse inputs are densified).
+  Other LA ops (solve/QR/LU/SVD) are not implemented yet.
+- Convolution/pooling: `conv2d` (valid padding, dense only) and `max_pool2d` (integer kernels, no
+  stride/dilation yet) operate on 2D tensors.
+- FFT: `fft1d` (dense-only) returns `(real_tensor, imag_tensor)`; implementation is naive O(n^2).
 - Comparisons on tensors are not supported; elementwise results are scalars/tensors depending on
   operands.
 

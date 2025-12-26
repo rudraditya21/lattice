@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <sstream>
@@ -30,6 +31,10 @@ bool IsUnsignedInt(DType t) {
 
 bool IsDenseTensor(const Value& v) {
   return v.type == DType::kTensor && v.tensor.kind == TensorKind::kDense;
+}
+
+DType PromoteTensorElem(DType a, DType b, int line, int column) {
+  return PromoteType(a, b, line, column);
 }
 
 Value ToDenseTensor(const Value& v, int line, int column) {
@@ -1541,15 +1546,63 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
         throw util::Error("tensor_values does not accept tensor arguments", call_line, call_col);
       }
     }
-    DType elem_type = args[0].type;
-    for (size_t i = 1; i < args.size(); ++i) {
-      elem_type = PromoteType(elem_type, args[i].type, call_line, call_col);
+    // Support nested tuple/list literals to build multi-dimensional tensors.
+    struct FlattenState {
+      std::vector<int64_t> shape;
+      std::vector<Value> leaves;
+      DType elem_type;
+      bool has_elem = false;
+    } st;
+    std::function<void(const Value&, size_t)> flatten = [&](const Value& v, size_t depth) {
+      if (v.type == DType::kTuple) {
+        int64_t len = static_cast<int64_t>(v.tuple.elements.size());
+        if (depth == st.shape.size()) {
+          st.shape.push_back(len);
+        } else if (st.shape[depth] != len) {
+          throw util::Error("tensor_values nested lists must have consistent lengths", call_line,
+                            call_col);
+        }
+        for (const auto& e : v.tuple.elements) {
+          flatten(e, depth + 1);
+        }
+        return;
+      }
+      st.leaves.push_back(v);
+      if (!st.has_elem) {
+        st.elem_type = v.type;
+        st.has_elem = true;
+      } else {
+        st.elem_type = PromoteType(st.elem_type, v.type, call_line, call_col);
+      }
+    };
+
+    if (args.size() == 1 && args[0].type == DType::kTuple) {
+      flatten(args[0], 0);
+    } else {
+      // Original flat 1-D behavior.
+      st.shape.push_back(static_cast<int64_t>(args.size()));
+      for (const auto& v : args) flatten(v, 1);  // depth offset to keep shape size=1
     }
-    Value out = Value::Tensor({static_cast<int64_t>(args.size())}, elem_type, 0.0);
-    for (size_t i = 0; i < args.size(); ++i) {
-      out.tensor.Data()[i] = CastTo(elem_type, args[i], call_line, call_col).f64;
+
+    if (!st.has_elem || st.leaves.empty()) {
+      throw util::Error("tensor_values needs at least one scalar", call_line, call_col);
     }
-    out.tensor.elem_type = elem_type;
+    int64_t total = 1;
+    for (int64_t d : st.shape) {
+      if (d <= 0) {
+        throw util::Error("tensor dimensions must be positive", call_line, call_col);
+      }
+      total *= d;
+    }
+    if (static_cast<int64_t>(st.leaves.size()) != total) {
+      throw util::Error("tensor_values data does not match inferred shape", call_line, call_col);
+    }
+    Value out = Value::Tensor(st.shape, st.elem_type, 0.0);
+    for (size_t i = 0; i < st.leaves.size(); ++i) {
+      out.tensor.Data()[static_cast<int64_t>(i)] =
+          CastTo(st.elem_type, st.leaves[i], call_line, call_col).f64;
+    }
+    out.tensor.elem_type = st.elem_type;
     return out;
   }
   if (name == "tensor_sparse_csr") {
@@ -1916,6 +1969,65 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     }
     throw util::Error("Unsupported tensor kind for mean", call_line, call_col);
   }
+  if (name == "var" || name == "std") {
+    expect_args(1, name);
+    const Value& v = args[0];
+    if (v.type != DType::kTensor) {
+      return Value::F64(0.0);
+    }
+    auto finish_as_elem = [&](double x) {
+      return CastTo(v.tensor.elem_type, Value::F64(x), call_line, call_col);
+    };
+    auto compute = [&](auto accessor, double count) -> Value {
+      double total = 0.0;
+      for (double val : accessor()) total += val;
+      double mean = total / count;
+      double sum_sq = 0.0;
+      for (double val : accessor()) {
+        double diff = val - mean;
+        sum_sq += diff * diff;
+      }
+      double variance = sum_sq / count;
+      if (name == "var") return finish_as_elem(variance);
+      return finish_as_elem(std::sqrt(variance));
+    };
+    if (v.tensor.kind == TensorKind::kDense) {
+      return compute(
+          [&]() { return std::vector<double>(v.tensor.Data(), v.tensor.Data() + v.tensor.size); },
+          static_cast<double>(v.tensor.size));
+    }
+    if (v.tensor.kind == TensorKind::kSparseCSR || v.tensor.kind == TensorKind::kSparseCOO) {
+      // Treat missing entries as zero.
+      std::vector<double> dense_vals(static_cast<size_t>(v.tensor.shape[0] * v.tensor.shape[1]),
+                                     0.0);
+      if (v.tensor.kind == TensorKind::kSparseCSR) {
+        for (size_t row = 0; row + 1 < v.tensor.indptr.size(); ++row) {
+          int64_t start = v.tensor.indptr[row];
+          int64_t end = v.tensor.indptr[row + 1];
+          const int64_t row_i = static_cast<int64_t>(row);
+          for (int64_t idx = start; idx < end; ++idx) {
+            int64_t col = v.tensor.indices[idx];
+            dense_vals[static_cast<size_t>(row_i * v.tensor.shape[1] + col)] =
+                v.tensor.sparse_values[idx];
+          }
+        }
+      } else {
+        for (size_t i = 0; i < v.tensor.rows.size(); ++i) {
+          int64_t row = v.tensor.rows[i];
+          int64_t col = v.tensor.cols[i];
+          dense_vals[static_cast<size_t>(row * v.tensor.shape[1] + col)] =
+              v.tensor.sparse_values[i];
+        }
+      }
+      double count = static_cast<double>(v.tensor.shape[0] * v.tensor.shape[1]);
+      return compute([&]() { return dense_vals; }, count);
+    }
+    if (v.tensor.kind == TensorKind::kRagged) {
+      double count = static_cast<double>(v.tensor.row_splits.back());
+      return compute([&]() { return v.tensor.ragged_values; }, count);
+    }
+    throw util::Error("Unsupported tensor kind for variance/std", call_line, call_col);
+  }
   if (name == "len") {
     expect_args(1, name);
     const Value& v = args[0];
@@ -1929,6 +2041,153 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
       return Value::I64(static_cast<int64_t>(v.record.fields.size()));
     }
     throw util::Error("len expects tuple, record, or tensor", call_line, call_col);
+  }
+  if (name == "transpose") {
+    expect_args(1, name);
+    const Value& v = args[0];
+    if (v.type != DType::kTensor) {
+      throw util::Error("transpose expects a tensor", call_line, call_col);
+    }
+    Value dense = ToDenseTensor(v, call_line, call_col);
+    if (dense.tensor.shape.size() != 2) {
+      throw util::Error("transpose supports only 2D tensors", call_line, call_col);
+    }
+    int64_t rows = dense.tensor.shape[0];
+    int64_t cols = dense.tensor.shape[1];
+    Value out = Value::Tensor(std::vector<int64_t>{cols, rows}, dense.tensor.elem_type, 0.0);
+    for (int64_t r = 0; r < rows; ++r) {
+      for (int64_t c = 0; c < cols; ++c) {
+        out.tensor.Data()[c * rows + r] = dense.tensor.Data()[r * cols + c];
+      }
+    }
+    return out;
+  }
+  if (name == "matmul") {
+    expect_args(2, name);
+    Value lhs = args[0];
+    Value rhs = args[1];
+    if (lhs.type != DType::kTensor || rhs.type != DType::kTensor) {
+      throw util::Error("matmul expects tensor arguments", call_line, call_col);
+    }
+    lhs = ToDenseTensor(lhs, call_line, call_col);
+    rhs = ToDenseTensor(rhs, call_line, call_col);
+    if (lhs.tensor.shape.size() != 2 || rhs.tensor.shape.size() != 2) {
+      throw util::Error("matmul supports only 2D tensors", call_line, call_col);
+    }
+    int64_t m = lhs.tensor.shape[0];
+    int64_t k = lhs.tensor.shape[1];
+    int64_t k2 = rhs.tensor.shape[0];
+    int64_t n = rhs.tensor.shape[1];
+    if (k != k2) {
+      throw util::Error("matmul shape mismatch", call_line, call_col);
+    }
+    DType elem = PromoteTensorElem(lhs.tensor.elem_type, rhs.tensor.elem_type, call_line, call_col);
+    Value out = Value::Tensor(std::vector<int64_t>{m, n}, elem, 0.0);
+    for (int64_t i = 0; i < m; ++i) {
+      for (int64_t j = 0; j < n; ++j) {
+        double acc = 0.0;
+        for (int64_t kk = 0; kk < k; ++kk) {
+          acc += lhs.tensor.Data()[i * k + kk] * rhs.tensor.Data()[kk * n + j];
+        }
+        out.tensor.Data()[i * n + j] = acc;
+      }
+    }
+    return out;
+  }
+  if (name == "conv2d") {
+    expect_args(2, name);
+    Value input = ToDenseTensor(args[0], call_line, call_col);
+    Value kernel = ToDenseTensor(args[1], call_line, call_col);
+    if (input.type != DType::kTensor || kernel.type != DType::kTensor) {
+      throw util::Error("conv2d expects tensor arguments", call_line, call_col);
+    }
+    if (input.tensor.shape.size() != 2 || kernel.tensor.shape.size() != 2) {
+      throw util::Error("conv2d supports 2D tensors only", call_line, call_col);
+    }
+    int64_t h = input.tensor.shape[0];
+    int64_t w = input.tensor.shape[1];
+    int64_t kh = kernel.tensor.shape[0];
+    int64_t kw = kernel.tensor.shape[1];
+    if (kh > h || kw > w) {
+      throw util::Error("conv2d kernel larger than input", call_line, call_col);
+    }
+    int64_t oh = h - kh + 1;
+    int64_t ow = w - kw + 1;
+    DType elem =
+        PromoteTensorElem(input.tensor.elem_type, kernel.tensor.elem_type, call_line, call_col);
+    Value out = Value::Tensor({oh, ow}, elem, 0.0);
+    for (int64_t i = 0; i < oh; ++i) {
+      for (int64_t j = 0; j < ow; ++j) {
+        double acc = 0.0;
+        for (int64_t ki = 0; ki < kh; ++ki) {
+          for (int64_t kj = 0; kj < kw; ++kj) {
+            acc +=
+                input.tensor.Data()[(i + ki) * w + (j + kj)] * kernel.tensor.Data()[ki * kw + kj];
+          }
+        }
+        out.tensor.Data()[i * ow + j] = acc;
+      }
+    }
+    return out;
+  }
+  if (name == "max_pool2d") {
+    expect_args(3, name);
+    Value input = ToDenseTensor(args[0], call_line, call_col);
+    if (input.type != DType::kTensor || input.tensor.shape.size() != 2) {
+      throw util::Error("max_pool2d expects a 2D tensor", call_line, call_col);
+    }
+    int64_t kh = CastTo(DType::kI64, args[1], call_line, call_col).i64;
+    int64_t kw = CastTo(DType::kI64, args[2], call_line, call_col).i64;
+    if (kh <= 0 || kw <= 0) {
+      throw util::Error("max_pool2d kernel sizes must be positive", call_line, call_col);
+    }
+    int64_t h = input.tensor.shape[0];
+    int64_t w = input.tensor.shape[1];
+    int64_t oh = h / kh;
+    int64_t ow = w / kw;
+    Value out = Value::Tensor({oh, ow}, input.tensor.elem_type, 0.0);
+    for (int64_t i = 0; i < oh; ++i) {
+      for (int64_t j = 0; j < ow; ++j) {
+        double m = -std::numeric_limits<double>::infinity();
+        for (int64_t ki = 0; ki < kh; ++ki) {
+          for (int64_t kj = 0; kj < kw; ++kj) {
+            m = std::max(m, input.tensor.Data()[(i * kh + ki) * w + (j * kw + kj)]);
+          }
+        }
+        out.tensor.Data()[i * ow + j] = m;
+      }
+    }
+    return out;
+  }
+  if (name == "fft1d") {
+    expect_args(1, name);
+    Value input = ToDenseTensor(args[0], call_line, call_col);
+    if (input.type != DType::kTensor || input.tensor.shape.size() != 1) {
+      throw util::Error("fft1d expects a 1D tensor", call_line, call_col);
+    }
+    int64_t n = input.tensor.shape[0];
+    std::vector<double> real(static_cast<size_t>(n), 0.0);
+    std::vector<double> imag(static_cast<size_t>(n), 0.0);
+    const double two_pi = 2.0 * M_PI;
+    for (int64_t k = 0; k < n; ++k) {
+      double sum_r = 0.0;
+      double sum_i = 0.0;
+      for (int64_t t = 0; t < n; ++t) {
+        double angle = -two_pi * static_cast<double>(k * t) / static_cast<double>(n);
+        double val = input.tensor.Data()[t];
+        sum_r += val * std::cos(angle);
+        sum_i += val * std::sin(angle);
+      }
+      real[static_cast<size_t>(k)] = sum_r;
+      imag[static_cast<size_t>(k)] = sum_i;
+    }
+    Value real_t = Value::Tensor({n}, DType::kF64, 0.0);
+    Value imag_t = Value::Tensor({n}, DType::kF64, 0.0);
+    for (int64_t i = 0; i < n; ++i) {
+      real_t.tensor.Data()[i] = real[static_cast<size_t>(i)];
+      imag_t.tensor.Data()[i] = imag[static_cast<size_t>(i)];
+    }
+    return Value::Tuple({real_t, imag_t});
   }
   if (name == "keys") {
     expect_args(1, name);
@@ -2281,10 +2540,69 @@ std::string Value::ToString() const {
       }
       oss << "tensor[" << kind << "]" << ShapeToString(tensor.shape) << "<"
           << DTypeToString(tensor.elem_type) << ">";
+      auto render_dense = [&](const Value& dense) -> std::string {
+        std::ostringstream out;
+        std::function<void(size_t, int64_t)> rec = [&](size_t dim, int64_t offset) {
+          if (dim + 1 == dense.tensor.shape.size()) {
+            out << "[";
+            for (int64_t i = 0; i < dense.tensor.shape[dim]; ++i) {
+              if (i > 0) out << ", ";
+              out << dense.tensor.Data()[offset + i * dense.tensor.strides[dim]];
+            }
+            out << "]";
+            return;
+          }
+          out << "[";
+          for (int64_t i = 0; i < dense.tensor.shape[dim]; ++i) {
+            if (i > 0) out << ", ";
+            rec(dim + 1, offset + i * dense.tensor.strides[dim]);
+          }
+          out << "]";
+        };
+        if (!dense.tensor.shape.empty()) rec(0, 0);
+        return out.str();
+      };
+      constexpr int64_t kMaxElemsToPrint = 64;
+      if (tensor.kind == TensorKind::kDense && tensor.size <= kMaxElemsToPrint) {
+        oss << " " << render_dense(*this);
+        return oss.str();
+      }
       if (tensor.kind == TensorKind::kSparseCSR || tensor.kind == TensorKind::kSparseCOO) {
         oss << " nnz=" << tensor.sparse_values.size();
-      } else if (tensor.kind == TensorKind::kRagged) {
+        if (tensor.sparse_values.size() <= static_cast<size_t>(kMaxElemsToPrint)) {
+          oss << " values=[";
+          if (tensor.kind == TensorKind::kSparseCSR) {
+            for (size_t i = 0; i < tensor.sparse_values.size(); ++i) {
+              if (i > 0) oss << ", ";
+              oss << "(" << tensor.indices[i] << ":" << tensor.sparse_values[i] << ")";
+            }
+          } else {
+            for (size_t i = 0; i < tensor.sparse_values.size(); ++i) {
+              if (i > 0) oss << ", ";
+              oss << "(" << tensor.rows[i] << "," << tensor.cols[i] << ":"
+                  << tensor.sparse_values[i] << ")";
+            }
+          }
+          oss << "]";
+        }
+        return oss.str();
+      }
+      if (tensor.kind == TensorKind::kRagged) {
         oss << " rows=" << (tensor.row_splits.empty() ? 0 : tensor.row_splits.size() - 1);
+        if (tensor.ragged_values.size() <= static_cast<size_t>(kMaxElemsToPrint)) {
+          oss << " values=[";
+          for (size_t i = 0; i < tensor.ragged_values.size(); ++i) {
+            if (i > 0) oss << ", ";
+            oss << tensor.ragged_values[i];
+          }
+          oss << "] splits=[";
+          for (size_t i = 0; i < tensor.row_splits.size(); ++i) {
+            if (i > 0) oss << ", ";
+            oss << tensor.row_splits[i];
+          }
+          oss << "]";
+        }
+        return oss.str();
       }
       return oss.str();
     }

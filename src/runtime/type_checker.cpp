@@ -202,6 +202,16 @@ TypeChecker::TypeChecker() {
   functions_["to_sparse_coo"] = FunSig{{Type{DType::kTensor}}, tensor_type(TensorKind::kSparseCOO)};
   functions_["sum"] = FunSig{{Type{DType::kTensor}}, Type{DType::kF64}};
   functions_["mean"] = FunSig{{Type{DType::kTensor}}, Type{DType::kF64}};
+  functions_["var"] = FunSig{{Type{DType::kTensor}}, Type{DType::kF64}};
+  functions_["std"] = FunSig{{Type{DType::kTensor}}, Type{DType::kF64}};
+  functions_["transpose"] = FunSig{{Type{DType::kTensor}}, tensor_type(TensorKind::kDense)};
+  functions_["matmul"] =
+      FunSig{{Type{DType::kTensor}, Type{DType::kTensor}}, tensor_type(TensorKind::kDense)};
+  functions_["conv2d"] =
+      FunSig{{Type{DType::kTensor}, Type{DType::kTensor}}, tensor_type(TensorKind::kDense)};
+  functions_["max_pool2d"] = FunSig{{Type{DType::kTensor}, Type{DType::kI64}, Type{DType::kI64}},
+                                    tensor_type(TensorKind::kDense)};
+  functions_["fft1d"] = FunSig{{Type{DType::kTensor}}, Type{DType::kTuple}};
   functions_["len"] = FunSig{{std::nullopt}, Type{DType::kI64}};
   functions_["keys"] = FunSig{{Type{DType::kRecord}}, Type{DType::kTuple}};
   functions_["values"] = FunSig{{Type{DType::kRecord}}, Type{DType::kTuple}};

@@ -175,6 +175,32 @@ void RunTensorTests(TestContext* ctx) {
     tensor_div_zero = true;
   }
   ExpectTrue(tensor_div_zero, "tensor_division_by_zero_errors", ctx);
+
+  // Variance/stddev.
+  auto varv = EvalExpr("var(tensor(2,2,2))", &env);
+  ExpectNear(varv.f64, 0.0, "tensor_var_zero", ctx);
+  auto stdv = EvalExpr("std(tensor_values((1,3)))", &env);
+  ExpectTrue(stdv.f64 > 0.0, "tensor_std_positive", ctx);
+
+  // Matmul and transpose.
+  auto mm = EvalExpr("matmul(tensor_values(((1,2),(3,4))), tensor_values(((1,),(1,))))", &env);
+  ExpectTrue(mm.tensor.shape[0] == 2 && mm.tensor.shape[1] == 1, "matmul_shape", ctx);
+  ExpectNear(mm.tensor.Data()[0], 3.0, "matmul_val0", ctx);
+  auto tr = EvalExpr("transpose(tensor_values(((1,2,3),(4,5,6))))", &env);
+  ExpectTrue(tr.tensor.shape[0] == 3 && tr.tensor.shape[1] == 2, "transpose_shape", ctx);
+  ExpectNear(tr.tensor.Data()[1 * 2 + 0], 2.0, "transpose_val", ctx);
+
+  // Convolution and pooling (dense).
+  auto conv = EvalExpr(
+      "conv2d(tensor_values(((1,2,3),(4,5,6),(7,8,9))), tensor_values(((1,0),(0,1))))", &env);
+  ExpectTrue(conv.tensor.shape[0] == 2 && conv.tensor.shape[1] == 2, "conv_shape", ctx);
+  auto pool = EvalExpr("max_pool2d(tensor_values(((1,2),(3,4))), 2, 2)", &env);
+  ExpectTrue(pool.tensor.shape[0] == 1 && pool.tensor.shape[1] == 1, "pool_shape", ctx);
+  ExpectNear(pool.tensor.Data()[0], 4.0, "pool_val", ctx);
+
+  // FFT returns tuple(real, imag).
+  auto fft = EvalExpr("fft1d(tensor_values((1,0,1,0)))", &env);
+  ExpectTrue(fft.type == rt::DType::kTuple, "fft_tuple", ctx);
 }
 
 }  // namespace test
