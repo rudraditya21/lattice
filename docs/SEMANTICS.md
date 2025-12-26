@@ -24,10 +24,14 @@
 - Function parameters are immutable bindings inside the function body unless explicitly reassigned.
 
 ## Evaluation Model
-- Lexical scoping; blocks `{ ... }` introduce new scopes for bindings.
-- Call-by-value: arguments are evaluated left-to-right before a call.
-- Deterministic execution order: expressions are evaluated left-to-right; no reordering for side effects.
-- Control flow: `if/else`, `while`, `for` with `break`/`continue`; `return` exits the current function.
+- Lexical scoping; blocks `{ ... }` introduce new scopes for bindings. Inner scopes may shadow outer
+  names; lookup always resolves to the nearest enclosing binding.
+- Call-by-value: arguments are evaluated left-to-right before a call; the callee body executes after
+  all arguments are computed.
+- Deterministic evaluation order: subexpressions evaluate left-to-right; there is no reordering of
+  side effects or control-flow guards.
+- Control flow: `if/else`, `while`, `for` with `break`/`continue`; `return` exits the current
+  function.
 - Aggregates:
   - Tuples: immutable, positional, created with `(a, b)` (singleton `(a,)`). Indexing `t[0]` bounds-checks. Equality is structural.
   - Records: immutable, ordered fields `{x: a, y: b}`; keys are identifiers or strings. Access via `r["x"]`; missing keys are errors. Equality is structural (field names/order and values).
