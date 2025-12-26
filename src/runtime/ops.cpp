@@ -28,6 +28,37 @@ bool IsUnsignedInt(DType t) {
   return t == DType::kU8 || t == DType::kU16 || t == DType::kU32 || t == DType::kU64;
 }
 
+void EnsureFiniteOrThrow(const Value& v, int line, int column) {
+  auto finite = [](double d) { return std::isfinite(d); };
+  switch (v.type) {
+    case DType::kF16:
+    case DType::kBF16:
+    case DType::kF32:
+    case DType::kF64:
+      if (!finite(v.f64)) {
+        throw util::Error("Non-finite result (NaN/inf)", line, column);
+      }
+      break;
+    case DType::kC64:
+    case DType::kC128:
+      if (!finite(v.complex.real()) || !finite(v.complex.imag())) {
+        throw util::Error("Non-finite complex result (NaN/inf)", line, column);
+      }
+      break;
+    case DType::kTensor: {
+      const double* data = v.tensor.Data();
+      for (int64_t i = 0; i < v.tensor.size; ++i) {
+        if (!finite(data[i])) {
+          throw util::Error("Tensor contains non-finite value (NaN/inf)", line, column);
+        }
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
 bool IsBoolTypeName(const std::string& name) {
   return name == "bool";
 }
@@ -613,21 +644,25 @@ Value Evaluator::EvaluateBool(const parser::BoolLiteral& literal) {
 
 Value Evaluator::EvaluateUnary(const parser::UnaryExpression& expr) {
   Value operand = Evaluate(*expr.operand);
+  auto ensure = [&](Value v) {
+    EnsureFiniteOrThrow(v, expr.line, expr.column);
+    return v;
+  };
   switch (expr.op) {
     case parser::UnaryOp::kNegate:
       switch (operand.type) {
         case DType::kBool:
-          return Value::Bool(!operand.boolean);
+          return ensure(Value::Bool(!operand.boolean));
         case DType::kI32:
         case DType::kI64:
-          return Value::I64(-operand.i64);
+          return ensure(Value::I64(-operand.i64));
         case DType::kU32:
         case DType::kU64:
-          return Value::I64(-static_cast<int64_t>(operand.u64));
+          return ensure(Value::I64(-static_cast<int64_t>(operand.u64)));
         case DType::kF32:
-          return Value::F32(-static_cast<float>(operand.f64));
+          return ensure(Value::F32(-static_cast<float>(operand.f64)));
         case DType::kF64:
-          return Value::F64(-operand.f64);
+          return ensure(Value::F64(-operand.f64));
         default:
           throw util::Error("Unary negate not supported for type " + ValueTypeName(operand), 0, 0);
       }
@@ -638,6 +673,10 @@ Value Evaluator::EvaluateUnary(const parser::UnaryExpression& expr) {
 Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
   Value lhs = Evaluate(*expr.lhs);
   Value rhs = Evaluate(*expr.rhs);
+  auto ensure = [&](Value v) {
+    EnsureFiniteOrThrow(v, expr.line, expr.column);
+    return v;
+  };
   // Hot path for identical common types.
   if (lhs.type == rhs.type) {
     switch (lhs.type) {
@@ -646,25 +685,28 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
         int32_t rv = static_cast<int32_t>(rhs.i64);
         switch (expr.op) {
           case parser::BinaryOp::kAdd:
-            return Value::I32(lv + rv);
+            return ensure(Value::I32(lv + rv));
           case parser::BinaryOp::kSub:
-            return Value::I32(lv - rv);
+            return ensure(Value::I32(lv - rv));
           case parser::BinaryOp::kMul:
-            return Value::I32(lv * rv);
+            return ensure(Value::I32(lv * rv));
           case parser::BinaryOp::kDiv:
-            return Value::F64(static_cast<double>(lv) / static_cast<double>(rv));
+            if (rv == 0) {
+              throw util::Error("Division by zero", expr.line, expr.column);
+            }
+            return ensure(Value::F64(static_cast<double>(lv) / static_cast<double>(rv)));
           case parser::BinaryOp::kEq:
-            return Value::Bool(lv == rv);
+            return ensure(Value::Bool(lv == rv));
           case parser::BinaryOp::kNe:
-            return Value::Bool(lv != rv);
+            return ensure(Value::Bool(lv != rv));
           case parser::BinaryOp::kGt:
-            return Value::Bool(lv > rv);
+            return ensure(Value::Bool(lv > rv));
           case parser::BinaryOp::kGe:
-            return Value::Bool(lv >= rv);
+            return ensure(Value::Bool(lv >= rv));
           case parser::BinaryOp::kLt:
-            return Value::Bool(lv < rv);
+            return ensure(Value::Bool(lv < rv));
           case parser::BinaryOp::kLe:
-            return Value::Bool(lv <= rv);
+            return ensure(Value::Bool(lv <= rv));
         }
       } break;
       case DType::kI64: {
@@ -672,25 +714,28 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
         int64_t rv = rhs.i64;
         switch (expr.op) {
           case parser::BinaryOp::kAdd:
-            return Value::I64(lv + rv);
+            return ensure(Value::I64(lv + rv));
           case parser::BinaryOp::kSub:
-            return Value::I64(lv - rv);
+            return ensure(Value::I64(lv - rv));
           case parser::BinaryOp::kMul:
-            return Value::I64(lv * rv);
+            return ensure(Value::I64(lv * rv));
           case parser::BinaryOp::kDiv:
-            return Value::F64(static_cast<double>(lv) / static_cast<double>(rv));
+            if (rv == 0) {
+              throw util::Error("Division by zero", expr.line, expr.column);
+            }
+            return ensure(Value::F64(static_cast<double>(lv) / static_cast<double>(rv)));
           case parser::BinaryOp::kEq:
-            return Value::Bool(lv == rv);
+            return ensure(Value::Bool(lv == rv));
           case parser::BinaryOp::kNe:
-            return Value::Bool(lv != rv);
+            return ensure(Value::Bool(lv != rv));
           case parser::BinaryOp::kGt:
-            return Value::Bool(lv > rv);
+            return ensure(Value::Bool(lv > rv));
           case parser::BinaryOp::kGe:
-            return Value::Bool(lv >= rv);
+            return ensure(Value::Bool(lv >= rv));
           case parser::BinaryOp::kLt:
-            return Value::Bool(lv < rv);
+            return ensure(Value::Bool(lv < rv));
           case parser::BinaryOp::kLe:
-            return Value::Bool(lv <= rv);
+            return ensure(Value::Bool(lv <= rv));
         }
       } break;
       case DType::kF64: {
@@ -698,25 +743,28 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
         double rv = rhs.f64;
         switch (expr.op) {
           case parser::BinaryOp::kAdd:
-            return Value::F64(lv + rv);
+            return ensure(Value::F64(lv + rv));
           case parser::BinaryOp::kSub:
-            return Value::F64(lv - rv);
+            return ensure(Value::F64(lv - rv));
           case parser::BinaryOp::kMul:
-            return Value::F64(lv * rv);
+            return ensure(Value::F64(lv * rv));
           case parser::BinaryOp::kDiv:
-            return Value::F64(lv / rv);
+            if (rv == 0.0) {
+              throw util::Error("Division by zero", expr.line, expr.column);
+            }
+            return ensure(Value::F64(lv / rv));
           case parser::BinaryOp::kEq:
-            return Value::Bool(lv == rv);
+            return ensure(Value::Bool(lv == rv));
           case parser::BinaryOp::kNe:
-            return Value::Bool(lv != rv);
+            return ensure(Value::Bool(lv != rv));
           case parser::BinaryOp::kGt:
-            return Value::Bool(lv > rv);
+            return ensure(Value::Bool(lv > rv));
           case parser::BinaryOp::kGe:
-            return Value::Bool(lv >= rv);
+            return ensure(Value::Bool(lv >= rv));
           case parser::BinaryOp::kLt:
-            return Value::Bool(lv < rv);
+            return ensure(Value::Bool(lv < rv));
           case parser::BinaryOp::kLe:
-            return Value::Bool(lv <= rv);
+            return ensure(Value::Bool(lv <= rv));
         }
       } break;
       case DType::kC128: {
@@ -724,17 +772,20 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
         const auto& rv = rhs.complex;
         switch (expr.op) {
           case parser::BinaryOp::kAdd:
-            return Value::Complex128(lv + rv);
+            return ensure(Value::Complex128(lv + rv));
           case parser::BinaryOp::kSub:
-            return Value::Complex128(lv - rv);
+            return ensure(Value::Complex128(lv - rv));
           case parser::BinaryOp::kMul:
-            return Value::Complex128(lv * rv);
+            return ensure(Value::Complex128(lv * rv));
           case parser::BinaryOp::kDiv:
-            return Value::Complex128(lv / rv);
+            if (rv.real() == 0.0 && rv.imag() == 0.0) {
+              throw util::Error("Division by zero", expr.line, expr.column);
+            }
+            return ensure(Value::Complex128(lv / rv));
           case parser::BinaryOp::kEq:
-            return Value::Bool(lv == rv);
+            return ensure(Value::Bool(lv == rv));
           case parser::BinaryOp::kNe:
-            return Value::Bool(lv != rv);
+            return ensure(Value::Bool(lv != rv));
           case parser::BinaryOp::kGt:
           case parser::BinaryOp::kGe:
           case parser::BinaryOp::kLt:
@@ -811,12 +862,16 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
           out.tensor.Data()[i] = lv * rv;
           break;
         case parser::BinaryOp::kDiv:
+          if (rv == 0.0) {
+            throw util::Error("Division by zero", expr.line, expr.column);
+          }
           out.tensor.Data()[i] = lv / rv;
           break;
         default:
           throw util::Error("Tensor comparison not supported", 0, 0);
       }
     }
+    EnsureFiniteOrThrow(out, expr.line, expr.column);
     return out;
   }
   if (lhs.type == DType::kTuple && rhs.type == DType::kTuple) {
@@ -938,36 +993,39 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
     switch (expr.op) {
       case parser::BinaryOp::kAdd: {
         auto res = lcv + rcv;
-        return target == DType::kC64
-                   ? Value::Complex64(std::complex<float>(static_cast<float>(res.real()),
-                                                          static_cast<float>(res.imag())))
-                   : Value::Complex128(res);
+        return ensure(target == DType::kC64
+                          ? Value::Complex64(std::complex<float>(static_cast<float>(res.real()),
+                                                                 static_cast<float>(res.imag())))
+                          : Value::Complex128(res));
       }
       case parser::BinaryOp::kSub: {
         auto res = lcv - rcv;
-        return target == DType::kC64
-                   ? Value::Complex64(std::complex<float>(static_cast<float>(res.real()),
-                                                          static_cast<float>(res.imag())))
-                   : Value::Complex128(res);
+        return ensure(target == DType::kC64
+                          ? Value::Complex64(std::complex<float>(static_cast<float>(res.real()),
+                                                                 static_cast<float>(res.imag())))
+                          : Value::Complex128(res));
       }
       case parser::BinaryOp::kMul: {
         auto res = lcv * rcv;
-        return target == DType::kC64
-                   ? Value::Complex64(std::complex<float>(static_cast<float>(res.real()),
-                                                          static_cast<float>(res.imag())))
-                   : Value::Complex128(res);
+        return ensure(target == DType::kC64
+                          ? Value::Complex64(std::complex<float>(static_cast<float>(res.real()),
+                                                                 static_cast<float>(res.imag())))
+                          : Value::Complex128(res));
       }
       case parser::BinaryOp::kDiv: {
+        if (rcv.real() == 0.0 && rcv.imag() == 0.0) {
+          throw util::Error("Division by zero", expr.line, expr.column);
+        }
         auto res = lcv / rcv;
-        return target == DType::kC64
-                   ? Value::Complex64(std::complex<float>(static_cast<float>(res.real()),
-                                                          static_cast<float>(res.imag())))
-                   : Value::Complex128(res);
+        return ensure(target == DType::kC64
+                          ? Value::Complex64(std::complex<float>(static_cast<float>(res.real()),
+                                                                 static_cast<float>(res.imag())))
+                          : Value::Complex128(res));
       }
       case parser::BinaryOp::kEq:
-        return Value::Bool(lcv == rcv);
+        return ensure(Value::Bool(lcv == rcv));
       case parser::BinaryOp::kNe:
-        return Value::Bool(lcv != rcv);
+        return ensure(Value::Bool(lcv != rcv));
       case parser::BinaryOp::kGt:
       case parser::BinaryOp::kGe:
       case parser::BinaryOp::kLt:
@@ -981,25 +1039,28 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
     double rv = rcast.f64;
     switch (expr.op) {
       case parser::BinaryOp::kAdd:
-        return Value::F64(lv + rv);
+        return ensure(Value::F64(lv + rv));
       case parser::BinaryOp::kSub:
-        return Value::F64(lv - rv);
+        return ensure(Value::F64(lv - rv));
       case parser::BinaryOp::kMul:
-        return Value::F64(lv * rv);
+        return ensure(Value::F64(lv * rv));
       case parser::BinaryOp::kDiv:
-        return Value::F64(lv / rv);
+        if (rv == 0.0) {
+          throw util::Error("Division by zero", expr.line, expr.column);
+        }
+        return ensure(Value::F64(lv / rv));
       case parser::BinaryOp::kEq:
-        return Value::Bool(lv == rv);
+        return ensure(Value::Bool(lv == rv));
       case parser::BinaryOp::kNe:
-        return Value::Bool(lv != rv);
+        return ensure(Value::Bool(lv != rv));
       case parser::BinaryOp::kGt:
-        return Value::Bool(lv > rv);
+        return ensure(Value::Bool(lv > rv));
       case parser::BinaryOp::kGe:
-        return Value::Bool(lv >= rv);
+        return ensure(Value::Bool(lv >= rv));
       case parser::BinaryOp::kLt:
-        return Value::Bool(lv < rv);
+        return ensure(Value::Bool(lv < rv));
       case parser::BinaryOp::kLe:
-        return Value::Bool(lv <= rv);
+        return ensure(Value::Bool(lv <= rv));
     }
   }
 
@@ -1010,28 +1071,31 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
       uint64_t rv = rcast.u64;
       switch (expr.op) {
         case parser::BinaryOp::kAdd:
-          return target == DType::kU32 ? Value::U32(static_cast<uint32_t>(lv + rv))
-                                       : Value::U64(lv + rv);
+          return ensure(target == DType::kU32 ? Value::U32(static_cast<uint32_t>(lv + rv))
+                                              : Value::U64(lv + rv));
         case parser::BinaryOp::kSub:
-          return target == DType::kU32 ? Value::U32(static_cast<uint32_t>(lv - rv))
-                                       : Value::U64(lv - rv);
+          return ensure(target == DType::kU32 ? Value::U32(static_cast<uint32_t>(lv - rv))
+                                              : Value::U64(lv - rv));
         case parser::BinaryOp::kMul:
-          return target == DType::kU32 ? Value::U32(static_cast<uint32_t>(lv * rv))
-                                       : Value::U64(lv * rv);
+          return ensure(target == DType::kU32 ? Value::U32(static_cast<uint32_t>(lv * rv))
+                                              : Value::U64(lv * rv));
         case parser::BinaryOp::kDiv:
-          return Value::F64(static_cast<double>(lv) / static_cast<double>(rv));
+          if (rv == 0) {
+            throw util::Error("Division by zero", expr.line, expr.column);
+          }
+          return ensure(Value::F64(static_cast<double>(lv) / static_cast<double>(rv)));
         case parser::BinaryOp::kEq:
-          return Value::Bool(lv == rv);
+          return ensure(Value::Bool(lv == rv));
         case parser::BinaryOp::kNe:
-          return Value::Bool(lv != rv);
+          return ensure(Value::Bool(lv != rv));
         case parser::BinaryOp::kGt:
-          return Value::Bool(lv > rv);
+          return ensure(Value::Bool(lv > rv));
         case parser::BinaryOp::kGe:
-          return Value::Bool(lv >= rv);
+          return ensure(Value::Bool(lv >= rv));
         case parser::BinaryOp::kLt:
-          return Value::Bool(lv < rv);
+          return ensure(Value::Bool(lv < rv));
         case parser::BinaryOp::kLe:
-          return Value::Bool(lv <= rv);
+          return ensure(Value::Bool(lv <= rv));
       }
     } else {
       int64_t lv = lcast.i64;
@@ -1040,50 +1104,53 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
         case parser::BinaryOp::kAdd:
           switch (target) {
             case DType::kI8:
-              return Value::I8(static_cast<int8_t>(lv + rv));
+              return ensure(Value::I8(static_cast<int8_t>(lv + rv)));
             case DType::kI16:
-              return Value::I16(static_cast<int16_t>(lv + rv));
+              return ensure(Value::I16(static_cast<int16_t>(lv + rv)));
             case DType::kI32:
-              return Value::I32(static_cast<int32_t>(lv + rv));
+              return ensure(Value::I32(static_cast<int32_t>(lv + rv)));
             default:
-              return Value::I64(lv + rv);
+              return ensure(Value::I64(lv + rv));
           }
         case parser::BinaryOp::kSub:
           switch (target) {
             case DType::kI8:
-              return Value::I8(static_cast<int8_t>(lv - rv));
+              return ensure(Value::I8(static_cast<int8_t>(lv - rv)));
             case DType::kI16:
-              return Value::I16(static_cast<int16_t>(lv - rv));
+              return ensure(Value::I16(static_cast<int16_t>(lv - rv)));
             case DType::kI32:
-              return Value::I32(static_cast<int32_t>(lv - rv));
+              return ensure(Value::I32(static_cast<int32_t>(lv - rv)));
             default:
-              return Value::I64(lv - rv);
+              return ensure(Value::I64(lv - rv));
           }
         case parser::BinaryOp::kMul:
           switch (target) {
             case DType::kI8:
-              return Value::I8(static_cast<int8_t>(lv * rv));
+              return ensure(Value::I8(static_cast<int8_t>(lv * rv)));
             case DType::kI16:
-              return Value::I16(static_cast<int16_t>(lv * rv));
+              return ensure(Value::I16(static_cast<int16_t>(lv * rv)));
             case DType::kI32:
-              return Value::I32(static_cast<int32_t>(lv * rv));
+              return ensure(Value::I32(static_cast<int32_t>(lv * rv)));
             default:
-              return Value::I64(lv * rv);
+              return ensure(Value::I64(lv * rv));
           }
         case parser::BinaryOp::kDiv:
-          return Value::F64(static_cast<double>(lv) / static_cast<double>(rv));
+          if (rv == 0) {
+            throw util::Error("Division by zero", expr.line, expr.column);
+          }
+          return ensure(Value::F64(static_cast<double>(lv) / static_cast<double>(rv)));
         case parser::BinaryOp::kEq:
-          return Value::Bool(lv == rv);
+          return ensure(Value::Bool(lv == rv));
         case parser::BinaryOp::kNe:
-          return Value::Bool(lv != rv);
+          return ensure(Value::Bool(lv != rv));
         case parser::BinaryOp::kGt:
-          return Value::Bool(lv > rv);
+          return ensure(Value::Bool(lv > rv));
         case parser::BinaryOp::kGe:
-          return Value::Bool(lv >= rv);
+          return ensure(Value::Bool(lv >= rv));
         case parser::BinaryOp::kLt:
-          return Value::Bool(lv < rv);
+          return ensure(Value::Bool(lv < rv));
         case parser::BinaryOp::kLe:
-          return Value::Bool(lv <= rv);
+          return ensure(Value::Bool(lv <= rv));
       }
     }
   }
@@ -1093,25 +1160,28 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
   double rv = rhs.f64;
   switch (expr.op) {
     case parser::BinaryOp::kAdd:
-      return Value::F64(lv + rv);
+      return ensure(Value::F64(lv + rv));
     case parser::BinaryOp::kSub:
-      return Value::F64(lv - rv);
+      return ensure(Value::F64(lv - rv));
     case parser::BinaryOp::kMul:
-      return Value::F64(lv * rv);
+      return ensure(Value::F64(lv * rv));
     case parser::BinaryOp::kDiv:
-      return Value::F64(lv / rv);
+      if (rv == 0.0) {
+        throw util::Error("Division by zero", expr.line, expr.column);
+      }
+      return ensure(Value::F64(lv / rv));
     case parser::BinaryOp::kEq:
-      return Value::Bool(lv == rv);
+      return ensure(Value::Bool(lv == rv));
     case parser::BinaryOp::kNe:
-      return Value::Bool(lv != rv);
+      return ensure(Value::Bool(lv != rv));
     case parser::BinaryOp::kGt:
-      return Value::Bool(lv > rv);
+      return ensure(Value::Bool(lv > rv));
     case parser::BinaryOp::kGe:
-      return Value::Bool(lv >= rv);
+      return ensure(Value::Bool(lv >= rv));
     case parser::BinaryOp::kLt:
-      return Value::Bool(lv < rv);
+      return ensure(Value::Bool(lv < rv));
     case parser::BinaryOp::kLe:
-      return Value::Bool(lv <= rv);
+      return ensure(Value::Bool(lv <= rv));
   }
   throw std::runtime_error("Unhandled binary operator");
 }

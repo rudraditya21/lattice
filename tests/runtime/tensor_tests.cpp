@@ -73,6 +73,14 @@ void RunTensorTests(TestContext* ctx) {
     broadcast_error = true;
   }
   ExpectTrue(broadcast_error, "tensor_broadcast_incompatible_error", ctx);
+
+  bool tensor_div_zero = false;
+  try {
+    EvalExpr("tensor(2, 1, 1) / tensor(2, 1, 0)", &env);
+  } catch (const util::Error&) {
+    tensor_div_zero = true;
+  }
+  ExpectTrue(tensor_div_zero, "tensor_division_by_zero_errors", ctx);
 }
 
 }  // namespace test

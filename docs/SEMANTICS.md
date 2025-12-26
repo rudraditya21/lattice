@@ -39,3 +39,6 @@
 - Runtime errors: division by zero, shape mismatches, out-of-domain math (as applicable).
 - Parser/lexer errors: unexpected tokens, unterminated constructs, or invalid literals.
 - Determinism: given the same inputs and seed, behavior and errors are stable across runs/platforms.
+- NaN/Inf policy: numeric operations (scalars, complex, tensors) must produce finite values. Division
+  by zero or any non-finite result raises a runtime error with the source location of the
+  expression.

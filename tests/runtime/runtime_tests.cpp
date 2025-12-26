@@ -46,6 +46,22 @@ void RunRuntimeTests(TestContext* ctx) {
   ExpectNear(EvalExpr("min(2, 5)", &env).number, 2.0, "min", ctx);
   ExpectNear(EvalExpr("max(2, 5)", &env).number, 5.0, "max", ctx);
 
+  // Non-finite and zero-division guards.
+  bool div_zero_int = false;
+  try {
+    EvalExpr("1 / 0", &env);
+  } catch (const util::Error&) {
+    div_zero_int = true;
+  }
+  ExpectTrue(div_zero_int, "divide_by_zero_int_errors", ctx);
+  bool div_zero_float = false;
+  try {
+    EvalExpr("1.0 / 0.0", &env);
+  } catch (const util::Error&) {
+    div_zero_float = true;
+  }
+  ExpectTrue(div_zero_float, "divide_by_zero_float_errors", ctx);
+
   bool caught = false;
   try {
     EvalExpr("mod(1, 0)", &env);
