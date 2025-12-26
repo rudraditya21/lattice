@@ -790,17 +790,18 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
           case parser::BinaryOp::kGe:
           case parser::BinaryOp::kLt:
           case parser::BinaryOp::kLe:
-            throw util::Error("Complex comparison not supported", 0, 0);
+            throw util::Error("Complex comparison not supported", expr.line, expr.column);
         }
       } break;
       case DType::kString: {
         switch (expr.op) {
           case parser::BinaryOp::kEq:
-            return Value::Bool(lhs.str == rhs.str);
+            return ensure(Value::Bool(lhs.str == rhs.str));
           case parser::BinaryOp::kNe:
-            return Value::Bool(lhs.str != rhs.str);
+            return ensure(Value::Bool(lhs.str != rhs.str));
           default:
-            throw util::Error("Only equality/inequality supported for strings", 0, 0);
+            throw util::Error("Only equality/inequality supported for strings", expr.line,
+                              expr.column);
         }
       } break;
       default:
@@ -1030,7 +1031,7 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
       case parser::BinaryOp::kGe:
       case parser::BinaryOp::kLt:
       case parser::BinaryOp::kLe:
-        throw util::Error("Complex comparison not supported", 0, 0);
+        throw util::Error("Complex comparison not supported", expr.line, expr.column);
     }
   }
 
@@ -1188,11 +1189,12 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
 
 Value Evaluator::EvaluateIdentifier(const parser::Identifier& identifier) {
   if (env_ == nullptr) {
-    throw util::Error("Environment is not configured", 0, 0);
+    throw util::Error("Environment is not configured", identifier.line, identifier.column);
   }
   auto value = env_->Get(identifier.name);
   if (!value.has_value()) {
-    throw util::Error("Undefined identifier: " + identifier.name, 0, 0);
+    throw util::Error("Undefined identifier: " + identifier.name, identifier.line,
+                      identifier.column);
   }
   return value.value();
 }
@@ -1204,15 +1206,17 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
   // Handle cast before evaluating all args to allow type-name first arg.
   if (call.callee == "cast") {
     if (call.args.size() != 2) {
-      throw util::Error("cast expects two arguments: type name and expression", 0, 0);
+      throw util::Error("cast expects two arguments: type name and expression", call.line,
+                        call.column);
     }
     const auto* type_id = dynamic_cast<const parser::Identifier*>(call.args[0].get());
     if (type_id == nullptr) {
-      throw util::Error("cast first argument must be a type name identifier", 0, 0);
+      throw util::Error("cast first argument must be a type name identifier", call.line,
+                        call.column);
     }
     auto dt = LookupDType(type_id->name);
     if (!dt.has_value()) {
-      throw util::Error("Unknown cast target type: " + type_id->name, 0, 0);
+      throw util::Error("Unknown cast target type: " + type_id->name, call.line, call.column);
     }
     Value v = Evaluate(*call.args[1]);
     return CastTo(dt.value(), v);
@@ -1227,21 +1231,21 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
   if (found.has_value() && found->type == DType::kFunction) {
     auto fn = found->function;
     if (fn == nullptr) {
-      throw util::Error("Function is null: " + name, 0, 0);
+      throw util::Error("Function is null: " + name, call.line, call.column);
     }
     if (fn->body == nullptr) {
       if (name == "print") {
         if (args.size() != 1) {
-          throw util::Error("print expects 1 argument", 0, 0);
+          throw util::Error("print expects 1 argument", call.line, call.column);
         }
         std::cout << args[0].ToString() << "\n";
         return Value::Number(0.0);
       }
-      throw util::Error("Function has no body: " + name, 0, 0);
+      throw util::Error("Function has no body: " + name, call.line, call.column);
     }
     if (fn->parameters.size() != args.size()) {
       throw util::Error(name + " expects " + std::to_string(fn->parameters.size()) + " arguments",
-                        0, 0);
+                        call.line, call.column);
     }
     Environment fn_env(fn->defining_env);
     for (size_t i = 0; i < args.size(); ++i) {
@@ -1250,7 +1254,7 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
         if (!annot.empty() && !ValueMatchesType(args[i], annot)) {
           throw util::Error("Type mismatch for parameter '" + fn->parameters[i] + "' (expected " +
                                 annot + ", got " + ValueTypeName(args[i]) + ")",
-                            0, 0);
+                            call.line, call.column);
         }
       }
       fn_env.Define(fn->parameters[i], args[i]);
@@ -1262,7 +1266,7 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
         throw util::Error("Return type mismatch in function " + name + " (expected " +
                               fn->return_type + ", got " +
                               ValueTypeName(body_result.value.value()) + ")",
-                          0, 0);
+                          call.line, call.column);
       }
       body_result.value->type_name = fn->return_type;
     }

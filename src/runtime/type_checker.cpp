@@ -233,15 +233,17 @@ std::optional<Type> TypeChecker::TypeOf(const parser::Expression* expr) {
   if (auto call = dynamic_cast<const CallExpression*>(expr)) {
     if (call->callee == "cast") {
       if (call->args.size() != 2) {
-        throw util::Error("cast expects two arguments: type name and expression", 0, 0);
+        throw util::Error("cast expects two arguments: type name and expression", call->line,
+                          call->column);
       }
       auto* type_id = dynamic_cast<Identifier*>(call->args[0].get());
       if (type_id == nullptr) {
-        throw util::Error("cast first argument must be a type name identifier", 0, 0);
+        throw util::Error("cast first argument must be a type name identifier", call->line,
+                          call->column);
       }
       auto dt = LookupDType(type_id->name);
       if (!dt.has_value()) {
-        throw util::Error("Unknown cast target type: " + type_id->name, 0, 0);
+        throw util::Error("Unknown cast target type: " + type_id->name, call->line, call->column);
       }
       return dt;
     }
@@ -255,7 +257,7 @@ std::optional<Type> TypeChecker::TypeOf(const parser::Expression* expr) {
             throw util::Error("Type mismatch for argument " + std::to_string(i + 1) + " to " +
                                   call->callee + " (expected " + OptTypeName(sig.params[i]) +
                                   ", got " + OptTypeName(arg_t) + ")",
-                              0, 0);
+                              call->line, call->column);
           }
         }
       }
@@ -307,7 +309,8 @@ std::optional<Type> TypeChecker::TypeOf(const parser::Expression* expr) {
                                         : std::nullopt;
           }
         }
-        throw util::Error("Record key not found: " + key->value, 0, 0);
+        throw util::Error("Record key not found: " + key->value, idx->index->line,
+                          idx->index->column);
       }
       return std::nullopt;
     }
@@ -369,7 +372,7 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
   if (auto* ifs = dynamic_cast<IfStatement*>(stmt)) {
     auto cond_t = TypeOf(ifs->condition.get());
     if (cond_t.has_value() && cond_t->kind != DType::kBool) {
-      throw util::Error("Condition must be bool", 0, 0);
+      throw util::Error("Condition must be bool", ifs->condition->line, ifs->condition->column);
     }
     CheckStatement(ifs->then_branch.get());
     if (ifs->else_branch) CheckStatement(ifs->else_branch.get());
@@ -378,7 +381,8 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
   if (auto* ws = dynamic_cast<WhileStatement*>(stmt)) {
     auto cond_t = TypeOf(ws->condition.get());
     if (cond_t.has_value() && cond_t->kind != DType::kBool) {
-      throw util::Error("Condition must be bool (got " + OptTypeName(cond_t) + ")", 0, 0);
+      throw util::Error("Condition must be bool (got " + OptTypeName(cond_t) + ")",
+                        ws->condition->line, ws->condition->column);
     }
     CheckStatement(ws->body.get());
     return;
@@ -389,7 +393,8 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
     if (fs->condition) {
       auto cond_t = TypeOf(fs->condition.get());
       if (cond_t.has_value() && cond_t->kind != DType::kBool) {
-        throw util::Error("Condition must be bool (got " + OptTypeName(cond_t) + ")", 0, 0);
+        throw util::Error("Condition must be bool (got " + OptTypeName(cond_t) + ")",
+                          fs->condition->line, fs->condition->column);
       }
     }
     if (fs->increment) CheckStatement(fs->increment.get());
@@ -404,10 +409,10 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
         if (!IsAssignable(rt, expected_return_)) {
           throw util::Error("Return type mismatch (expected " + OptTypeName(expected_return_) +
                                 ", got " + OptTypeName(rt) + ")",
-                            0, 0);
+                            ret->line, ret->column);
         }
       } else {
-        throw util::Error("Missing return value", 0, 0);
+        throw util::Error("Missing return value", ret->line, ret->column);
       }
     }
     return;
@@ -470,7 +475,7 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
       if (!IsAssignable(val_t, annot)) {
         throw util::Error("Type mismatch in assignment to " + asn->name + " (expected " +
                               OptTypeName(annot) + ", got " + OptTypeName(val_t) + ")",
-                          0, 0);
+                          asn->line, asn->column);
       }
       scopes_.back()[asn->name] = annot;
     } else {

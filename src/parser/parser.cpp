@@ -123,6 +123,8 @@ std::unique_ptr<Statement> Parser::StatementRule() {
 }
 
 std::unique_ptr<Statement> Parser::IfStatementRule() {
+  int line = Previous().line;
+  int col = Previous().column;
   Consume(lexer::TokenType::kLParen, "Expected '(' after 'if'");
   auto condition = ExpressionRule();
   Consume(lexer::TokenType::kRParen, "Expected ')' after condition");
@@ -131,19 +133,29 @@ std::unique_ptr<Statement> Parser::IfStatementRule() {
   if (Match(lexer::TokenType::kElse)) {
     else_branch = StatementRule();
   }
-  return std::make_unique<IfStatement>(std::move(condition), std::move(then_branch),
-                                       std::move(else_branch));
+  auto stmt = std::make_unique<IfStatement>(std::move(condition), std::move(then_branch),
+                                            std::move(else_branch));
+  stmt->line = line;
+  stmt->column = col;
+  return stmt;
 }
 
 std::unique_ptr<Statement> Parser::WhileStatementRule() {
+  int line = Previous().line;
+  int col = Previous().column;
   Consume(lexer::TokenType::kLParen, "Expected '(' after 'while'");
   auto condition = ExpressionRule();
   Consume(lexer::TokenType::kRParen, "Expected ')' after condition");
   auto body = StatementRule();
-  return std::make_unique<WhileStatement>(std::move(condition), std::move(body));
+  auto stmt = std::make_unique<WhileStatement>(std::move(condition), std::move(body));
+  stmt->line = line;
+  stmt->column = col;
+  return stmt;
 }
 
 std::unique_ptr<Statement> Parser::FunctionStatementRule() {
+  int line = Previous().line;
+  int col = Previous().column;
   Consume(lexer::TokenType::kIdentifier, "Expected function name");
   std::string name = Previous().lexeme;
   Consume(lexer::TokenType::kLParen, "Expected '(' after function name");
@@ -174,20 +186,33 @@ std::unique_ptr<Statement> Parser::FunctionStatementRule() {
     return_type = BindingAnnotation(std::move(ret));
   }
   auto body = StatementRule();
-  return std::make_unique<FunctionStatement>(std::move(name), std::move(params),
-                                             std::move(param_types), std::move(return_type),
-                                             std::move(body));
+  auto stmt = std::make_unique<FunctionStatement>(std::move(name), std::move(params),
+                                                  std::move(param_types), std::move(return_type),
+                                                  std::move(body));
+  stmt->line = line;
+  stmt->column = col;
+  return stmt;
 }
 
 std::unique_ptr<Statement> Parser::ReturnStatementRule() {
+  int line = Previous().line;
+  int col = Previous().column;
   if (Peek().type == lexer::TokenType::kSemicolon || Peek().type == lexer::TokenType::kRBrace) {
-    return std::make_unique<ReturnStatement>(nullptr);
+    auto stmt = std::make_unique<ReturnStatement>(nullptr);
+    stmt->line = line;
+    stmt->column = col;
+    return stmt;
   }
   auto expr = ExpressionRule();
-  return std::make_unique<ReturnStatement>(std::move(expr));
+  auto stmt = std::make_unique<ReturnStatement>(std::move(expr));
+  stmt->line = line;
+  stmt->column = col;
+  return stmt;
 }
 
 std::unique_ptr<Statement> Parser::ForStatementRule() {
+  int line = Previous().line;
+  int col = Previous().column;
   Consume(lexer::TokenType::kLParen, "Expected '(' after 'for'");
 
   std::unique_ptr<Statement> init;
@@ -211,8 +236,11 @@ std::unique_ptr<Statement> Parser::ForStatementRule() {
   }
 
   auto body = StatementRule();
-  return std::make_unique<ForStatement>(std::move(init), std::move(condition), std::move(increment),
-                                        std::move(body));
+  auto stmt = std::make_unique<ForStatement>(std::move(init), std::move(condition),
+                                             std::move(increment), std::move(body));
+  stmt->line = line;
+  stmt->column = col;
+  return stmt;
 }
 
 std::unique_ptr<Statement> Parser::Block() {
@@ -236,12 +264,17 @@ std::unique_ptr<Statement> Parser::AssignmentOrExpression() {
     }
     if (is_assignment) {
       std::string name = Peek().lexeme;
+      int line = Peek().line;
+      int col = Peek().column;
       Advance();  // identifier
       BindingAnnotation ann = ParseBindingAnnotation();
       Consume(lexer::TokenType::kEqual, "Expected '=' in assignment");
       auto value = ExpressionRule();
-      return std::make_unique<AssignmentStatement>(std::move(name), std::move(ann),
-                                                   std::move(value));
+      auto stmt =
+          std::make_unique<AssignmentStatement>(std::move(name), std::move(ann), std::move(value));
+      stmt->line = line;
+      stmt->column = col;
+      return stmt;
     }
   }
   if (Peek().type == lexer::TokenType::kLParen) {
@@ -265,8 +298,11 @@ std::unique_ptr<Statement> Parser::AssignmentOrExpression() {
     BindingAnnotation ann = ParseBindingAnnotation();
     Consume(lexer::TokenType::kEqual, "Expected '=' in destructuring assignment");
     auto value = ExpressionRule();
-    return std::make_unique<AssignmentStatement>(std::move(pattern), std::move(ann),
-                                                 std::move(value));
+    auto stmt =
+        std::make_unique<AssignmentStatement>(std::move(pattern), std::move(ann), std::move(value));
+    stmt->line = line;
+    stmt->column = col;
+    return stmt;
   }
   if (Peek().type == lexer::TokenType::kLBrace) {
     int line = Peek().line;
@@ -290,8 +326,11 @@ std::unique_ptr<Statement> Parser::AssignmentOrExpression() {
     BindingAnnotation ann = ParseBindingAnnotation();
     Consume(lexer::TokenType::kEqual, "Expected '=' in destructuring assignment");
     auto value = ExpressionRule();
-    return std::make_unique<AssignmentStatement>(std::move(pattern), std::move(ann),
-                                                 std::move(value));
+    auto stmt =
+        std::make_unique<AssignmentStatement>(std::move(pattern), std::move(ann), std::move(value));
+    stmt->line = line;
+    stmt->column = col;
+    return stmt;
   }
   auto expr = ExpressionRule();
   return std::make_unique<ExpressionStatement>(std::move(expr));
