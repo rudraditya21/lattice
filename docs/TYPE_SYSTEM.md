@@ -37,8 +37,15 @@
 
 ## Runtime Representation (direction)
 - Tagged value supporting the numeric tower plus function/boolean and tensor aggregate.
-- Tensor stores shape/row-major strides/element dtype and flattened storage.
-- Decimal/rational backed by dedicated structs (decimal via software decimal; rational via normalized ints).
+- Tensor stores shape/row-major strides/element dtype and flattened storage. Small-vector
+  optimization (SVO) exists for tiny tensors (inline buffer of 8 elements); benchmark and tune the
+  threshold per backend once perf harness is in place. Consider extending SVO to tuple/record
+  metadata if profiles show allocator churn.
+- Decimal/rational backed by dedicated structs (decimal via software decimal; rational via
+  normalized ints).
+- Benchmark plan: microbenchmarks for tensor elementwise ops and reductions across sizes 1–64 to
+  validate SVO thresholds; track allocations and cache misses. If tuples/records are hot, add inline
+  storage for up to N elements/fields guarded by perf data.
 
 ## Standard Library Considerations
 - Math functions overload across the numeric tower where meaningful (dtype-aware `abs`, `pow`, `gcd`, `lcm`, `mod`, `clamp`, `min`, `max`, `sum`, `mean`); exact types use exact algorithms when possible.
