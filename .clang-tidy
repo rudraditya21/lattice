@@ -7,14 +7,20 @@ Checks: >
   bugprone-misplaced-widening-cast,
   bugprone-move-forwarding-reference,
   bugprone-parent-virtual-call,
+  bugprone-unchecked-optional-access,
+  bugprone-easily-swappable-parameters,
+  bugprone-narrowing-conversions,
   bugprone-sizeof-expression,
   bugprone-sizeof-container,
   bugprone-suspicious-memset-usage,
   bugprone-suspicious-string-compare,
+  performance-enum-size,
   performance-for-range-copy,
   performance-inefficient-string-concatenation,
   performance-move-const-arg,
   performance-unnecessary-value-param,
+  readability-misleading-indentation,
+  readability-inconsistent-declaration-parameter-name,
   modernize-use-nullptr
 WarningsAsErrors: ""
 HeaderFilterRegex: "(include|src|tests)/.*"
