@@ -8,6 +8,8 @@
 
 namespace lattice::runtime {
 
+enum class TensorKind { kDense, kSparseCSR, kSparseCOO, kRagged };
+
 enum class DType {
   kBool,
   kI8,
@@ -39,6 +41,8 @@ struct Type {
   std::vector<std::optional<DType>> tuple_elems;
   // Ordered fields for records: name -> dtype (nullopt means dynamic).
   std::vector<std::pair<std::string, std::optional<DType>>> record_fields;
+  // Optional tensor kind metadata.
+  std::optional<TensorKind> tensor_kind;
 
   static Type Tuple(std::vector<std::optional<DType>> elems) {
     Type t;

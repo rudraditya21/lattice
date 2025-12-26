@@ -46,6 +46,7 @@ struct Value {
   bool boolean = false;
   std::shared_ptr<Function> function;
   struct TensorInfo {
+    TensorKind kind = TensorKind::kDense;
     std::vector<int64_t> shape;
     std::vector<int64_t> strides;
     DType elem_type = DType::kF64;
@@ -55,6 +56,19 @@ struct Value {
     std::vector<double> storage;  // row-major, flattened if not inline
     double* Data() { return using_inline ? inline_storage.data() : storage.data(); }
     const double* Data() const { return using_inline ? inline_storage.data() : storage.data(); }
+
+    // Sparse CSR (2D)
+    std::vector<int64_t> indptr;
+    std::vector<int64_t> indices;
+    std::vector<double> sparse_values;
+
+    // Sparse COO (2D)
+    std::vector<int64_t> rows;
+    std::vector<int64_t> cols;
+
+    // Ragged
+    std::vector<int64_t> row_splits;
+    std::vector<double> ragged_values;
   } tensor;
   struct TupleInfo {
     std::vector<Value> elements;
@@ -95,6 +109,14 @@ struct Value {
   static Value RationalValue(int64_t num, int64_t den);
   static Value RationalValueNormalized(int64_t num, int64_t den);
   static Value Tensor(std::vector<int64_t> shape, DType elem_type, double fill_value);
+  static Value TensorSparseCSR(std::vector<int64_t> shape, std::vector<int64_t> indptr,
+                               std::vector<int64_t> indices, std::vector<double> values,
+                               DType elem_type);
+  static Value TensorSparseCOO(std::vector<int64_t> shape, std::vector<int64_t> rows,
+                               std::vector<int64_t> cols, std::vector<double> values,
+                               DType elem_type);
+  static Value TensorRagged(std::vector<int64_t> row_splits, std::vector<double> values,
+                            DType elem_type);
   static Value Tuple(std::vector<Value> elems);
   static Value Record(std::vector<std::pair<std::string, Value>> fields);
   /// Convenience constructor for function values.
@@ -290,6 +312,7 @@ inline Value Value::Func(std::shared_ptr<Function> fn) {
 inline Value Value::Tensor(std::vector<int64_t> shape, DType elem_type, double fill_value) {
   Value val;
   val.type = DType::kTensor;
+  val.tensor.kind = TensorKind::kDense;
   val.tensor.shape = std::move(shape);
   val.tensor.elem_type = elem_type;
   val.type_name = "tensor";
@@ -340,6 +363,48 @@ inline Value Value::Record(std::vector<std::pair<std::string, Value>> fields) {
   }
   val.number = 0.0;
   val.type_name = "record";
+  return val;
+}
+
+inline Value Value::TensorSparseCSR(std::vector<int64_t> shape, std::vector<int64_t> indptr,
+                                    std::vector<int64_t> indices, std::vector<double> values,
+                                    DType elem_type) {
+  Value val;
+  val.type = DType::kTensor;
+  val.tensor.kind = TensorKind::kSparseCSR;
+  val.tensor.shape = std::move(shape);
+  val.tensor.elem_type = elem_type;
+  val.tensor.indptr = std::move(indptr);
+  val.tensor.indices = std::move(indices);
+  val.tensor.sparse_values = std::move(values);
+  val.type_name = "tensor_sparse_csr";
+  return val;
+}
+
+inline Value Value::TensorSparseCOO(std::vector<int64_t> shape, std::vector<int64_t> rows,
+                                    std::vector<int64_t> cols, std::vector<double> values,
+                                    DType elem_type) {
+  Value val;
+  val.type = DType::kTensor;
+  val.tensor.kind = TensorKind::kSparseCOO;
+  val.tensor.shape = std::move(shape);
+  val.tensor.elem_type = elem_type;
+  val.tensor.rows = std::move(rows);
+  val.tensor.cols = std::move(cols);
+  val.tensor.sparse_values = std::move(values);
+  val.type_name = "tensor_sparse_coo";
+  return val;
+}
+
+inline Value Value::TensorRagged(std::vector<int64_t> row_splits, std::vector<double> values,
+                                 DType elem_type) {
+  Value val;
+  val.type = DType::kTensor;
+  val.tensor.kind = TensorKind::kRagged;
+  val.tensor.row_splits = std::move(row_splits);
+  val.tensor.ragged_values = std::move(values);
+  val.tensor.elem_type = elem_type;
+  val.type_name = "tensor_ragged";
   return val;
 }
 

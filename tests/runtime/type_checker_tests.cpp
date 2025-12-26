@@ -117,6 +117,31 @@ void RunTypeCheckerTests(TestContext* ctx) {
   }
   ExpectTrue(tensor_mismatch, "typecheck_tensor_mismatch", ctx);
 
+  bool sparse_ok = true;
+  try {
+    TypeCheckStmt("tensor_sparse_csr((2,2), (0,1,2), (0,1), (1,2))");
+    TypeCheckStmt("tensor_sparse_coo((2,2), (0,1), (0,1), (1,2))");
+  } catch (const util::Error&) {
+    sparse_ok = false;
+  }
+  ExpectTrue(sparse_ok, "typecheck_sparse_ok", ctx);
+
+  bool ragged_ok = true;
+  try {
+    TypeCheckStmt("tensor_ragged((0,2), (1,2))");
+  } catch (const util::Error&) {
+    ragged_ok = false;
+  }
+  ExpectTrue(ragged_ok, "typecheck_ragged_ok", ctx);
+
+  bool sparse_mix_error = false;
+  try {
+    TypeCheckStmt("to_sparse_csr(tensor(1,1,1)) + to_sparse_coo(tensor(1,1,1))");
+  } catch (const util::Error&) {
+    sparse_mix_error = true;
+  }
+  ExpectTrue(sparse_mix_error, "typecheck_sparse_format_mismatch", ctx);
+
   // Tuple/record inference and access.
   bool tuple_access_ok = true;
   try {

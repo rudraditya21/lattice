@@ -49,6 +49,100 @@ void RunTensorTests(TestContext* ctx) {
                  tvals_mix.tensor.elem_type == rt::DType::kF64,
              "tensor_values_promotion", ctx);
 
+  // Sparse CSR construction and to_dense.
+  auto csr = EvalExpr("tensor_sparse_csr((2,2), (0,1,2), (0,1), (1,2))", &env);
+  ExpectTrue(csr.tensor.kind == rt::TensorKind::kSparseCSR, "csr_kind", ctx);
+  auto csr_dense = EvalExpr("to_dense(tensor_sparse_csr((2,2), (0,1,2), (0,1), (1,2)))", &env);
+  double* cd = csr_dense.tensor.Data();
+  ExpectNear(cd[0], 1.0, "csr_dense_value0", ctx);
+  ExpectNear(cd[3], 2.0, "csr_dense_value_last", ctx);
+
+  // Sparse COO construction and to_dense.
+  auto coo_dense = EvalExpr("to_dense(tensor_sparse_coo((2,2), (0,1), (0,1), (3,4)))", &env);
+  double* cod = coo_dense.tensor.Data();
+  ExpectNear(cod[0], 3.0, "coo_dense_value0", ctx);
+  ExpectNear(cod[3], 4.0, "coo_dense_value_last", ctx);
+
+  // to_sparse conversions.
+  auto to_csr = EvalExpr("to_sparse_csr(tensor(2,2,1))", &env);
+  ExpectTrue(to_csr.tensor.kind == rt::TensorKind::kSparseCSR, "to_csr_kind", ctx);
+  auto to_coo = EvalExpr("to_sparse_coo(tensor(2,2,1))", &env);
+  ExpectTrue(to_coo.tensor.kind == rt::TensorKind::kSparseCOO, "to_coo_kind", ctx);
+
+  // Dense + sparse (densify sparse) works.
+  auto dense_sparse = EvalExpr("tensor(2,2,1) + to_sparse_csr(tensor(2,2,2))", &env);
+  ExpectTrue(dense_sparse.tensor.kind == rt::TensorKind::kDense, "dense_sparse_dense_out", ctx);
+  ExpectNear(dense_sparse.tensor.Data()[0], 3.0, "dense_sparse_value", ctx);
+
+  // Dense + sparse with broadcast (densify sparse then broadcast dense).
+  auto dense_sparse_bcast = EvalExpr("tensor(1,1,5) + to_sparse_csr(tensor(2,2,1))", &env);
+  ExpectTrue(dense_sparse_bcast.tensor.shape[0] == 2 && dense_sparse_bcast.tensor.shape[1] == 2,
+             "dense_sparse_broadcast_shape", ctx);
+  ExpectNear(dense_sparse_bcast.tensor.Data()[0], 6.0, "dense_sparse_broadcast_value", ctx);
+
+  // Sparse + sparse (same format) elementwise.
+  auto csr_add = EvalExpr(
+      "tensor_sparse_csr((2,2), (0,1,2), (0,1), (1,2)) + tensor_sparse_csr((2,2), (0,1,2), (0,1), "
+      "(3,4))",
+      &env);
+  ExpectTrue(csr_add.tensor.kind == rt::TensorKind::kSparseCSR, "csr_add_kind", ctx);
+  auto csr_add_dense = EvalExpr(
+      "to_dense(tensor_sparse_csr((2,2), (0,1,2), (0,1), (1,2)) + "
+      "tensor_sparse_csr((2,2), (0,1,2), (0,1), (3,4)))",
+      &env);
+  ExpectNear(csr_add_dense.tensor.Data()[0], 4.0, "csr_add_value0", ctx);
+  ExpectNear(csr_add_dense.tensor.Data()[3], 6.0, "csr_add_value_last", ctx);
+
+  auto coo_add = EvalExpr(
+      "tensor_sparse_coo((2,2), (0,1), (0,1), (1,2)) + tensor_sparse_coo((2,2), (0,1), (0,1), "
+      "(3,4))",
+      &env);
+  ExpectTrue(coo_add.tensor.kind == rt::TensorKind::kSparseCOO, "coo_add_kind", ctx);
+
+  // Sparse shape mismatch errors.
+  bool sparse_shape_err = false;
+  try {
+    EvalExpr(
+        "tensor_sparse_csr((2,2), (0,1,2), (0,1), (1,2)) + tensor_sparse_csr((3,3), (0,1,2,2), "
+        "(0,1), (1,2))",
+        &env);
+  } catch (const util::Error&) {
+    sparse_shape_err = true;
+  }
+  ExpectTrue(sparse_shape_err, "sparse_shape_mismatch_error", ctx);
+
+  // Sparse format mismatch errors.
+  bool sparse_format_err = false;
+  try {
+    EvalExpr(
+        "tensor_sparse_csr((2,2), (0,1,1), (0), (1)) + "
+        "tensor_sparse_coo((2,2), (0), (0), (1))",
+        &env);
+  } catch (const util::Error&) {
+    sparse_format_err = true;
+  }
+  ExpectTrue(sparse_format_err, "sparse_format_mismatch_error", ctx);
+
+  // Ragged elementwise (matching splits) and error cases.
+  auto rag_ok =
+      EvalExpr("tensor_ragged((0,2,4), (1,2,3,4)) + tensor_ragged((0,2,4), (1,1,1,1))", &env);
+  ExpectTrue(rag_ok.tensor.kind == rt::TensorKind::kRagged, "ragged_kind", ctx);
+  ExpectNear(rag_ok.tensor.ragged_values[0], 2.0, "ragged_add_value0", ctx);
+  bool rag_mismatch = false;
+  try {
+    EvalExpr("tensor_ragged((0,2), (1,2)) + tensor_ragged((0,3), (1,2,3))", &env);
+  } catch (const util::Error&) {
+    rag_mismatch = true;
+  }
+  ExpectTrue(rag_mismatch, "ragged_mismatch_error", ctx);
+  bool rag_dense_mix = false;
+  try {
+    EvalExpr("tensor_ragged((0,2), (1,2)) + tensor(2,1)", &env);
+  } catch (const util::Error&) {
+    rag_dense_mix = true;
+  }
+  ExpectTrue(rag_dense_mix, "ragged_dense_mix_error", ctx);
+
   // Broadcast across higher ranks.
   auto tb = EvalExpr("tensor(2, 1, 1) + tensor(1, 3, 2)", &env);  // (2,1) + (1,3)
   ExpectTrue(tb.tensor.shape.size() == 2 && tb.tensor.shape[0] == 2 && tb.tensor.shape[1] == 3,

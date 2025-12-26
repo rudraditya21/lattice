@@ -26,7 +26,7 @@
   elementwise operations.
 - Tuples: fixed-length, immutable positional collections; element dtypes tracked when known; structural equality and assignment require matching length and element dtypes.
 - Records: ordered immutable field sets `{name: value}`; keys are strings/identifiers; field dtypes tracked when known; structural equality and assignment require matching names/order and dtypes.
-- Future: sparse/ragged variants gated behind flags.
+- Future: sparse/ragged variants gated behind flags (design below).
 
 ## Type Hints and Inference
 - Optional annotations on function parameters/returns: `func add(a: f64, b: f64) -> f64 { ... }`.
@@ -51,3 +51,40 @@
 - Math functions overload across the numeric tower where meaningful (dtype-aware `abs`, `pow`, `gcd`, `lcm`, `mod`, `clamp`, `min`, `max`, `sum`, `mean`); exact types use exact algorithms when possible.
 - Conversions: `int()`, `float()`, `complex()`, `decimal()`, `rational()`, `tensor()` with explicit semantics; `cast(type, expr)` available.
 - Random features (e.g., typed RNG) are deferred until later; modules/imports are out of scope for now.
+
+## Sparse and Ragged Tensors (Plan)
+- Goals: memory efficiency for structured sparsity; basic ragged (jagged) list-of-lists semantics for
+  uneven dimensions; opt-in via constructors/flags to keep dense fast paths unchanged.
+- Storage formats:
+  - Sparse: start with CSR/COO for 2D; extend to block-sparse; store `indices`, `indptr` (CSR),
+    `values`, and `shape`, plus `dtype` and a `format` enum. Support row-major iteration and
+    elementwise ops where both operands share format/shape. Provide dense<->sparse conversion.
+  - Ragged: represent with a `values` buffer and a `row_splits`/`offsets` vector per ragged
+    dimension; carry `dtype` and outer shape (number of rows). Indexing validates bounds; no
+    broadcasting across ragged dims.
+- API surface (to be added):
+  - `tensor_dense(...)` (existing) remains default.
+  - `tensor_sparse_csr(shape, indptr, indices, values, dtype=...)`, `tensor_sparse_coo(shape,
+    coords, values, dtype=...)`.
+  - `tensor_ragged(row_splits, values, dtype=...)`.
+  - `to_dense(tensor)`, `to_sparse(tensor, format=...)` for conversions.
+- Semantics and checks:
+  - Shape/dtype validated at construction; sparse indices must be in-bounds and sorted (or flagged
+    unsorted with a normalize step).
+  - Elementwise ops: dense ⊕ sparse (auto-densify or error based on a flag); sparse ⊕ sparse only
+    when formats match; ragged supports only elementwise ops within aligned ragged structure; no
+    cross with dense unless densified explicitly.
+  - Reductions: sparse uses sparse-aware reductions; ragged reduces along innermost dense values;
+    reduction over ragged axes requires explicit semantics (e.g., pad/error) and should be gated by
+    flags.
+  - Alignment/padding: allow optional alignment hints for dense buffers; sparse values/indices kept
+    contiguous; document padding policy for packed buffers (currently none).
+- Typing:
+  - Extend `Type` to carry a tensor flavor: `dense`, `sparse(format)`, `ragged` plus element dtype
+    and shape metadata. Default remains dense.
+  - Type checker enforces operations only between compatible flavors unless explicit conversions are
+    called.
+- Performance/benchmark plan:
+  - Add micro/macro benchmarks for sparse matvec/matmul vs. dense, varying sparsity.
+  - Measure ragged indexing and simple reductions.
+  - Tune SVO thresholds separately for dense and for small sparse metadata buffers.

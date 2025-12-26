@@ -28,6 +28,82 @@ bool IsUnsignedInt(DType t) {
   return t == DType::kU8 || t == DType::kU16 || t == DType::kU32 || t == DType::kU64;
 }
 
+bool IsDenseTensor(const Value& v) {
+  return v.type == DType::kTensor && v.tensor.kind == TensorKind::kDense;
+}
+
+Value ToDenseTensor(const Value& v, int line, int column) {
+  if (v.type != DType::kTensor) return v;
+  if (v.tensor.kind == TensorKind::kDense) return v;
+  if (v.tensor.kind == TensorKind::kSparseCSR) {
+    Value out = Value::Tensor(v.tensor.shape, v.tensor.elem_type, 0.0);
+    for (size_t row = 0; row + 1 < v.tensor.indptr.size(); ++row) {
+      int64_t start = v.tensor.indptr[row];
+      int64_t end = v.tensor.indptr[row + 1];
+      const int64_t row_i = static_cast<int64_t>(row);
+      for (int64_t idx = start; idx < end; ++idx) {
+        int64_t col = v.tensor.indices[idx];
+        int64_t offset = row_i * v.tensor.shape[1] + col;
+        out.tensor.Data()[offset] = v.tensor.sparse_values[idx];
+      }
+    }
+    return out;
+  }
+  if (v.tensor.kind == TensorKind::kSparseCOO) {
+    Value out = Value::Tensor(v.tensor.shape, v.tensor.elem_type, 0.0);
+    for (size_t i = 0; i < v.tensor.rows.size(); ++i) {
+      int64_t row = v.tensor.rows[i];
+      int64_t col = v.tensor.cols[i];
+      int64_t offset = row * v.tensor.shape[1] + col;
+      out.tensor.Data()[offset] = v.tensor.sparse_values[i];
+    }
+    return out;
+  }
+  throw util::Error("Ragged tensor must be densified explicitly via to_dense", line, column);
+}
+
+Value DenseToCSR(const Value& dense) {
+  int64_t rows = dense.tensor.shape[0];
+  int64_t cols = dense.tensor.shape[1];
+  std::vector<int64_t> indptr(rows + 1, 0);
+  std::vector<int64_t> indices;
+  std::vector<double> vals;
+  const double* data = dense.tensor.Data();
+  for (int64_t r = 0; r < rows; ++r) {
+    for (int64_t c = 0; c < cols; ++c) {
+      double val = data[r * cols + c];
+      if (val != 0.0) {
+        indices.push_back(c);
+        vals.push_back(val);
+      }
+    }
+    indptr[static_cast<size_t>(r + 1)] = static_cast<int64_t>(indices.size());
+  }
+  return Value::TensorSparseCSR({rows, cols}, std::move(indptr), std::move(indices),
+                                std::move(vals), dense.tensor.elem_type);
+}
+
+Value DenseToCOO(const Value& dense) {
+  int64_t rows = dense.tensor.shape[0];
+  int64_t cols = dense.tensor.shape[1];
+  std::vector<int64_t> r;
+  std::vector<int64_t> c;
+  std::vector<double> vals;
+  const double* data = dense.tensor.Data();
+  for (int64_t i = 0; i < rows; ++i) {
+    for (int64_t j = 0; j < cols; ++j) {
+      double val = data[i * cols + j];
+      if (val != 0.0) {
+        r.push_back(i);
+        c.push_back(j);
+        vals.push_back(val);
+      }
+    }
+  }
+  return Value::TensorSparseCOO({rows, cols}, std::move(r), std::move(c), std::move(vals),
+                                dense.tensor.elem_type);
+}
+
 void EnsureFiniteOrThrow(const Value& v, int line, int column) {
   auto finite = [](double d) { return std::isfinite(d); };
   switch (v.type) {
@@ -813,6 +889,106 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
     }
   }
   if (lhs.type == DType::kTensor || rhs.type == DType::kTensor) {
+    // Handle ragged special-case.
+    if ((lhs.type == DType::kTensor && lhs.tensor.kind == TensorKind::kRagged) ||
+        (rhs.type == DType::kTensor && rhs.tensor.kind == TensorKind::kRagged)) {
+      if (lhs.type != DType::kTensor || rhs.type != DType::kTensor ||
+          lhs.tensor.kind != TensorKind::kRagged || rhs.tensor.kind != TensorKind::kRagged) {
+        throw util::Error(
+            "Ragged tensors only support ops with matching ragged tensors (use to_dense)",
+            expr.line, expr.column);
+      }
+      if (lhs.tensor.row_splits != rhs.tensor.row_splits) {
+        throw util::Error("Ragged tensors must share identical row_splits for elementwise ops",
+                          expr.line, expr.column);
+      }
+      if (lhs.tensor.ragged_values.size() != rhs.tensor.ragged_values.size()) {
+        throw util::Error("Ragged value buffers must match in length", expr.line, expr.column);
+      }
+      Value out = Value::TensorRagged(
+          lhs.tensor.row_splits, {},
+          PromoteType(lhs.tensor.elem_type, rhs.tensor.elem_type, expr.line, expr.column));
+      out.tensor.ragged_values.resize(lhs.tensor.ragged_values.size());
+      for (size_t i = 0; i < out.tensor.ragged_values.size(); ++i) {
+        double lv = lhs.tensor.ragged_values[i];
+        double rv = rhs.tensor.ragged_values[i];
+        switch (expr.op) {
+          case parser::BinaryOp::kAdd:
+            out.tensor.ragged_values[i] = lv + rv;
+            break;
+          case parser::BinaryOp::kSub:
+            out.tensor.ragged_values[i] = lv - rv;
+            break;
+          case parser::BinaryOp::kMul:
+            out.tensor.ragged_values[i] = lv * rv;
+            break;
+          case parser::BinaryOp::kDiv:
+            if (rv == 0.0) throw util::Error("Division by zero", expr.line, expr.column);
+            out.tensor.ragged_values[i] = lv / rv;
+            break;
+          default:
+            throw util::Error("Ragged tensors only support +,-,*,/", expr.line, expr.column);
+        }
+      }
+      return out;
+    }
+    // Handle sparse: same format only, no broadcasting. Otherwise densify.
+    if ((lhs.type == DType::kTensor && lhs.tensor.kind != TensorKind::kDense) ||
+        (rhs.type == DType::kTensor && rhs.tensor.kind != TensorKind::kDense)) {
+      if (lhs.type == DType::kTensor && rhs.type == DType::kTensor &&
+          lhs.tensor.kind == rhs.tensor.kind &&
+          (lhs.tensor.kind == TensorKind::kSparseCSR ||
+           lhs.tensor.kind == TensorKind::kSparseCOO)) {
+        if (lhs.tensor.shape != rhs.tensor.shape) {
+          throw util::Error("Sparse tensors must share shape for elementwise ops", expr.line,
+                            expr.column);
+        }
+        Value dense_l = ToDenseTensor(lhs, expr.line, expr.column);
+        Value dense_r = ToDenseTensor(rhs, expr.line, expr.column);
+        const std::vector<int64_t>& out_shape = lhs.tensor.shape;
+        DType elem_target =
+            PromoteType(dense_l.tensor.elem_type, dense_r.tensor.elem_type, expr.line, expr.column);
+        Value out = Value::Tensor(out_shape, elem_target, 0.0);
+        for (int64_t i = 0; i < out.tensor.size; ++i) {
+          double lv = dense_l.tensor.Data()[i];
+          double rv = dense_r.tensor.Data()[i];
+          switch (expr.op) {
+            case parser::BinaryOp::kAdd:
+              out.tensor.Data()[i] = lv + rv;
+              break;
+            case parser::BinaryOp::kSub:
+              out.tensor.Data()[i] = lv - rv;
+              break;
+            case parser::BinaryOp::kMul:
+              out.tensor.Data()[i] = lv * rv;
+              break;
+            case parser::BinaryOp::kDiv:
+              if (rv == 0.0) throw util::Error("Division by zero", expr.line, expr.column);
+              out.tensor.Data()[i] = lv / rv;
+              break;
+            default:
+              throw util::Error("Sparse tensor comparison not supported", expr.line, expr.column);
+          }
+        }
+        return lhs.tensor.kind == TensorKind::kSparseCSR ? DenseToCSR(out) : DenseToCOO(out);
+      }
+      // Different sparse formats or sparse with ragged already handled above: error if both are
+      // sparse but formats differ; else densify the sparse side when mixed with dense.
+      if (lhs.type == DType::kTensor && rhs.type == DType::kTensor &&
+          lhs.tensor.kind != rhs.tensor.kind && lhs.tensor.kind != TensorKind::kDense &&
+          rhs.tensor.kind != TensorKind::kDense) {
+        throw util::Error("Sparse tensor formats must match; convert first", expr.line,
+                          expr.column);
+      }
+      Value lhs_d = lhs.type == DType::kTensor && lhs.tensor.kind != TensorKind::kDense
+                        ? ToDenseTensor(lhs, expr.line, expr.column)
+                        : lhs;
+      Value rhs_d = rhs.type == DType::kTensor && rhs.tensor.kind != TensorKind::kDense
+                        ? ToDenseTensor(rhs, expr.line, expr.column)
+                        : rhs;
+      lhs = lhs_d;
+      rhs = rhs_d;
+    }
     const std::vector<int64_t> lhs_shape =
         lhs.type == DType::kTensor ? lhs.tensor.shape : std::vector<int64_t>{};
     const std::vector<int64_t> rhs_shape =
@@ -1376,6 +1552,217 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     out.tensor.elem_type = elem_type;
     return out;
   }
+  if (name == "tensor_sparse_csr") {
+    if (args.size() != 4) {
+      throw util::Error(
+          "tensor_sparse_csr expects (shape_tuple, indptr_tuple, indices_tuple, values_tuple)",
+          call_line, call_col);
+    }
+    auto extract_tuple_i64 = [&](const Value& v, const std::string& what) {
+      if (v.type != DType::kTuple) {
+        throw util::Error(what + " must be a tuple", call_line, call_col);
+      }
+      std::vector<int64_t> out;
+      out.reserve(v.tuple.elements.size());
+      for (const auto& e : v.tuple.elements) {
+        out.push_back(static_cast<int64_t>(e.f64));
+      }
+      return out;
+    };
+    auto shape = extract_tuple_i64(args[0], "shape");
+    if (shape.size() != 2) {
+      throw util::Error("tensor_sparse_csr shape must be length 2", call_line, call_col);
+    }
+    auto indptr = extract_tuple_i64(args[1], "indptr");
+    auto indices = extract_tuple_i64(args[2], "indices");
+    if (indptr.size() != static_cast<size_t>(shape[0] + 1)) {
+      throw util::Error("indptr length must be rows+1", call_line, call_col);
+    }
+    auto vals_tuple = args[3];
+    if (vals_tuple.type != DType::kTuple) {
+      throw util::Error("values must be a tuple", call_line, call_col);
+    }
+    if (indices.size() != vals_tuple.tuple.elements.size()) {
+      throw util::Error("indices and values must have same length", call_line, call_col);
+    }
+    std::vector<double> vals;
+    vals.reserve(vals_tuple.tuple.elements.size());
+    DType elem_type = DType::kF64;
+    for (const auto& e : vals_tuple.tuple.elements) {
+      vals.push_back(e.f64);
+      elem_type = PromoteType(elem_type, e.type, call_line, call_col);
+    }
+    return Value::TensorSparseCSR(std::move(shape), std::move(indptr), std::move(indices),
+                                  std::move(vals), elem_type);
+  }
+  if (name == "tensor_sparse_coo") {
+    if (args.size() != 4) {
+      throw util::Error(
+          "tensor_sparse_coo expects (shape_tuple, rows_tuple, cols_tuple, values_tuple)",
+          call_line, call_col);
+    }
+    auto extract_tuple_i64 = [&](const Value& v, const std::string& what) {
+      if (v.type != DType::kTuple) {
+        throw util::Error(what + " must be a tuple", call_line, call_col);
+      }
+      std::vector<int64_t> out;
+      out.reserve(v.tuple.elements.size());
+      for (const auto& e : v.tuple.elements) {
+        out.push_back(static_cast<int64_t>(e.f64));
+      }
+      return out;
+    };
+    auto shape = extract_tuple_i64(args[0], "shape");
+    if (shape.size() != 2) {
+      throw util::Error("tensor_sparse_coo shape must be length 2", call_line, call_col);
+    }
+    auto rows_v = extract_tuple_i64(args[1], "rows");
+    auto cols_v = extract_tuple_i64(args[2], "cols");
+    auto vals_tuple = args[3];
+    if (vals_tuple.type != DType::kTuple) {
+      throw util::Error("values must be a tuple", call_line, call_col);
+    }
+    if (rows_v.size() != cols_v.size() || rows_v.size() != vals_tuple.tuple.elements.size()) {
+      throw util::Error("rows, cols, and values must have same length", call_line, call_col);
+    }
+    std::vector<double> vals;
+    vals.reserve(vals_tuple.tuple.elements.size());
+    DType elem_type = DType::kF64;
+    for (const auto& e : vals_tuple.tuple.elements) {
+      vals.push_back(e.f64);
+      elem_type = PromoteType(elem_type, e.type, call_line, call_col);
+    }
+    return Value::TensorSparseCOO(std::move(shape), std::move(rows_v), std::move(cols_v),
+                                  std::move(vals), elem_type);
+  }
+  if (name == "tensor_ragged") {
+    if (args.size() != 2) {
+      throw util::Error("tensor_ragged expects (row_splits_tuple, values_tuple)", call_line,
+                        call_col);
+    }
+    auto extract_tuple_i64 = [&](const Value& v, const std::string& what) {
+      if (v.type != DType::kTuple) {
+        throw util::Error(what + " must be a tuple", call_line, call_col);
+      }
+      std::vector<int64_t> out;
+      out.reserve(v.tuple.elements.size());
+      for (const auto& e : v.tuple.elements) {
+        out.push_back(static_cast<int64_t>(e.f64));
+      }
+      return out;
+    };
+    auto splits = extract_tuple_i64(args[0], "row_splits");
+    if (splits.size() < 2) {
+      throw util::Error("row_splits must have at least 2 entries", call_line, call_col);
+    }
+    for (size_t i = 1; i < splits.size(); ++i) {
+      if (splits[i] < splits[i - 1]) {
+        throw util::Error("row_splits must be non-decreasing", call_line, call_col);
+      }
+    }
+    auto vals_tuple = args[1];
+    if (vals_tuple.type != DType::kTuple) {
+      throw util::Error("values must be a tuple", call_line, call_col);
+    }
+    std::vector<double> vals;
+    vals.reserve(vals_tuple.tuple.elements.size());
+    DType elem_type = DType::kF64;
+    for (const auto& e : vals_tuple.tuple.elements) {
+      vals.push_back(e.f64);
+      elem_type = PromoteType(elem_type, e.type, call_line, call_col);
+    }
+    return Value::TensorRagged(std::move(splits), std::move(vals), elem_type);
+  }
+  if (name == "to_dense") {
+    expect_args(1, name);
+    const Value& v = args[0];
+    if (v.type != DType::kTensor) {
+      throw util::Error("to_dense expects a tensor", call_line, call_col);
+    }
+    if (v.tensor.kind == TensorKind::kDense) return v;
+    // Only support 2D sparse -> dense; ragged not supported.
+    if (v.tensor.kind == TensorKind::kSparseCSR) {
+      Value out = Value::Tensor(v.tensor.shape, v.tensor.elem_type, 0.0);
+      for (size_t row = 0; row + 1 < v.tensor.indptr.size(); ++row) {
+        int64_t start = v.tensor.indptr[row];
+        int64_t end = v.tensor.indptr[row + 1];
+        const int64_t row_i = static_cast<int64_t>(row);
+        for (int64_t idx = start; idx < end; ++idx) {
+          int64_t col = v.tensor.indices[idx];
+          int64_t offset = row_i * v.tensor.shape[1] + col;
+          out.tensor.Data()[offset] = v.tensor.sparse_values[idx];
+        }
+      }
+      return out;
+    }
+    if (v.tensor.kind == TensorKind::kSparseCOO) {
+      Value out = Value::Tensor(v.tensor.shape, v.tensor.elem_type, 0.0);
+      for (size_t i = 0; i < v.tensor.rows.size(); ++i) {
+        int64_t row = v.tensor.rows[i];
+        int64_t col = v.tensor.cols[i];
+        int64_t offset = row * v.tensor.shape[1] + col;
+        out.tensor.Data()[offset] = v.tensor.sparse_values[i];
+      }
+      return out;
+    }
+    throw util::Error("to_dense for ragged tensors is not supported yet", call_line, call_col);
+  }
+  if (name == "to_sparse_csr") {
+    expect_args(1, name);
+    const Value& v = args[0];
+    if (!IsDenseTensor(v)) {
+      throw util::Error("to_sparse_csr expects a dense tensor", call_line, call_col);
+    }
+    if (v.tensor.shape.size() != 2) {
+      throw util::Error("to_sparse_csr supports only 2D tensors", call_line, call_col);
+    }
+    int64_t rows = v.tensor.shape[0];
+    int64_t cols = v.tensor.shape[1];
+    std::vector<int64_t> indptr(rows + 1, 0);
+    std::vector<int64_t> indices;
+    std::vector<double> vals;
+    const double* data = v.tensor.Data();
+    for (int64_t r = 0; r < rows; ++r) {
+      for (int64_t c = 0; c < cols; ++c) {
+        double val = data[r * cols + c];
+        if (val != 0.0) {
+          indices.push_back(c);
+          vals.push_back(val);
+        }
+      }
+      indptr[static_cast<size_t>(r + 1)] = static_cast<int64_t>(indices.size());
+    }
+    return Value::TensorSparseCSR({rows, cols}, std::move(indptr), std::move(indices),
+                                  std::move(vals), v.tensor.elem_type);
+  }
+  if (name == "to_sparse_coo") {
+    expect_args(1, name);
+    const Value& v = args[0];
+    if (!IsDenseTensor(v)) {
+      throw util::Error("to_sparse_coo expects a dense tensor", call_line, call_col);
+    }
+    if (v.tensor.shape.size() != 2) {
+      throw util::Error("to_sparse_coo supports only 2D tensors", call_line, call_col);
+    }
+    int64_t rows = v.tensor.shape[0];
+    int64_t cols = v.tensor.shape[1];
+    std::vector<int64_t> r;
+    std::vector<int64_t> c;
+    std::vector<double> vals;
+    const double* data = v.tensor.Data();
+    for (int64_t i = 0; i < rows; ++i) {
+      for (int64_t j = 0; j < cols; ++j) {
+        double val = data[i * cols + j];
+        if (val != 0.0) {
+          r.push_back(i);
+          c.push_back(j);
+          vals.push_back(val);
+        }
+      }
+    }
+    return Value::TensorSparseCOO({rows, cols}, std::move(r), std::move(c), std::move(vals),
+                                  v.tensor.elem_type);
+  }
   if (name == "pow") {
     expect_args(2, name);
     ensure_not_tensor(args[0], name);
@@ -1476,11 +1863,27 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     if (v.type != DType::kTensor) {
       return Value::F64(v.f64);
     }
-    double total = 0.0;
-    for (int64_t i = 0; i < v.tensor.size; ++i) {
-      total += v.tensor.Data()[i];
+    auto finish_as_elem = [&](double total) {
+      return CastTo(v.tensor.elem_type, Value::F64(total), call_line, call_col);
+    };
+    if (v.tensor.kind == TensorKind::kDense) {
+      double total = 0.0;
+      for (int64_t i = 0; i < v.tensor.size; ++i) {
+        total += v.tensor.Data()[i];
+      }
+      return finish_as_elem(total);
     }
-    return Value::F64(total);
+    if (v.tensor.kind == TensorKind::kSparseCSR || v.tensor.kind == TensorKind::kSparseCOO) {
+      double total = 0.0;
+      for (double val : v.tensor.sparse_values) total += val;
+      return finish_as_elem(total);
+    }
+    if (v.tensor.kind == TensorKind::kRagged) {
+      double total = 0.0;
+      for (double val : v.tensor.ragged_values) total += val;
+      return finish_as_elem(total);
+    }
+    throw util::Error("Unsupported tensor kind for sum", call_line, call_col);
   }
   if (name == "mean") {
     expect_args(1, name);
@@ -1488,12 +1891,30 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     if (v.type != DType::kTensor) {
       return Value::F64(v.f64);
     }
-    double total = 0.0;
-    for (int64_t i = 0; i < v.tensor.size; ++i) {
-      total += v.tensor.Data()[i];
+    auto finish_as_elem = [&](double mean) {
+      return CastTo(v.tensor.elem_type, Value::F64(mean), call_line, call_col);
+    };
+    if (v.tensor.kind == TensorKind::kDense) {
+      double total = 0.0;
+      for (int64_t i = 0; i < v.tensor.size; ++i) {
+        total += v.tensor.Data()[i];
+      }
+      double mean = total / static_cast<double>(v.tensor.size);
+      return finish_as_elem(mean);
     }
-    double mean = total / static_cast<double>(v.tensor.size);
-    return Value::F64(mean);
+    if (v.tensor.kind == TensorKind::kSparseCSR || v.tensor.kind == TensorKind::kSparseCOO) {
+      double total = 0.0;
+      for (double val : v.tensor.sparse_values) total += val;
+      double denom = static_cast<double>(v.tensor.shape[0] * v.tensor.shape[1]);
+      return finish_as_elem(total / denom);
+    }
+    if (v.tensor.kind == TensorKind::kRagged) {
+      double total = 0.0;
+      for (double val : v.tensor.ragged_values) total += val;
+      double denom = static_cast<double>(v.tensor.row_splits.back());
+      return finish_as_elem(total / denom);
+    }
+    throw util::Error("Unsupported tensor kind for mean", call_line, call_col);
   }
   if (name == "len") {
     expect_args(1, name);
@@ -1843,8 +2264,28 @@ std::string Value::ToString() const {
     }
     case DType::kTensor: {
       std::ostringstream oss;
-      oss << "tensor" << ShapeToString(tensor.shape) << "<" << DTypeToString(tensor.elem_type)
-          << ">";
+      std::string kind = "dense";
+      switch (tensor.kind) {
+        case TensorKind::kDense:
+          kind = "dense";
+          break;
+        case TensorKind::kSparseCSR:
+          kind = "sparse_csr";
+          break;
+        case TensorKind::kSparseCOO:
+          kind = "sparse_coo";
+          break;
+        case TensorKind::kRagged:
+          kind = "ragged";
+          break;
+      }
+      oss << "tensor[" << kind << "]" << ShapeToString(tensor.shape) << "<"
+          << DTypeToString(tensor.elem_type) << ">";
+      if (tensor.kind == TensorKind::kSparseCSR || tensor.kind == TensorKind::kSparseCOO) {
+        oss << " nnz=" << tensor.sparse_values.size();
+      } else if (tensor.kind == TensorKind::kRagged) {
+        oss << " rows=" << (tensor.row_splits.empty() ? 0 : tensor.row_splits.size() - 1);
+      }
       return oss.str();
     }
     case DType::kTuple: {

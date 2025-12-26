@@ -104,6 +104,26 @@ std::string TypeNameStr(const Type& t) {
     s += "}";
     return s;
   }
+  if (t.kind == DType::kTensor) {
+    std::string kind = "dense";
+    if (t.tensor_kind.has_value()) {
+      switch (t.tensor_kind.value()) {
+        case TensorKind::kDense:
+          kind = "dense";
+          break;
+        case TensorKind::kSparseCSR:
+          kind = "sparse_csr";
+          break;
+        case TensorKind::kSparseCOO:
+          kind = "sparse_coo";
+          break;
+        case TensorKind::kRagged:
+          kind = "ragged";
+          break;
+      }
+    }
+    return "tensor<" + kind + ">";
+  }
   return DTypeName(t.kind);
 }
 
@@ -135,7 +155,14 @@ bool IsAssignableType(const Type& from, const Type& to) {
     }
     return true;
   }
-  if (to.kind == DType::kTensor) return from.kind == DType::kTensor;
+  if (to.kind == DType::kTensor) {
+    if (from.kind != DType::kTensor) return false;
+    if (to.tensor_kind.has_value() && from.tensor_kind.has_value() &&
+        to.tensor_kind.value() != from.tensor_kind.value()) {
+      return false;
+    }
+    return true;
+  }
   if (from.kind == to.kind) return true;
   return PromoteType(from.kind, to.kind) == to.kind;
 }
@@ -157,8 +184,22 @@ TypeChecker::TypeChecker() {
   functions_["decimal"] = FunSig{{std::nullopt}, Type{DType::kDecimal}};
   functions_["rational"] = FunSig{{std::nullopt, std::nullopt}, Type{DType::kRational}};
   functions_["complex"] = FunSig{{std::nullopt, std::nullopt}, Type{DType::kC128}};
-  functions_["tensor"] = FunSig{{std::nullopt, std::nullopt}, Type{DType::kTensor}};
-  functions_["tensor_values"] = FunSig{{std::nullopt}, Type{DType::kTensor}};
+  auto tensor_type = [&](TensorKind k) {
+    Type t{DType::kTensor};
+    t.tensor_kind = k;
+    return t;
+  };
+  functions_["tensor"] = FunSig{{std::nullopt, std::nullopt}, tensor_type(TensorKind::kDense)};
+  functions_["tensor_values"] = FunSig{{std::nullopt}, tensor_type(TensorKind::kDense)};
+  functions_["tensor_sparse_csr"] = FunSig{{std::nullopt, std::nullopt, std::nullopt, std::nullopt},
+                                           tensor_type(TensorKind::kSparseCSR)};
+  functions_["tensor_sparse_coo"] = FunSig{{std::nullopt, std::nullopt, std::nullopt, std::nullopt},
+                                           tensor_type(TensorKind::kSparseCOO)};
+  functions_["tensor_ragged"] =
+      FunSig{{std::nullopt, std::nullopt}, tensor_type(TensorKind::kRagged)};
+  functions_["to_dense"] = FunSig{{Type{DType::kTensor}}, tensor_type(TensorKind::kDense)};
+  functions_["to_sparse_csr"] = FunSig{{Type{DType::kTensor}}, tensor_type(TensorKind::kSparseCSR)};
+  functions_["to_sparse_coo"] = FunSig{{Type{DType::kTensor}}, tensor_type(TensorKind::kSparseCOO)};
   functions_["sum"] = FunSig{{Type{DType::kTensor}}, Type{DType::kF64}};
   functions_["mean"] = FunSig{{Type{DType::kTensor}}, Type{DType::kF64}};
   functions_["len"] = FunSig{{std::nullopt}, Type{DType::kI64}};
@@ -225,6 +266,44 @@ std::optional<Type> TypeChecker::TypeOf(const parser::Expression* expr) {
     auto lt = TypeOf(bin->lhs.get());
     auto rt = TypeOf(bin->rhs.get());
     if (!lt.has_value() || !rt.has_value()) return std::nullopt;
+    if (lt->kind == DType::kTensor || rt->kind == DType::kTensor) {
+      // Tensor mixing rules.
+      auto kind_of = [&](const std::optional<Type>& t) -> std::optional<TensorKind> {
+        return t.has_value() ? t->tensor_kind : std::nullopt;
+      };
+      auto lk = kind_of(lt);
+      auto rk = kind_of(rt);
+      auto line = bin->line;
+      auto col = bin->column;
+      if (lk.has_value() && rk.has_value()) {
+        if (lk.value() == TensorKind::kRagged || rk.value() == TensorKind::kRagged) {
+          if (lk.value() != TensorKind::kRagged || rk.value() != TensorKind::kRagged) {
+            throw util::Error("Ragged tensors only operate with matching ragged tensors", line,
+                              col);
+          }
+          Type t{DType::kTensor};
+          t.tensor_kind = TensorKind::kRagged;
+          return t;
+        }
+        // Dense with sparse -> result dense.
+        if ((lk.value() == TensorKind::kDense && rk.value() != TensorKind::kDense) ||
+            (rk.value() == TensorKind::kDense && lk.value() != TensorKind::kDense)) {
+          Type t{DType::kTensor};
+          t.tensor_kind = TensorKind::kDense;
+          return t;
+        }
+        if (lk.value() != rk.value()) {
+          throw util::Error("Sparse tensor formats must match; convert first", line, col);
+        }
+        Type t{DType::kTensor};
+        t.tensor_kind = lk;
+        return t;
+      }
+      // Mixed dense/sparse: result dense tensor.
+      Type t{DType::kTensor};
+      t.tensor_kind = TensorKind::kDense;
+      return t;
+    }
     if (bin->op == BinaryOp::kEq || bin->op == BinaryOp::kNe || bin->op == BinaryOp::kGt ||
         bin->op == BinaryOp::kGe || bin->op == BinaryOp::kLt || bin->op == BinaryOp::kLe) {
       return Type{DType::kBool};
@@ -264,8 +343,34 @@ std::optional<Type> TypeChecker::TypeOf(const parser::Expression* expr) {
       }
       return sig.ret;
     }
+    auto tensor_type = [&](TensorKind k) {
+      Type t{DType::kTensor};
+      t.tensor_kind = k;
+      return t;
+    };
     if (call->callee == "tensor") {
-      return Type{DType::kTensor};
+      return tensor_type(TensorKind::kDense);
+    }
+    if (call->callee == "tensor_values") {
+      return tensor_type(TensorKind::kDense);
+    }
+    if (call->callee == "tensor_sparse_csr") {
+      return tensor_type(TensorKind::kSparseCSR);
+    }
+    if (call->callee == "tensor_sparse_coo") {
+      return tensor_type(TensorKind::kSparseCOO);
+    }
+    if (call->callee == "tensor_ragged") {
+      return tensor_type(TensorKind::kRagged);
+    }
+    if (call->callee == "to_dense") {
+      return tensor_type(TensorKind::kDense);
+    }
+    if (call->callee == "to_sparse_csr") {
+      return tensor_type(TensorKind::kSparseCSR);
+    }
+    if (call->callee == "to_sparse_coo") {
+      return tensor_type(TensorKind::kSparseCOO);
     }
     return std::nullopt;
   }
