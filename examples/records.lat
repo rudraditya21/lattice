@@ -1,0 +1,15 @@
+// Records with string keys, access, builtins, and destructuring
+r = {x: 1, "y": 2.5, "name": "lattice"}
+print(r["x"])
+print(r["name"])
+
+// Builtins
+print(len(r))
+print(keys(r))
+print(values(r))
+print(has_key(r, "y"))
+print(has_key(r, "missing"))
+
+// Structural equality
+print({a: 1} == {a: 1})
+print({a: 1} == {a: 2})

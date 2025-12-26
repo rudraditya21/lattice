@@ -1,0 +1,14 @@
+// Functions with annotations and recursion
+func add(a: i32, b: i32) -> i32 { return a + b; }
+func fact(n: i32) -> i32 {
+  if (n <= 1) { return 1; }
+  return n * fact(n - 1);
+}
+func mixed(a, b: f64) { return a + b; }  // mixed annotated/unannotated params stay gradual
+
+x = add(2, 3)
+y = fact(5)
+z = mixed(1, 2.5)
+print(x)
+print(y)
+print(z)

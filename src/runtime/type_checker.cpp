@@ -126,6 +126,7 @@ bool IsAssignableType(const Type& from, const Type& to) {
     return true;
   }
   if (to.kind == DType::kRecord && from.kind == DType::kRecord) {
+    if (to.record_fields.empty()) return true;  // treat empty metadata as wildcard record
     if (to.record_fields.size() != from.record_fields.size()) return false;
     for (size_t i = 0; i < to.record_fields.size(); ++i) {
       if (to.record_fields[i].first != from.record_fields[i].first) return false;

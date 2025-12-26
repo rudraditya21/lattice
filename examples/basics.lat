@@ -1,0 +1,19 @@
+// Basics: literals, arithmetic, comparisons, booleans, and strings
+x = 10
+y = 3.5
+s = "hello"
+print(x + y)          // arithmetic with promotion
+print(x > 5)          // comparison yields bool
+print(s)              // string literal
+
+// Collections: tuple and record at a glance
+t = (1, "a", 3.0)
+r = {name: "lattice", version: 1}
+print(t[1])
+print(r["name"])
+
+// Control flow: if/else, while, for, break/continue
+if (x == 10) { x = x + 1 } else { x = 0 }
+while (x < 14) { x = x + 1; if (x != 13) { } else { continue; } }
+for (i = 0; i < 5; i = i + 1) { if (i != 2) { } else { break; } }
+print(x)

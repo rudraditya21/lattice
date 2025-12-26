@@ -1,0 +1,18 @@
+// Tuples: literals, indexing, equality, destructuring
+t = (1, 2.5, "hi")
+first = t[0]
+third = t[2]
+print(first)
+print(third)
+
+// Structural equality
+print((1, 2) == (1, 2))
+print((1, 2) == (2, 1))
+
+// Destructuring
+(a, b) = (10, 20)
+print(a)
+print(b)
+
+// Length builtin
+print(len(t))
