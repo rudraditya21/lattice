@@ -18,8 +18,8 @@ struct ExecResult {
 };
 
 // Promotion/casting helpers (exposed for tests).
-DType PromoteType(DType a, DType b);
-Value CastTo(DType target, const Value& v);
+DType PromoteType(DType a, DType b, int line = 0, int column = 0);
+Value CastTo(DType target, const Value& v, int line = 0, int column = 0);
 
 class Evaluator {
  public:

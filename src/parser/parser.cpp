@@ -486,9 +486,10 @@ std::unique_ptr<Expression> Parser::Primary() {
           Consume(lexer::TokenType::kComma, "Expected ',' between arguments");
         }
       }
-      expr = std::make_unique<CallExpression>(name, std::move(args));
-      expr->line = Previous().line;
-      expr->column = Previous().column;
+      auto call_expr = std::make_unique<CallExpression>(name, std::move(args));
+      call_expr->line = Previous().line;
+      call_expr->column = Previous().column;
+      expr = std::move(call_expr);
     } else {
       expr = std::make_unique<Identifier>(name);
       expr->line = Previous().line;

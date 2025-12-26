@@ -303,13 +303,13 @@ DType RankToFloat(int rank, bool seen_bf16) {
   }
 }
 
-DType PromoteType(DType a, DType b) {
+DType PromoteType(DType a, DType b, int line, int column) {
   auto is_decimal_or_rational = [](DType t) {
     return t == DType::kDecimal || t == DType::kRational;
   };
   if (a == DType::kString || b == DType::kString) {
     if (a == b) return DType::kString;
-    throw util::Error("String can only operate with string", 0, 0);
+    throw util::Error("String can only operate with string", line, column);
   }
   if (a == DType::kTensor || b == DType::kTensor) {
     return DType::kTensor;
@@ -317,7 +317,8 @@ DType PromoteType(DType a, DType b) {
   if (a == DType::kDecimal && b == DType::kDecimal) return DType::kDecimal;
   if (a == DType::kRational && b == DType::kRational) return DType::kRational;
   if (is_decimal_or_rational(a) || is_decimal_or_rational(b)) {
-    throw util::Error("Decimal/rational cross-type arithmetic not supported in promotion", 0, 0);
+    throw util::Error("Decimal/rational cross-type arithmetic not supported in promotion", line,
+                      column);
   }
   const int complex_rank = std::max(ComplexRank(a), ComplexRank(b));
   const int float_rank = std::max(FloatRank(a), FloatRank(b));
@@ -351,7 +352,7 @@ DType PromoteType(DType a, DType b) {
   return a;
 }
 
-Value CastTo(DType target, const Value& v) {
+Value CastTo(DType target, const Value& v, int line, int column) {
   auto as_double = [&]() -> double {
     switch (v.type) {
       case DType::kBool:
@@ -376,7 +377,7 @@ Value CastTo(DType target, const Value& v) {
       case DType::kRational:
         return static_cast<double>(v.rational.num) / static_cast<double>(v.rational.den);
       default:
-        throw util::Error("Cannot cast complex/decimal/rational/string/function", 0, 0);
+        throw util::Error("Cannot cast complex/decimal/rational/string/function", line, column);
     }
   };
   auto as_signed = [&]() -> int64_t {
@@ -403,7 +404,7 @@ Value CastTo(DType target, const Value& v) {
       case DType::kRational:
         return static_cast<int64_t>(v.rational.num / v.rational.den);
       default:
-        throw util::Error("Cannot cast complex/decimal/rational/function", 0, 0);
+        throw util::Error("Cannot cast complex/decimal/rational/function", line, column);
     }
   };
   auto as_unsigned = [&]() -> uint64_t {
@@ -430,7 +431,7 @@ Value CastTo(DType target, const Value& v) {
       case DType::kRational:
         return static_cast<uint64_t>(v.rational.num / v.rational.den);
       default:
-        throw util::Error("Cannot cast complex/decimal/rational/function", 0, 0);
+        throw util::Error("Cannot cast complex/decimal/rational/function", line, column);
     }
   };
   switch (target) {
@@ -481,7 +482,7 @@ Value CastTo(DType target, const Value& v) {
       return Value::Decimal(static_cast<long double>(as_double()));
     case DType::kString:
       if (v.type == DType::kString) return v;
-      throw util::Error("Cannot cast to string", 0, 0);
+      throw util::Error("Cannot cast to string", line, column);
     case DType::kRational: {
       if (v.type == DType::kRational) {
         return v;
@@ -490,7 +491,7 @@ Value CastTo(DType target, const Value& v) {
       return Value::RationalValueNormalized(num, 1);
     }
     default:
-      throw util::Error("Unsupported cast target", 0, 0);
+      throw util::Error("Unsupported cast target", line, column);
   }
 }
 
@@ -822,11 +823,11 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
     const std::vector<int64_t>& out_shape = *broadcast_shape;
     DType elem_target;
     if (lhs.type == DType::kTensor && rhs.type == DType::kTensor) {
-      elem_target = PromoteType(lhs.tensor.elem_type, rhs.tensor.elem_type);
+      elem_target = PromoteType(lhs.tensor.elem_type, rhs.tensor.elem_type, expr.line, expr.column);
     } else if (lhs.type == DType::kTensor) {
-      elem_target = PromoteType(lhs.tensor.elem_type, rhs.type);
+      elem_target = PromoteType(lhs.tensor.elem_type, rhs.type, expr.line, expr.column);
     } else {
-      elem_target = PromoteType(rhs.tensor.elem_type, lhs.type);
+      elem_target = PromoteType(rhs.tensor.elem_type, lhs.type, expr.line, expr.column);
     }
     Value out = Value::Tensor(out_shape, elem_target, 0.0);
     std::vector<int64_t> lhs_bstrides =
@@ -915,9 +916,9 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
   };
   auto is_complex = [](DType t) { return t == DType::kC64 || t == DType::kC128; };
 
-  DType target = PromoteType(lhs.type, rhs.type);
-  Value lcast = CastTo(target, lhs);
-  Value rcast = CastTo(target, rhs);
+  DType target = PromoteType(lhs.type, rhs.type, expr.line, expr.column);
+  Value lcast = CastTo(target, lhs, expr.line, expr.column);
+  Value rcast = CastTo(target, rhs, expr.line, expr.column);
 
   if (target == DType::kDecimal) {
     long double lv = lcast.decimal;
@@ -1219,7 +1220,7 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
       throw util::Error("Unknown cast target type: " + type_id->name, call.line, call.column);
     }
     Value v = Evaluate(*call.args[1]);
-    return CastTo(dt.value(), v);
+    return CastTo(dt.value(), v, call.line, call.column);
   }
   std::vector<Value> args;
   args.reserve(call.args.size());
@@ -1278,14 +1279,17 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     }
     return Value::Number(0.0);
   }
+  int call_line = call.line;
+  int call_col = call.column;
   auto expect_args = [&](size_t count, const std::string& func) {
     if (args.size() != count) {
-      throw util::Error(func + " expects " + std::to_string(count) + " arguments", 0, 0);
+      throw util::Error(func + " expects " + std::to_string(count) + " arguments", call_line,
+                        call_col);
     }
   };
   auto ensure_not_tensor = [&](const Value& v, const std::string& func) {
     if (v.type == DType::kTensor) {
-      throw util::Error(func + " does not support tensor arguments", 0, 0);
+      throw util::Error(func + " does not support tensor arguments", call_line, call_col);
     }
   };
 
@@ -1301,11 +1305,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
   }
   if (name == "int") {
     expect_args(1, name);
-    return CastTo(DType::kI64, args[0]);
+    return CastTo(DType::kI64, args[0], call_line, call_col);
   }
   if (name == "float") {
     expect_args(1, name);
-    return CastTo(DType::kF64, args[0]);
+    return CastTo(DType::kF64, args[0], call_line, call_col);
   }
   if (name == "decimal") {
     expect_args(1, name);
@@ -1317,7 +1321,7 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     int64_t num = static_cast<int64_t>(args[0].f64);
     int64_t den = static_cast<int64_t>(args[1].f64);
     if (den == 0) {
-      throw util::Error("rational denominator cannot be zero", 0, 0);
+      throw util::Error("rational denominator cannot be zero", call_line, call_col);
     }
     return Value::RationalValueNormalized(num, den);
   }
@@ -1329,7 +1333,7 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
   }
   if (name == "tensor") {
     if (args.size() < 2) {
-      throw util::Error("tensor expects at least shape and fill value", 0, 0);
+      throw util::Error("tensor expects at least shape and fill value", call_line, call_col);
     }
     std::vector<int64_t> shape;
     shape.reserve(args.size() - 1);
@@ -1338,12 +1342,12 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     }
     double fill = args.back().f64;
     if (shape.empty()) {
-      throw util::Error("tensor shape cannot be empty", 0, 0);
+      throw util::Error("tensor shape cannot be empty", call_line, call_col);
     }
     for (int64_t dim : shape) {
       if (dim <= 0) {
-        throw util::Error("tensor dimensions must be positive (got " + std::to_string(dim) + ")", 0,
-                          0);
+        throw util::Error("tensor dimensions must be positive (got " + std::to_string(dim) + ")",
+                          call_line, call_col);
       }
     }
     DType elem_type = DType::kF64;
@@ -1351,20 +1355,20 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
   }
   if (name == "tensor_values") {
     if (args.empty()) {
-      throw util::Error("tensor_values expects at least one value", 0, 0);
+      throw util::Error("tensor_values expects at least one value", call_line, call_col);
     }
     for (const auto& v : args) {
       if (v.type == DType::kTensor) {
-        throw util::Error("tensor_values does not accept tensor arguments", 0, 0);
+        throw util::Error("tensor_values does not accept tensor arguments", call_line, call_col);
       }
     }
     DType elem_type = args[0].type;
     for (size_t i = 1; i < args.size(); ++i) {
-      elem_type = PromoteType(elem_type, args[i].type);
+      elem_type = PromoteType(elem_type, args[i].type, call_line, call_col);
     }
     Value out = Value::Tensor({static_cast<int64_t>(args.size())}, elem_type, 0.0);
     for (size_t i = 0; i < args.size(); ++i) {
-      out.tensor.Data()[i] = CastTo(elem_type, args[i]).f64;
+      out.tensor.Data()[i] = CastTo(elem_type, args[i], call_line, call_col).f64;
     }
     out.tensor.elem_type = elem_type;
     return out;
@@ -1392,10 +1396,10 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
         IsFloat(args[1].type) || args[0].type == DType::kDecimal ||
         args[0].type == DType::kRational || args[1].type == DType::kDecimal ||
         args[1].type == DType::kRational) {
-      throw util::Error("gcd requires integer arguments", 0, 0);
+      throw util::Error("gcd requires integer arguments", call_line, call_col);
     }
-    auto a = static_cast<long long>(CastTo(DType::kI64, args[0]).i64);
-    auto b = static_cast<long long>(CastTo(DType::kI64, args[1]).i64);
+    auto a = static_cast<long long>(CastTo(DType::kI64, args[0], call_line, call_col).i64);
+    auto b = static_cast<long long>(CastTo(DType::kI64, args[1], call_line, call_col).i64);
     return Value::I64(std::gcd(a, b));
   }
   if (name == "lcm") {
@@ -1406,10 +1410,10 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
         IsFloat(args[1].type) || args[0].type == DType::kDecimal ||
         args[0].type == DType::kRational || args[1].type == DType::kDecimal ||
         args[1].type == DType::kRational) {
-      throw util::Error("lcm requires integer arguments", 0, 0);
+      throw util::Error("lcm requires integer arguments", call_line, call_col);
     }
-    auto a = static_cast<long long>(CastTo(DType::kI64, args[0]).i64);
-    auto b = static_cast<long long>(CastTo(DType::kI64, args[1]).i64);
+    auto a = static_cast<long long>(CastTo(DType::kI64, args[0], call_line, call_col).i64);
+    auto b = static_cast<long long>(CastTo(DType::kI64, args[1], call_line, call_col).i64);
     return Value::I64(std::lcm(a, b));
   }
   if (name == "abs") {
@@ -1451,14 +1455,14 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     ensure_not_tensor(args[0], name);
     ensure_not_tensor(args[1], name);
     if (args[1].f64 == 0.0) {
-      throw util::Error("mod divisor cannot be zero", 0, 0);
+      throw util::Error("mod divisor cannot be zero", call_line, call_col);
     }
     if (!IsFloat(args[0].type) && !IsFloat(args[1].type) && !IsComplex(args[0].type) &&
         !IsComplex(args[1].type) && args[0].type != DType::kDecimal &&
         args[0].type != DType::kRational && args[1].type != DType::kDecimal &&
         args[1].type != DType::kRational) {
-      auto lhs = CastTo(DType::kI64, args[0]).i64;
-      auto rhs = CastTo(DType::kI64, args[1]).i64;
+      auto lhs = CastTo(DType::kI64, args[0], call_line, call_col).i64;
+      auto rhs = CastTo(DType::kI64, args[1], call_line, call_col).i64;
       return Value::I64(lhs % rhs);
     }
     return Value::F64(std::fmod(args[0].f64, args[1].f64));
@@ -1500,13 +1504,13 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     if (v.type == DType::kRecord) {
       return Value::I64(static_cast<int64_t>(v.record.fields.size()));
     }
-    throw util::Error("len expects tuple, record, or tensor", 0, 0);
+    throw util::Error("len expects tuple, record, or tensor", call_line, call_col);
   }
   if (name == "keys") {
     expect_args(1, name);
     const Value& v = args[0];
     if (v.type != DType::kRecord) {
-      throw util::Error("keys expects a record", 0, 0);
+      throw util::Error("keys expects a record", call_line, call_col);
     }
     std::vector<Value> elems;
     elems.reserve(v.record.fields.size());
@@ -1519,7 +1523,7 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     expect_args(1, name);
     const Value& v = args[0];
     if (v.type != DType::kRecord) {
-      throw util::Error("values expects a record", 0, 0);
+      throw util::Error("values expects a record", call_line, call_col);
     }
     std::vector<Value> elems;
     elems.reserve(v.record.fields.size());
@@ -1533,7 +1537,7 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     const Value& v = args[0];
     const Value& key = args[1];
     if (v.type != DType::kRecord || key.type != DType::kString) {
-      throw util::Error("has_key expects (record, string)", 0, 0);
+      throw util::Error("has_key expects (record, string)", call_line, call_col);
     }
     return Value::Bool(v.record.index.find(key.str) != v.record.index.end());
   }
@@ -1566,10 +1570,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     ensure_not_tensor(args[0], name);
     ensure_not_tensor(args[1], name);
     ensure_not_tensor(args[2], name);
-    DType target = PromoteType(PromoteType(args[0].type, args[1].type), args[2].type);
-    Value v0 = CastTo(target, args[0]);
-    Value v1 = CastTo(target, args[1]);
-    Value v2 = CastTo(target, args[2]);
+    DType target = PromoteType(PromoteType(args[0].type, args[1].type, call_line, call_col),
+                               args[2].type, call_line, call_col);
+    Value v0 = CastTo(target, args[0], call_line, call_col);
+    Value v1 = CastTo(target, args[1], call_line, call_col);
+    Value v2 = CastTo(target, args[2], call_line, call_col);
     if (IsFloat(target)) {
       double res = std::clamp(v0.f64, v1.f64, v2.f64);
       return target == DType::kF32 ? Value::F32(static_cast<float>(res)) : Value::F64(res);
@@ -1581,9 +1586,9 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     expect_args(2, name);
     ensure_not_tensor(args[0], name);
     ensure_not_tensor(args[1], name);
-    DType target = PromoteType(args[0].type, args[1].type);
-    Value v0 = CastTo(target, args[0]);
-    Value v1 = CastTo(target, args[1]);
+    DType target = PromoteType(args[0].type, args[1].type, call_line, call_col);
+    Value v0 = CastTo(target, args[0], call_line, call_col);
+    Value v1 = CastTo(target, args[1], call_line, call_col);
     if (IsFloat(target)) {
       double res = std::min(v0.f64, v1.f64);
       return target == DType::kF32 ? Value::F32(static_cast<float>(res)) : Value::F64(res);
@@ -1595,9 +1600,9 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     expect_args(2, name);
     ensure_not_tensor(args[0], name);
     ensure_not_tensor(args[1], name);
-    DType target = PromoteType(args[0].type, args[1].type);
-    Value v0 = CastTo(target, args[0]);
-    Value v1 = CastTo(target, args[1]);
+    DType target = PromoteType(args[0].type, args[1].type, call_line, call_col);
+    Value v0 = CastTo(target, args[0], call_line, call_col);
+    Value v1 = CastTo(target, args[1], call_line, call_col);
     if (IsFloat(target)) {
       double res = std::max(v0.f64, v1.f64);
       return target == DType::kF32 ? Value::F32(static_cast<float>(res)) : Value::F64(res);
@@ -1605,7 +1610,7 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     int64_t res = std::max(v0.i64, v1.i64);
     return Value::I64(res);
   }
-  throw util::Error("Unknown function: " + name, 0, 0);
+  throw util::Error("Unknown function: " + name, call_line, call_col);
 }
 
 ExecResult Evaluator::EvaluateBlock(const parser::BlockStatement& block) {
