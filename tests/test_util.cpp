@@ -48,4 +48,11 @@ void TypeCheckStmt(const std::string& stmt) {
   checker.Check(parsed.get());
 }
 
+const rt::Value& Unwrap(const std::optional<rt::Value>& v, const std::string& name,
+                        TestContext* ctx) {
+  ExpectTrue(v.has_value(), name + "_present", ctx);
+  static rt::Value empty{};
+  return v.has_value() ? v.value() : empty;
+}
+
 }  // namespace test

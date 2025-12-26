@@ -72,44 +72,47 @@ void RunRuntimeTests(TestContext* ctx) {
 
   // Blocks and assignment.
   auto block_val = EvalStmt("{ x = 3; x + 2; }", &env);
-  ExpectNear(block_val.value.value().number, 5.0, "block_assignment", ctx);
+  ExpectNear(Unwrap(block_val.value, "block_assignment", ctx).number, 5.0, "block_assignment", ctx);
 
   // Conditional execution.
   auto if_val = EvalStmt("if (0) 10 else 7", &env);
-  ExpectNear(if_val.value.value().number, 7.0, "if_else_execution", ctx);
+  ExpectNear(Unwrap(if_val.value, "if_else_execution", ctx).number, 7.0, "if_else_execution", ctx);
 
   // Nested condition and guard that else is not evaluated when condition is true.
   auto nested = EvalStmt("if (1) { if (0) 9 else 8 } else 7", &env);
-  ExpectNear(nested.value.value().number, 8.0, "nested_if", ctx);
+  ExpectNear(Unwrap(nested.value, "nested_if", ctx).number, 8.0, "nested_if", ctx);
   auto guard = EvalStmt("if (1) 5 else mod(1, 0)", &env);
-  ExpectNear(guard.value.value().number, 5.0, "if_skips_else", ctx);
+  ExpectNear(Unwrap(guard.value, "if_skips_else", ctx).number, 5.0, "if_skips_else", ctx);
 
   // While loops.
   auto loop = EvalStmt("{ i = 0; while (i - 3) { i = i + 1; }; i }", &env);
-  ExpectNear(loop.value.value().number, 3.0, "while_basic_increment", ctx);
+  ExpectNear(Unwrap(loop.value, "while_basic_increment", ctx).number, 3.0, "while_basic_increment",
+             ctx);
   auto zero_loop = EvalStmt("{ j = 0; while (0) { j = j + 1; }; j }", &env);
-  ExpectNear(zero_loop.value.value().number, 0.0, "while_does_not_run_on_false", ctx);
+  ExpectNear(Unwrap(zero_loop.value, "while_does_not_run_on_false", ctx).number, 0.0,
+             "while_does_not_run_on_false", ctx);
 
   // Break/continue in while.
   auto with_break =
       EvalStmt("{ k = 0; while (1) { k = k + 1; if (k - 2) { } else { break; } }; k }", &env);
-  ExpectNear(with_break.value.value().number, 2.0, "while_break", ctx);
+  ExpectNear(Unwrap(with_break.value, "while_break", ctx).number, 2.0, "while_break", ctx);
   auto with_continue = EvalStmt(
       "{ s = 0; t = 0; while (s - 3) { s = s + 1; if (s - 2) { } else { continue; } t = t + 1; }; "
       "t }",
       &env);
-  ExpectNear(with_continue.value.value().number, 2.0, "while_continue", ctx);
+  ExpectNear(Unwrap(with_continue.value, "while_continue", ctx).number, 2.0, "while_continue", ctx);
 
   // For loops.
   auto for_sum =
       EvalStmt("{ acc = 0; for (i = 0; i - 4; i = i + 1) { acc = acc + i; }; acc }", &env);
-  ExpectNear(for_sum.value.value().number, 6.0, "for_loop_sum", ctx);
+  ExpectNear(Unwrap(for_sum.value, "for_loop_sum", ctx).number, 6.0, "for_loop_sum", ctx);
   auto for_no_cond = EvalStmt("{ n = 0; for (; n - 2; ) { n = n + 1; }; n }", &env);
-  ExpectNear(for_no_cond.value.value().number, 2.0, "for_loop_no_cond", ctx);
+  ExpectNear(Unwrap(for_no_cond.value, "for_loop_no_cond", ctx).number, 2.0, "for_loop_no_cond",
+             ctx);
   auto for_break = EvalStmt(
       "{ x = 0; for (i = 0; i - 5; i = i + 1) { if (i - 3) { } else { break; } x = x + 1; }; x }",
       &env);
-  ExpectNear(for_break.value.value().number, 3.0, "for_break", ctx);
+  ExpectNear(Unwrap(for_break.value, "for_break", ctx).number, 3.0, "for_break", ctx);
 
   // Equality/inequality and comparisons.
   ExpectNear(EvalExpr("1 == 1", &env).number, 1.0, "eq_true", ctx);
@@ -122,7 +125,7 @@ void RunRuntimeTests(TestContext* ctx) {
   ExpectNear(EvalExpr("2 < 5", &env).number, 1.0, "lt_true", ctx);
   ExpectNear(EvalExpr("5 <= 2", &env).number, 0.0, "le_false", ctx);
   auto if_eq = EvalStmt("if (2 == 2) 9 else 1", &env);
-  ExpectNear(if_eq.value.value().number, 9.0, "if_with_equality", ctx);
+  ExpectNear(Unwrap(if_eq.value, "if_with_equality", ctx).number, 9.0, "if_with_equality", ctx);
 
   // Boolean literals and coercion in control flow.
   auto bool_true = EvalExpr("true", &env);
@@ -130,20 +133,21 @@ void RunRuntimeTests(TestContext* ctx) {
   auto bool_false = EvalExpr("false", &env);
   ExpectTrue(!bool_false.boolean, "bool_literal_false", ctx);
   auto if_bool = EvalStmt("if (false) 1 else 2", &env);
-  ExpectNear(if_bool.value.value().number, 2.0, "if_with_false_literal", ctx);
+  ExpectNear(Unwrap(if_bool.value, "if_with_false_literal", ctx).number, 2.0,
+             "if_with_false_literal", ctx);
 
   // Functions.
   auto func_simple = EvalStmt("{ func add(a, b) { return a + b; } add(2, 3); }", &env);
-  ExpectNear(func_simple.value.value().number, 5.0, "func_add", ctx);
+  ExpectNear(Unwrap(func_simple.value, "func_add", ctx).number, 5.0, "func_add", ctx);
 
   auto func_no_return = EvalStmt("{ func inc(x) { x = x + 1; } inc(4); }", &env);
-  ExpectNear(func_no_return.value.value().number, 5.0, "func_returns_last_value_when_no_return",
-             ctx);
+  ExpectNear(Unwrap(func_no_return.value, "func_returns_last_value_when_no_return", ctx).number,
+             5.0, "func_returns_last_value_when_no_return", ctx);
 
   auto func_nested = EvalStmt(
       "{ func fact(n) { if (n <= 1) { return 1; } else { return n * fact(n - 1); } } fact(5); }",
       &env);
-  ExpectNear(func_nested.value.value().number, 120.0, "func_recursion", ctx);
+  ExpectNear(Unwrap(func_nested.value, "func_recursion", ctx).number, 120.0, "func_recursion", ctx);
 
   // Type annotations enforcement.
   bool caught_assign = false;
@@ -172,11 +176,11 @@ void RunRuntimeTests(TestContext* ctx) {
 
   // Type metadata propagates.
   auto typed_val = EvalStmt("{ y: i32 = 5; y + 1; }", &env);
-  auto tn = typed_val.value.value().type_name;
+  auto tn = Unwrap(typed_val.value, "typed_value_annotation", ctx).type_name;
   ExpectTrue(tn == "i32" || tn == "i64", "typed_value_annotation", ctx);
   auto typed_ret =
       EvalStmt("{ func addi(a: i32, b: i32) -> i32 { return a + b; } addi(1, 2); }", &env);
-  auto tn2 = typed_ret.value.value().type_name;
+  auto tn2 = Unwrap(typed_ret.value, "typed_return_annotation", ctx).type_name;
   ExpectTrue(tn2 == "i32" || tn2 == "i64", "typed_return_annotation", ctx);
 }
 

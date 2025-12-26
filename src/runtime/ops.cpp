@@ -108,8 +108,11 @@ std::vector<int64_t> BroadcastStrides(const std::vector<int64_t>& shape,
   return out;
 }
 
-int64_t OffsetFromFlatIndex(int64_t flat, const std::vector<int64_t>& out_strides,
-                            const std::vector<int64_t>& broadcast_strides) {
+int64_t OffsetFromFlatIndex(
+    int64_t flat,
+    const std::vector<int64_t>& out_strides,  // NOLINT(bugprone-easily-swappable-parameters)
+    const std::vector<int64_t>&
+        broadcast_strides) {  // NOLINT(bugprone-easily-swappable-parameters)
   int64_t offset = 0;
   int64_t idx = flat;
   for (size_t dim = 0; dim < out_strides.size(); ++dim) {

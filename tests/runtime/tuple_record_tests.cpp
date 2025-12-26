@@ -12,7 +12,7 @@ void RunTupleRecordTests(TestContext* ctx) {
   ExpectTrue(tup.tuple.elements.size() == 3, "tuple_len", ctx);
   auto first = EvalExpr("(1, 2)[0]", &env);
   ExpectTrue(first.type == rt::DType::kI32, "tuple_index_type", ctx);
-  ExpectNear(first.i64, 1.0, "tuple_index_value", ctx);
+  ExpectNear(static_cast<double>(first.i64), 1.0, "tuple_index_value", ctx);
 
   bool bounds_err = false;
   try {
@@ -27,7 +27,7 @@ void RunTupleRecordTests(TestContext* ctx) {
   ExpectTrue(rec.type == rt::DType::kRecord, "record_type", ctx);
   ExpectTrue(rec.record.fields.size() == 2, "record_len", ctx);
   auto rec_x = EvalExpr("{x: 1, \"y\": 3.5}[\"x\"]", &env);
-  ExpectNear(rec_x.i64, 1.0, "record_access_value", ctx);
+  ExpectNear(static_cast<double>(rec_x.i64), 1.0, "record_access_value", ctx);
 
   bool key_err = false;
   try {
@@ -51,7 +51,7 @@ void RunTupleRecordTests(TestContext* ctx) {
 
   // Builtins.
   auto l1 = EvalExpr("len((1,2,3))", &env);
-  ExpectNear(l1.i64, 3.0, "len_tuple", ctx);
+  ExpectNear(static_cast<double>(l1.i64), 3.0, "len_tuple", ctx);
   auto k1 = EvalExpr("keys({x:1, y:2})", &env);
   ExpectTrue(k1.type == rt::DType::kTuple, "keys_tuple_type", ctx);
   auto v1 = EvalExpr("values({x:1, y:2})", &env);

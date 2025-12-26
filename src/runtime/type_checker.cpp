@@ -87,7 +87,8 @@ std::string TypeNameStr(const Type& t) {
     std::string s = "(";
     for (size_t i = 0; i < t.tuple_elems.size(); ++i) {
       if (i > 0) s += ", ";
-      s += t.tuple_elems[i].has_value() ? DTypeName(t.tuple_elems[i].value()) : "dynamic";
+      const auto& elem = t.tuple_elems[i];
+      s += elem.has_value() ? DTypeName(elem.value()) : "dynamic";
     }
     s += ")";
     return s;
@@ -96,9 +97,9 @@ std::string TypeNameStr(const Type& t) {
     std::string s = "{";
     for (size_t i = 0; i < t.record_fields.size(); ++i) {
       if (i > 0) s += ", ";
-      s += t.record_fields[i].first + ": " +
-           (t.record_fields[i].second.has_value() ? DTypeName(t.record_fields[i].second.value())
-                                                  : "dynamic");
+      const auto& field = t.record_fields[i];
+      s += field.first + ": " +
+           (field.second.has_value() ? DTypeName(field.second.value()) : "dynamic");
     }
     s += "}";
     return s;
@@ -293,10 +294,8 @@ std::optional<Type> TypeChecker::TypeOf(const parser::Expression* expr) {
       if (auto num = dynamic_cast<const NumberLiteral*>(idx->index.get())) {
         int64_t pos = static_cast<int64_t>(num->value);
         if (pos >= 0 && pos < static_cast<int64_t>(obj_t->tuple_elems.size())) {
-          return obj_t->tuple_elems[static_cast<size_t>(pos)]
-                     ? std::optional<Type>{Type{
-                           obj_t->tuple_elems[static_cast<size_t>(pos)].value()}}
-                     : std::nullopt;
+          const auto& elem = obj_t->tuple_elems[static_cast<size_t>(pos)];
+          return elem.has_value() ? std::optional<Type>{Type{elem.value()}} : std::nullopt;
         }
       }
       return std::nullopt;
@@ -433,10 +432,9 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
                           asn->tuple_pattern->column);
       }
       for (size_t i = 0; i < asn->tuple_pattern->names.size(); ++i) {
+        const auto& elem = val_t->tuple_elems[i];
         scopes_.back()[asn->tuple_pattern->names[i]] =
-            val_t->tuple_elems[i].has_value()
-                ? std::optional<Type>{Type{val_t->tuple_elems[i].value()}}
-                : std::nullopt;
+            elem.has_value() ? std::optional<Type>{Type{elem.value()}} : std::nullopt;
       }
       return;
     }

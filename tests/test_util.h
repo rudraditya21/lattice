@@ -33,6 +33,9 @@ void ExpectTrue(bool value, const std::string& name, TestContext* ctx);
 rt::Value EvalExpr(const std::string& expr, rt::Environment* env);
 rt::ExecResult EvalStmt(const std::string& stmt, rt::Environment* env);
 void TypeCheckStmt(const std::string& stmt);
+// Helper to unwrap optional values in tests with a presence check.
+const rt::Value& Unwrap(const std::optional<rt::Value>& v, const std::string& name,
+                        TestContext* ctx);
 
 }  // namespace test
 

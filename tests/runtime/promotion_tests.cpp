@@ -31,7 +31,7 @@ void RunPromotionTests(TestContext* ctx) {
 
   auto int_add = EvalExpr("1 + 2", &env);
   ExpectTrue(int_add.type == rt::DType::kI32, "int_add_stays_i32", ctx);
-  ExpectNear(int_add.i64, 3.0, "int_add_value", ctx);
+  ExpectNear(static_cast<double>(int_add.i64), 3.0, "int_add_value", ctx);
 
   auto float_mix = EvalExpr("1 + 2.5", &env);
   ExpectTrue(float_mix.type == rt::DType::kF32 || float_mix.type == rt::DType::kF64,

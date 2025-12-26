@@ -26,7 +26,7 @@ void RunTensorTests(TestContext* ctx) {
 
   // Elementwise add with scalar broadcast and sum/mean.
   auto t3_stmt = EvalStmt("{ t3 = tensor(2, 2, 1); t3; }", &env);
-  auto t3 = t3_stmt.value.value();
+  auto t3 = Unwrap(t3_stmt.value, "tensor_values_stmt", ctx);
   auto t4 = EvalExpr("t3 + 1", &env);
   ExpectTrue(t4.tensor.size == 4, "tensor_broadcast_size", ctx);
   double first_val = t4.tensor.using_inline ? t4.tensor.inline_storage[0] : t4.tensor.storage[0];

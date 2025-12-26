@@ -14,12 +14,13 @@ void RunInterpreterTests(TestContext* ctx) {
   // Simple sequential statements.
   std::string src = "a = 2; b = a * 4; b + 1;";
   auto result = rt::RunSource(src, &env);
-  ExpectNear(result.value.value().number, 9.0, "interpreter_sequence", ctx);
+  ExpectNear(Unwrap(result.value, "interpreter_sequence", ctx).number, 9.0, "interpreter_sequence",
+             ctx);
 
   // Return stops execution.
   std::string src_return = "x = 1; return x + 5; x = 99;";
   auto ret = rt::RunSource(src_return, &env);
-  ExpectNear(ret.value.value().number, 6.0, "interpreter_return", ctx);
+  ExpectNear(Unwrap(ret.value, "interpreter_return", ctx).number, 6.0, "interpreter_return", ctx);
 
   // Functions inside script.
   std::string src_func =
@@ -27,7 +28,8 @@ void RunInterpreterTests(TestContext* ctx) {
       "func twice(x) { return add(x, x); }\n"
       "twice(7);";
   auto func_val = rt::RunSource(src_func, &env);
-  ExpectNear(func_val.value.value().number, 14.0, "interpreter_functions", ctx);
+  ExpectNear(Unwrap(func_val.value, "interpreter_functions", ctx).number, 14.0,
+             "interpreter_functions", ctx);
 }
 
 }  // namespace test

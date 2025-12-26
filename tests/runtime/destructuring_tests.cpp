@@ -10,8 +10,8 @@ void RunDestructuringTests(TestContext* ctx) {
   EvalStmt("(a, b) = (1, 2)", &env);
   auto a = EvalExpr("a", &env);
   auto b = EvalExpr("b", &env);
-  ExpectNear(a.i64, 1.0, "destructure_tuple_a", ctx);
-  ExpectNear(b.i64, 2.0, "destructure_tuple_b", ctx);
+  ExpectNear(static_cast<double>(a.i64), 1.0, "destructure_tuple_a", ctx);
+  ExpectNear(static_cast<double>(b.i64), 2.0, "destructure_tuple_b", ctx);
 
   bool tuple_err = false;
   try {
@@ -32,8 +32,8 @@ void RunDestructuringTests(TestContext* ctx) {
   EvalStmt("{x, y} = {x: 3, y: 4}", &env);
   auto x = EvalExpr("x", &env);
   auto y = EvalExpr("y", &env);
-  ExpectNear(x.i64, 3.0, "destructure_record_x", ctx);
-  ExpectNear(y.i64, 4.0, "destructure_record_y", ctx);
+  ExpectNear(static_cast<double>(x.i64), 3.0, "destructure_record_x", ctx);
+  ExpectNear(static_cast<double>(y.i64), 4.0, "destructure_record_y", ctx);
 
   bool record_err = false;
   try {
