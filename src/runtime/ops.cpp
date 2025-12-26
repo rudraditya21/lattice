@@ -2189,6 +2189,247 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     }
     return Value::Tuple({real_t, imag_t});
   }
+  if (name == "solve") {
+    expect_args(2, name);
+    Value A = ToDenseTensor(args[0], call_line, call_col);
+    Value B = ToDenseTensor(args[1], call_line, call_col);
+    if (A.type != DType::kTensor || B.type != DType::kTensor) {
+      throw util::Error("solve expects tensor arguments", call_line, call_col);
+    }
+    if (A.tensor.shape.size() != 2) {
+      throw util::Error("solve expects a 2D coefficient matrix", call_line, call_col);
+    }
+    int64_t n = A.tensor.shape[0];
+    if (A.tensor.shape[1] != n) {
+      throw util::Error("solve requires a square matrix", call_line, call_col);
+    }
+    if (B.tensor.shape.size() == 1) {
+      if (B.tensor.shape[0] != n) {
+        throw util::Error("solve rhs length must match matrix rows", call_line, call_col);
+      }
+    } else if (B.tensor.shape.size() == 2) {
+      if (B.tensor.shape[0] != n) {
+        throw util::Error("solve rhs rows must match matrix rows", call_line, call_col);
+      }
+    } else {
+      throw util::Error("solve rhs must be 1D or 2D tensor", call_line, call_col);
+    }
+    DType elem = PromoteTensorElem(A.tensor.elem_type, B.tensor.elem_type, call_line, call_col);
+    std::vector<std::vector<double>> a(n, std::vector<double>(n));
+    for (int64_t i = 0; i < n; ++i) {
+      for (int64_t j = 0; j < n; ++j) {
+        a[static_cast<size_t>(i)][static_cast<size_t>(j)] =
+            CastTo(DType::kF64, Value::F64(A.tensor.Data()[i * A.tensor.shape[1] + j]), call_line,
+                   call_col)
+                .f64;
+      }
+    }
+    int64_t rhs_cols = B.tensor.shape.size() == 1 ? 1 : B.tensor.shape[1];
+    std::vector<std::vector<double>> b(n, std::vector<double>(rhs_cols, 0.0));
+    for (int64_t i = 0; i < n; ++i) {
+      for (int64_t j = 0; j < rhs_cols; ++j) {
+        int64_t idx = B.tensor.shape.size() == 1 ? i : (i * rhs_cols + j);
+        b[static_cast<size_t>(i)][static_cast<size_t>(j)] =
+            CastTo(DType::kF64, Value::F64(B.tensor.Data()[idx]), call_line, call_col).f64;
+      }
+    }
+    for (int64_t k = 0; k < n; ++k) {
+      int64_t pivot = k;
+      double maxv = std::abs(a[static_cast<size_t>(k)][static_cast<size_t>(k)]);
+      for (int64_t i = k + 1; i < n; ++i) {
+        double v = std::abs(a[static_cast<size_t>(i)][static_cast<size_t>(k)]);
+        if (v > maxv) {
+          maxv = v;
+          pivot = i;
+        }
+      }
+      if (maxv == 0.0) {
+        throw util::Error("solve singular matrix", call_line, call_col);
+      }
+      if (pivot != k) {
+        std::swap(a[static_cast<size_t>(pivot)], a[static_cast<size_t>(k)]);
+        std::swap(b[static_cast<size_t>(pivot)], b[static_cast<size_t>(k)]);
+      }
+      double diag = a[static_cast<size_t>(k)][static_cast<size_t>(k)];
+      for (int64_t j = k; j < n; ++j) {
+        a[static_cast<size_t>(k)][static_cast<size_t>(j)] /= diag;
+      }
+      for (int64_t j = 0; j < rhs_cols; ++j)
+        b[static_cast<size_t>(k)][static_cast<size_t>(j)] /= diag;
+      for (int64_t i = 0; i < n; ++i) {
+        if (i == k) continue;
+        double factor = a[static_cast<size_t>(i)][static_cast<size_t>(k)];
+        for (int64_t j = k; j < n; ++j) {
+          a[static_cast<size_t>(i)][static_cast<size_t>(j)] -=
+              factor * a[static_cast<size_t>(k)][static_cast<size_t>(j)];
+        }
+        for (int64_t j = 0; j < rhs_cols; ++j) {
+          b[static_cast<size_t>(i)][static_cast<size_t>(j)] -=
+              factor * b[static_cast<size_t>(k)][static_cast<size_t>(j)];
+        }
+      }
+    }
+    std::vector<double> flat(static_cast<size_t>(n * rhs_cols), 0.0);
+    for (int64_t i = 0; i < n; ++i) {
+      for (int64_t j = 0; j < rhs_cols; ++j) {
+        flat[static_cast<size_t>(i * rhs_cols + j)] =
+            b[static_cast<size_t>(i)][static_cast<size_t>(j)];
+      }
+    }
+    Value out = Value::Tensor({n, rhs_cols}, elem, 0.0);
+    for (int64_t i = 0; i < n * rhs_cols; ++i) out.tensor.Data()[i] = flat[static_cast<size_t>(i)];
+    if (rhs_cols == 1) {
+      out.tensor.shape = {n};
+      out.tensor.strides = {1};
+      out.tensor.size = n;
+    }
+    return out;
+  }
+  auto make_dense_tensor = [&](const std::vector<double>& data, const std::vector<int64_t>& shape,
+                               DType elem) {
+    Value t = Value::Tensor(shape, elem, 0.0);
+    for (size_t i = 0; i < data.size(); ++i) t.tensor.Data()[static_cast<int64_t>(i)] = data[i];
+    return t;
+  };
+  if (name == "lu") {
+    expect_args(1, name);
+    Value A = ToDenseTensor(args[0], call_line, call_col);
+    if (A.type != DType::kTensor || A.tensor.shape.size() != 2 ||
+        A.tensor.shape[0] != A.tensor.shape[1]) {
+      throw util::Error("lu expects a square 2D tensor", call_line, call_col);
+    }
+    int64_t n = A.tensor.shape[0];
+    std::vector<double> L(static_cast<size_t>(n * n), 0.0);
+    std::vector<double> U(static_cast<size_t>(n * n), 0.0);
+    for (int64_t i = 0; i < n; ++i) L[static_cast<size_t>(i * n + i)] = 1.0;
+    for (int64_t k = 0; k < n; ++k) {
+      for (int64_t j = k; j < n; ++j) {
+        double sum = 0.0;
+        for (int64_t s = 0; s < k; ++s)
+          sum += L[static_cast<size_t>(k * n + s)] * U[static_cast<size_t>(s * n + j)];
+        U[static_cast<size_t>(k * n + j)] = A.tensor.Data()[k * A.tensor.shape[1] + j] - sum;
+      }
+      if (U[static_cast<size_t>(k * n + k)] == 0.0) {
+        throw util::Error("lu singular matrix", call_line, call_col);
+      }
+      for (int64_t i = k + 1; i < n; ++i) {
+        double sum = 0.0;
+        for (int64_t s = 0; s < k; ++s)
+          sum += L[static_cast<size_t>(i * n + s)] * U[static_cast<size_t>(s * n + k)];
+        L[static_cast<size_t>(i * n + k)] =
+            (A.tensor.Data()[i * A.tensor.shape[1] + k] - sum) / U[static_cast<size_t>(k * n + k)];
+      }
+    }
+    Value l_t = make_dense_tensor(L, {n, n}, A.tensor.elem_type);
+    Value u_t = make_dense_tensor(U, {n, n}, A.tensor.elem_type);
+    return Value::Tuple({l_t, u_t});
+  }
+  if (name == "qr") {
+    expect_args(1, name);
+    Value A = ToDenseTensor(args[0], call_line, call_col);
+    if (A.type != DType::kTensor || A.tensor.shape.size() != 2) {
+      throw util::Error("qr expects a 2D tensor", call_line, call_col);
+    }
+    int64_t m = A.tensor.shape[0];
+    int64_t n = A.tensor.shape[1];
+    std::vector<std::vector<double>> q(m, std::vector<double>(n, 0.0));
+    std::vector<std::vector<double>> r(n, std::vector<double>(n, 0.0));
+    auto a_val = [&](int64_t i, int64_t j) { return A.tensor.Data()[i * n + j]; };
+    for (int64_t j = 0; j < n; ++j) {
+      for (int64_t i = 0; i < m; ++i)
+        q[static_cast<size_t>(i)][static_cast<size_t>(j)] = a_val(i, j);
+      for (int64_t k = 0; k < j; ++k) {
+        double dot = 0.0;
+        for (int64_t i = 0; i < m; ++i)
+          dot += q[static_cast<size_t>(i)][static_cast<size_t>(j)] *
+                 q[static_cast<size_t>(i)][static_cast<size_t>(k)];
+        r[static_cast<size_t>(k)][static_cast<size_t>(j)] = dot;
+        for (int64_t i = 0; i < m; ++i)
+          q[static_cast<size_t>(i)][static_cast<size_t>(j)] -=
+              dot * q[static_cast<size_t>(i)][static_cast<size_t>(k)];
+      }
+      double norm = 0.0;
+      for (int64_t i = 0; i < m; ++i)
+        norm += q[static_cast<size_t>(i)][static_cast<size_t>(j)] *
+                q[static_cast<size_t>(i)][static_cast<size_t>(j)];
+      norm = std::sqrt(norm);
+      if (norm == 0.0) throw util::Error("qr rank deficiency", call_line, call_col);
+      r[static_cast<size_t>(j)][static_cast<size_t>(j)] = norm;
+      for (int64_t i = 0; i < m; ++i) q[static_cast<size_t>(i)][static_cast<size_t>(j)] /= norm;
+    }
+    std::vector<double> q_flat(static_cast<size_t>(m * n), 0.0);
+    std::vector<double> r_flat(static_cast<size_t>(n * n), 0.0);
+    for (int64_t i = 0; i < m; ++i)
+      for (int64_t j = 0; j < n; ++j)
+        q_flat[static_cast<size_t>(i * n + j)] = q[static_cast<size_t>(i)][static_cast<size_t>(j)];
+    for (int64_t i = 0; i < n; ++i)
+      for (int64_t j = 0; j < n; ++j)
+        r_flat[static_cast<size_t>(i * n + j)] = r[static_cast<size_t>(i)][static_cast<size_t>(j)];
+    Value q_t = make_dense_tensor(q_flat, {m, n}, A.tensor.elem_type);
+    Value r_t = make_dense_tensor(r_flat, {n, n}, A.tensor.elem_type);
+    return Value::Tuple({q_t, r_t});
+  }
+  if (name == "svd") {
+    expect_args(1, name);
+    Value A = ToDenseTensor(args[0], call_line, call_col);
+    if (A.type != DType::kTensor || A.tensor.shape.size() != 2) {
+      throw util::Error("svd expects a 2D tensor", call_line, call_col);
+    }
+    int64_t m = A.tensor.shape[0];
+    int64_t n = A.tensor.shape[1];
+    if (m != 2 || n != 2) {
+      throw util::Error("svd currently supports 2x2 matrices only", call_line, call_col);
+    }
+    double a = A.tensor.Data()[0], b = A.tensor.Data()[1], c = A.tensor.Data()[2],
+           d = A.tensor.Data()[3];
+    double s1s1 = a * a + c * c;
+    double s2s2 = b * b + d * d;
+    double off = a * b + c * d;
+    double tr = s1s1 + s2s2;
+    double det = s1s1 * s2s2 - off * off;
+    double tmp = std::sqrt(std::max(0.0, tr * tr * 0.25 - det));
+    double s1 = std::sqrt(std::max(0.0, tr * 0.5 + tmp));
+    double s2 = std::sqrt(std::max(0.0, tr * 0.5 - tmp));
+    std::vector<double> S = {s1, 0.0, 0.0, s2};
+    // Compute V from eigenvectors of A^T A
+    double ata00 = s1s1, ata01 = off, ata11 = s2s2;
+    std::vector<double> v_flat(4, 0.0);
+    if (std::abs(ata01) < 1e-12) {
+      v_flat = {1, 0, 0, 1};
+    } else {
+      double t = (ata00 - ata11) / (2 * ata01);
+      double sign = t >= 0 ? 1.0 : -1.0;
+      double tau = sign / (std::abs(t) + std::sqrt(1 + t * t));
+      double cs = 1 / std::sqrt(1 + tau * tau);
+      double sn = cs * tau;
+      v_flat = {cs, -sn, sn, cs};
+    }
+    std::vector<double> u_flat(4, 0.0);
+    auto mul_AV = [&](const std::vector<double>& vec) -> std::vector<double> {
+      return {a * vec[0] + b * vec[1], c * vec[0] + d * vec[1]};
+    };
+    auto norm2 = [](const std::vector<double>& v2) {
+      return std::sqrt(v2[0] * v2[0] + v2[1] * v2[1]);
+    };
+    std::vector<double> v1 = {v_flat[0], v_flat[2]};
+    std::vector<double> v2 = {v_flat[1], v_flat[3]};
+    std::vector<double> u1 = mul_AV(v1);
+    std::vector<double> u2 = mul_AV(v2);
+    double n1 = norm2(u1);
+    double n2 = norm2(u2);
+    if (n1 > 0) {
+      u_flat[0] = u1[0] / n1;
+      u_flat[2] = u1[1] / n1;
+    }
+    if (n2 > 0) {
+      u_flat[1] = u2[0] / n2;
+      u_flat[3] = u2[1] / n2;
+    }
+    Value u_t = make_dense_tensor(u_flat, {2, 2}, A.tensor.elem_type);
+    Value s_t = make_dense_tensor(S, {2, 2}, A.tensor.elem_type);
+    Value v_t = make_dense_tensor(v_flat, {2, 2}, A.tensor.elem_type);
+    return Value::Tuple({u_t, s_t, v_t});
+  }
   if (name == "keys") {
     expect_args(1, name);
     const Value& v = args[0];

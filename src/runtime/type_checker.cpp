@@ -207,6 +207,11 @@ TypeChecker::TypeChecker() {
   functions_["transpose"] = FunSig{{Type{DType::kTensor}}, tensor_type(TensorKind::kDense)};
   functions_["matmul"] =
       FunSig{{Type{DType::kTensor}, Type{DType::kTensor}}, tensor_type(TensorKind::kDense)};
+  functions_["solve"] =
+      FunSig{{Type{DType::kTensor}, Type{DType::kTensor}}, tensor_type(TensorKind::kDense)};
+  functions_["lu"] = FunSig{{Type{DType::kTensor}}, Type{DType::kTuple}};
+  functions_["qr"] = FunSig{{Type{DType::kTensor}}, Type{DType::kTuple}};
+  functions_["svd"] = FunSig{{Type{DType::kTensor}}, Type{DType::kTuple}};
   functions_["conv2d"] =
       FunSig{{Type{DType::kTensor}, Type{DType::kTensor}}, tensor_type(TensorKind::kDense)};
   functions_["max_pool2d"] = FunSig{{Type{DType::kTensor}, Type{DType::kI64}, Type{DType::kI64}},
