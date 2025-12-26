@@ -3,8 +3,8 @@
 ## Lexical Grammar (high level)
 - Whitespace: spaces/tabs/newlines separate tokens; `//` line comments are skipped.
 - Identifiers: `[A-Za-z_][A-Za-z0-9_]*`.
-- Literals: integers (decimal), floats (with decimal point or exponent), booleans `true`/`false`.
-- Delimiters: `()`, `{}`, `,`, `;`, `:`. Operators: `+ - * / == != > >= < <= =`.
+- Literals: integers (decimal), floats (with decimal point or exponent), booleans `true`/`false`, strings (`"text"`).
+- Delimiters: `()`, `{}`, `[]`, `,`, `;`, `:`. Operators: `+ - * / == != > >= < <= =`.
 - Keywords: `if`, `else`, `while`, `for`, `break`, `continue`, `func`, `return`, type names when used as annotations.
 
 ## Expression Precedence (high to low, left-associative unless noted)
@@ -14,7 +14,8 @@
 4. Additive: `+ -`.
 5. Comparisons: `< <= > >=`.
 6. Equality: `== !=`.
-7. Assignment (right-associative): `=` in statements, not an expression operator in arithmetic contexts.
+7. Indexing binds tighter than arithmetic: `postfix [ index ]`.
+8. Assignment (right-associative): `=` in statements, not an expression operator in arithmetic contexts.
 
 ## Assignment Semantics
 - Simple assignment binds or rebinds in the nearest enclosing lexical scope; shadowing is allowed on first introduction.
@@ -27,6 +28,10 @@
 - Call-by-value: arguments are evaluated left-to-right before a call.
 - Deterministic execution order: expressions are evaluated left-to-right; no reordering for side effects.
 - Control flow: `if/else`, `while`, `for` with `break`/`continue`; `return` exits the current function.
+- Aggregates:
+  - Tuples: immutable, positional, created with `(a, b)` (singleton `(a,)`). Indexing `t[0]` bounds-checks. Equality is structural.
+  - Records: immutable, ordered fields `{x: a, y: b}`; keys are identifiers or strings. Access via `r["x"]`; missing keys are errors. Equality is structural (field names/order and values).
+  - Strings: immutable; only `==/!=` supported.
 
 ## Error Model
 - Errors are fatal for the current execution: evaluation stops and reports `Error at line:col - message`.

@@ -10,6 +10,7 @@
 - Floating point: `f16`, `bfloat16`, `f32`, `f64`.
 - Complex: `complex64` (f32 real/imag), `complex128` (f64 real/imag).
 - Exact numbers: `decimal` (software, configurable precision), `rational` (normalized numerator/denominator, signed).
+- Strings: `string` (immutable).
 - Promotions (enforced):
   - complex > float > int; signed/unsigned width-aware.
   - `decimal`↔`decimal` and `rational`↔`rational` only; cross with other numerics requires explicit cast.
@@ -17,8 +18,10 @@
 - IEEE semantics: NaN/inf propagate per host platform; deterministic printing is preserved.
 
 ## Aggregates
-- Scalars above plus tensors with shape/dtype metadata.
+- Scalars above plus tensors with shape/dtype metadata, tuples, and records.
 - Row-major default; elementwise ops support full NumPy-style broadcasting (trailing dimensions align, `1` expands, otherwise error). Sum/mean builtins; dtype promotion applied to elementwise operations.
+- Tuples: fixed-length, immutable positional collections; element dtypes tracked when known; structural equality and assignment require matching length and element dtypes.
+- Records: ordered immutable field sets `{name: value}`; keys are strings/identifiers; field dtypes tracked when known; structural equality and assignment require matching names/order and dtypes.
 - Future: sparse/ragged variants gated behind flags.
 
 ## Type Hints and Inference

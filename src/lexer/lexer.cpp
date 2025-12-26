@@ -64,6 +64,26 @@ Token Lexer::NumberToken() {
   return Token{TokenType::kNumber, lexeme, token_line, token_column};
 }
 
+Token Lexer::StringToken() {
+  int token_line = line_;
+  int token_column = column_;
+  std::string lexeme;
+  // Consume until closing quote or end.
+  while (!IsAtEnd() && Peek() != '"') {
+    char ch = Advance();
+    if (ch == '\\' && !IsAtEnd()) {
+      // Simple escape passthrough.
+      ch = Advance();
+    }
+    lexeme.push_back(ch);
+  }
+  if (IsAtEnd()) {
+    throw util::Error("Unterminated string literal", token_line, token_column);
+  }
+  Advance();  // consume closing quote
+  return Token{TokenType::kString, lexeme, token_line, token_column};
+}
+
 Token Lexer::IdentifierToken() {
   int token_line = line_;
   int token_column = column_;
@@ -155,6 +175,12 @@ Token Lexer::NextToken() {
       return Token{TokenType::kLBrace, "{", token_line, token_column};
     case '}':
       return Token{TokenType::kRBrace, "}", token_line, token_column};
+    case '[':
+      return Token{TokenType::kLBracket, "[", token_line, token_column};
+    case ']':
+      return Token{TokenType::kRBracket, "]", token_line, token_column};
+    case '"':
+      return StringToken();
     case '!':
       if (Peek() == '=') {
         Advance();

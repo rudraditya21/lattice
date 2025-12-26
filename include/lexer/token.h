@@ -8,6 +8,7 @@ namespace lattice::lexer {
 enum class TokenType {
   kEof,
   kNumber,
+  kString,
   kIdentifier,
   kEqual,
   kPlus,
@@ -20,6 +21,8 @@ enum class TokenType {
   kRParen,
   kLBrace,
   kRBrace,
+  kLBracket,
+  kRBracket,
   kColon,
   kIf,
   kElse,

@@ -244,6 +244,55 @@ std::unique_ptr<Statement> Parser::AssignmentOrExpression() {
                                                    std::move(value));
     }
   }
+  if (Peek().type == lexer::TokenType::kLParen) {
+    // Tuple destructuring assignment.
+    int line = Peek().line;
+    int col = Peek().column;
+    Advance();  // '('
+    std::vector<std::string> names;
+    if (!Match(lexer::TokenType::kRParen)) {
+      while (true) {
+        Consume(lexer::TokenType::kIdentifier, "Expected name in tuple destructuring");
+        names.push_back(Previous().lexeme);
+        if (Match(lexer::TokenType::kRParen)) break;
+        Consume(lexer::TokenType::kComma, "Expected ',' in tuple destructuring");
+      }
+    }
+    auto pattern = std::make_unique<TuplePattern>();
+    pattern->names = std::move(names);
+    pattern->line = line;
+    pattern->column = col;
+    BindingAnnotation ann = ParseBindingAnnotation();
+    Consume(lexer::TokenType::kEqual, "Expected '=' in destructuring assignment");
+    auto value = ExpressionRule();
+    return std::make_unique<AssignmentStatement>(std::move(pattern), std::move(ann),
+                                                 std::move(value));
+  }
+  if (Peek().type == lexer::TokenType::kLBrace) {
+    int line = Peek().line;
+    int col = Peek().column;
+    Advance();  // '{'
+    std::vector<std::pair<std::string, std::string>> fields;
+    if (!Match(lexer::TokenType::kRBrace)) {
+      while (true) {
+        Consume(lexer::TokenType::kIdentifier, "Expected field name in record destructuring");
+        std::string key = Previous().lexeme;
+        std::string binding = key;
+        fields.emplace_back(std::move(key), std::move(binding));
+        if (Match(lexer::TokenType::kRBrace)) break;
+        Consume(lexer::TokenType::kComma, "Expected ',' in record destructuring");
+      }
+    }
+    auto pattern = std::make_unique<RecordPattern>();
+    pattern->fields = std::move(fields);
+    pattern->line = line;
+    pattern->column = col;
+    BindingAnnotation ann = ParseBindingAnnotation();
+    Consume(lexer::TokenType::kEqual, "Expected '=' in destructuring assignment");
+    auto value = ExpressionRule();
+    return std::make_unique<AssignmentStatement>(std::move(pattern), std::move(ann),
+                                                 std::move(value));
+  }
   auto expr = ExpressionRule();
   return std::make_unique<ExpressionStatement>(std::move(expr));
 }
@@ -303,12 +352,20 @@ std::unique_ptr<Expression> Parser::Term() {
   while (true) {
     if (Match(lexer::TokenType::kPlus)) {
       auto rhs = Factor();
-      expr = std::make_unique<BinaryExpression>(BinaryOp::kAdd, std::move(expr), std::move(rhs));
+      auto bin =
+          std::make_unique<BinaryExpression>(BinaryOp::kAdd, std::move(expr), std::move(rhs));
+      bin->line = Previous().line;
+      bin->column = Previous().column;
+      expr = std::move(bin);
       continue;
     }
     if (Match(lexer::TokenType::kMinus)) {
       auto rhs = Factor();
-      expr = std::make_unique<BinaryExpression>(BinaryOp::kSub, std::move(expr), std::move(rhs));
+      auto bin =
+          std::make_unique<BinaryExpression>(BinaryOp::kSub, std::move(expr), std::move(rhs));
+      bin->line = Previous().line;
+      bin->column = Previous().column;
+      expr = std::move(bin);
       continue;
     }
     break;
@@ -321,12 +378,20 @@ std::unique_ptr<Expression> Parser::Factor() {
   while (true) {
     if (Match(lexer::TokenType::kStar)) {
       auto rhs = Unary();
-      expr = std::make_unique<BinaryExpression>(BinaryOp::kMul, std::move(expr), std::move(rhs));
+      auto bin =
+          std::make_unique<BinaryExpression>(BinaryOp::kMul, std::move(expr), std::move(rhs));
+      bin->line = Previous().line;
+      bin->column = Previous().column;
+      expr = std::move(bin);
       continue;
     }
     if (Match(lexer::TokenType::kSlash)) {
       auto rhs = Unary();
-      expr = std::make_unique<BinaryExpression>(BinaryOp::kDiv, std::move(expr), std::move(rhs));
+      auto bin =
+          std::make_unique<BinaryExpression>(BinaryOp::kDiv, std::move(expr), std::move(rhs));
+      bin->line = Previous().line;
+      bin->column = Previous().column;
+      expr = std::move(bin);
       continue;
     }
     break;
@@ -337,30 +402,39 @@ std::unique_ptr<Expression> Parser::Factor() {
 std::unique_ptr<Expression> Parser::Unary() {
   if (Match(lexer::TokenType::kMinus)) {
     auto operand = Unary();
-    return std::make_unique<UnaryExpression>(UnaryOp::kNegate, std::move(operand));
+    auto ue = std::make_unique<UnaryExpression>(UnaryOp::kNegate, std::move(operand));
+    ue->line = Previous().line;
+    ue->column = Previous().column;
+    return ue;
   }
 
   return Primary();
 }
 
 std::unique_ptr<Expression> Parser::Primary() {
+  std::unique_ptr<Expression> expr;
   if (Match(lexer::TokenType::kNumber)) {
     const auto& tok = Previous();
     double value = std::strtod(tok.lexeme.c_str(), nullptr);
     bool is_int_token = tok.lexeme.find('.') == std::string::npos &&
                         tok.lexeme.find('e') == std::string::npos &&
                         tok.lexeme.find('E') == std::string::npos;
-    return std::make_unique<NumberLiteral>(value, is_int_token, tok.lexeme);
-  }
-
-  if (Match(lexer::TokenType::kTrue)) {
-    return std::make_unique<BoolLiteral>(true);
-  }
-  if (Match(lexer::TokenType::kFalse)) {
-    return std::make_unique<BoolLiteral>(false);
-  }
-
-  if (Match(lexer::TokenType::kIdentifier)) {
+    expr = std::make_unique<NumberLiteral>(value, is_int_token, tok.lexeme);
+    expr->line = tok.line;
+    expr->column = tok.column;
+  } else if (Match(lexer::TokenType::kString)) {
+    expr = std::make_unique<StringLiteral>(Previous().lexeme);
+    expr->line = Previous().line;
+    expr->column = Previous().column;
+  } else if (Match(lexer::TokenType::kTrue)) {
+    expr = std::make_unique<BoolLiteral>(true);
+    expr->line = Previous().line;
+    expr->column = Previous().column;
+  } else if (Match(lexer::TokenType::kFalse)) {
+    expr = std::make_unique<BoolLiteral>(false);
+    expr->line = Previous().line;
+    expr->column = Previous().column;
+  } else if (Match(lexer::TokenType::kIdentifier)) {
     std::string name = Previous().lexeme;
     if (Match(lexer::TokenType::kLParen)) {
       std::vector<std::unique_ptr<Expression>> args;
@@ -373,18 +447,71 @@ std::unique_ptr<Expression> Parser::Primary() {
           Consume(lexer::TokenType::kComma, "Expected ',' between arguments");
         }
       }
-      return std::make_unique<CallExpression>(name, std::move(args));
+      expr = std::make_unique<CallExpression>(name, std::move(args));
+      expr->line = Previous().line;
+      expr->column = Previous().column;
+    } else {
+      expr = std::make_unique<Identifier>(name);
+      expr->line = Previous().line;
+      expr->column = Previous().column;
     }
-    return std::make_unique<Identifier>(name);
+  } else if (Match(lexer::TokenType::kLParen)) {
+    int l = Previous().line;
+    int c = Previous().column;
+    if (Match(lexer::TokenType::kRParen)) {
+      throw util::Error("Empty tuple not allowed", Previous().line, Previous().column);
+    }
+    std::vector<std::unique_ptr<Expression>> elems;
+    elems.push_back(ExpressionRule());
+    if (Match(lexer::TokenType::kRParen)) {
+      // Grouping
+      expr = std::move(elems[0]);
+    } else {
+      while (true) {
+        if (Match(lexer::TokenType::kRParen)) {
+          break;
+        }
+        Consume(lexer::TokenType::kComma, "Expected ',' in tuple");
+        if (Match(lexer::TokenType::kRParen)) {
+          // trailing comma after single element (singleton tuple)
+          break;
+        }
+        elems.push_back(ExpressionRule());
+      }
+      expr = std::make_unique<TupleLiteral>(std::move(elems), l, c);
+    }
+  } else if (Match(lexer::TokenType::kLBrace)) {
+    int l = Previous().line;
+    int c = Previous().column;
+    std::vector<std::pair<std::string, std::unique_ptr<Expression>>> fields;
+    if (!Match(lexer::TokenType::kRBrace)) {
+      while (true) {
+        if (!(Match(lexer::TokenType::kIdentifier) || Match(lexer::TokenType::kString))) {
+          throw util::Error("Expected field name in record", Peek().line, Peek().column);
+        }
+        std::string key = Previous().lexeme;
+        Consume(lexer::TokenType::kColon, "Expected ':' after record field name");
+        auto val = ExpressionRule();
+        fields.emplace_back(std::move(key), std::move(val));
+        if (Match(lexer::TokenType::kRBrace)) {
+          break;
+        }
+        Consume(lexer::TokenType::kComma, "Expected ',' between record fields");
+      }
+    }
+    expr = std::make_unique<RecordLiteral>(std::move(fields), l, c);
+  } else {
+    throw util::Error("Unexpected token: " + Peek().lexeme, Peek().line, Peek().column);
   }
 
-  if (Match(lexer::TokenType::kLParen)) {
-    auto expr = ExpressionRule();
-    Consume(lexer::TokenType::kRParen, "Expected ')'");
-    return expr;
+  // Postfix: indexing
+  while (Match(lexer::TokenType::kLBracket)) {
+    auto idx = ExpressionRule();
+    Consume(lexer::TokenType::kRBracket, "Expected ']' after index");
+    expr = std::make_unique<IndexExpression>(std::move(expr), std::move(idx), Previous().line,
+                                             Previous().column);
   }
-
-  throw util::Error("Unexpected token: " + Peek().lexeme, Peek().line, Peek().column);
+  return expr;
 }
 
 std::unique_ptr<TypeName> Parser::ParseTypeName() {

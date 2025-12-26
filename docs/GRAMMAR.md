@@ -4,9 +4,10 @@ Notation: `*` zero or more, `+` one or more, `?` optional, `|` choice, terminals
 
 ## Lexical Elements
 - Identifiers: `[A-Za-z_][A-Za-z0-9_]*`
+- Strings: double-quoted, with basic `\"` escaping.
 - Numbers: integers or floats (`123`, `3.14`)
 - Keywords: `if`, `else`, `while`, `for`, `break`, `continue`, `func`, `return`, `true`, `false`
-- Operators: `+ - * / == != > < >= <= = , : ; ( ) { }`
+- Operators/delimiters: `+ - * / == != > < >= <= = , : ; ( ) { } [ ]`
 
 ## Expressions
 ```
@@ -16,9 +17,25 @@ comparison    → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
 term          → factor ( ( "+" | "-" ) factor )* ;
 factor        → unary ( ( "*" | "/" ) unary )* ;
 unary         → "-" unary | primary ;
-primary       → NUMBER | "true" | "false" | IDENTIFIER func_call? | "(" expression ")" ;
+primary       → NUMBER
+              | STRING
+              | "true" | "false"
+              | IDENTIFIER func_call?
+              | "(" tuple_or_group ")"
+              | record_literal ;
+
+tuple_or_group → expression ( "," expression )* ( "," )? ")" ;
+  - If only one expression and no trailing comma, this is grouping `(expr)`.
+  - With a trailing comma `(expr,)` or multiple elements `(a, b, ...)` it is a tuple literal.
+
+record_literal → "{" fields? "}" ;
+fields        → field ( "," field )* ;
+field         → (IDENTIFIER | STRING) ":" expression ;
 func_call     → "(" arguments? ")" ;
 arguments     → expression ( "," expression )* ;
+
+postfix       → primary ( "[" expression "]" )* ;
+  - Indexing applies to tuples and records (`t[0]`, `r["x"]`).
 ```
 
 ## Statements

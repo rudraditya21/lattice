@@ -5,7 +5,9 @@
 #include <cstdint>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "parser/ast.h"
@@ -35,6 +37,7 @@ struct Value {
   double f64 = 0.0;
   double number = 0.0;  // compatibility alias
   long double decimal = 0.0;
+  std::string str;
   struct Rational {
     int64_t num = 0;
     int64_t den = 1;
@@ -53,6 +56,15 @@ struct Value {
     double* Data() { return using_inline ? inline_storage.data() : storage.data(); }
     const double* Data() const { return using_inline ? inline_storage.data() : storage.data(); }
   } tensor;
+  struct TupleInfo {
+    std::vector<Value> elements;
+    std::vector<std::optional<DType>> elem_types;
+  } tuple;
+  struct RecordInfo {
+    std::vector<std::pair<std::string, Value>> fields;
+    std::unordered_map<std::string, size_t> index;
+    std::vector<std::optional<DType>> field_types;
+  } record;
   std::string type_name;
 
   /// Constructors for scalar types.
@@ -76,12 +88,15 @@ struct Value {
   static Value BF16(float v);
   static Value F32(float v);
   static Value F64(double v);
+  static Value String(const std::string& v);
   static Value Complex64(std::complex<float> v);
   static Value Complex128(std::complex<double> v);
   static Value Decimal(long double v);
   static Value RationalValue(int64_t num, int64_t den);
   static Value RationalValueNormalized(int64_t num, int64_t den);
   static Value Tensor(std::vector<int64_t> shape, DType elem_type, double fill_value);
+  static Value Tuple(std::vector<Value> elems);
+  static Value Record(std::vector<std::pair<std::string, Value>> fields);
   /// Convenience constructor for function values.
   static Value Func(std::shared_ptr<Function> fn);
   /// Legacy convenience constructor for numeric values (defaults to f64).
@@ -207,6 +222,14 @@ inline Value Value::F64(double v) {
   return val;
 }
 
+inline Value Value::String(const std::string& v) {
+  Value val;
+  val.type = DType::kString;
+  val.str = v;
+  val.type_name = "string";
+  return val;
+}
+
 inline Value Value::Complex64(std::complex<float> v) {
   Value val;
   val.type = DType::kC64;
@@ -288,6 +311,35 @@ inline Value Value::Tensor(std::vector<int64_t> shape, DType elem_type, double f
     val.tensor.storage.assign(static_cast<size_t>(total), fill_value);
   }
   val.number = 0.0;
+  return val;
+}
+
+inline Value Value::Tuple(std::vector<Value> elems) {
+  Value val;
+  val.type = DType::kTuple;
+  val.tuple.elements = std::move(elems);
+  val.tuple.elem_types.reserve(val.tuple.elements.size());
+  for (const auto& e : val.tuple.elements) {
+    val.tuple.elem_types.push_back(e.type);
+  }
+  val.number = 0.0;
+  val.type_name = "tuple";
+  return val;
+}
+
+inline Value Value::Record(std::vector<std::pair<std::string, Value>> fields) {
+  Value val;
+  val.type = DType::kRecord;
+  val.record.fields = std::move(fields);
+  val.record.index.clear();
+  val.record.field_types.reserve(val.record.fields.size());
+  for (size_t i = 0; i < val.record.fields.size(); ++i) {
+    const auto& name = val.record.fields[i].first;
+    val.record.index[name] = i;
+    val.record.field_types.push_back(val.record.fields[i].second.type);
+  }
+  val.number = 0.0;
+  val.type_name = "record";
   return val;
 }
 

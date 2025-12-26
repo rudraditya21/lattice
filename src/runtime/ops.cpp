@@ -121,6 +121,8 @@ std::string DTypeToString(DType t) {
       return "complex64";
     case DType::kC128:
       return "complex128";
+    case DType::kString:
+      return "string";
     case DType::kDecimal:
       return "decimal";
     case DType::kRational:
@@ -129,6 +131,10 @@ std::string DTypeToString(DType t) {
       return "function";
     case DType::kTensor:
       return "tensor";
+    case DType::kTuple:
+      return "tuple";
+    case DType::kRecord:
+      return "record";
   }
   return "";
 }
@@ -139,6 +145,9 @@ bool ValueMatchesType(const Value& value, const std::string& type_name) {
   }
   if (IsBoolTypeName(type_name)) {
     return value.type == DType::kBool;
+  }
+  if (type_name == "string") {
+    return value.type == DType::kString;
   }
   if (IsNumericTypeName(type_name)) {
     if (value.type == DType::kBool || value.type == DType::kFunction) return false;
@@ -267,6 +276,10 @@ DType PromoteType(DType a, DType b) {
   auto is_decimal_or_rational = [](DType t) {
     return t == DType::kDecimal || t == DType::kRational;
   };
+  if (a == DType::kString || b == DType::kString) {
+    if (a == b) return DType::kString;
+    throw util::Error("String can only operate with string", 0, 0);
+  }
   if (a == DType::kTensor || b == DType::kTensor) {
     return DType::kTensor;
   }
@@ -332,7 +345,7 @@ Value CastTo(DType target, const Value& v) {
       case DType::kRational:
         return static_cast<double>(v.rational.num) / static_cast<double>(v.rational.den);
       default:
-        throw util::Error("Cannot cast complex/decimal/rational/function", 0, 0);
+        throw util::Error("Cannot cast complex/decimal/rational/string/function", 0, 0);
     }
   };
   auto as_signed = [&]() -> int64_t {
@@ -435,6 +448,9 @@ Value CastTo(DType target, const Value& v) {
       return Value::Complex128(std::complex<double>(as_double(), 0.0));
     case DType::kDecimal:
       return Value::Decimal(static_cast<long double>(as_double()));
+    case DType::kString:
+      if (v.type == DType::kString) return v;
+      throw util::Error("Cannot cast to string", 0, 0);
     case DType::kRational: {
       if (v.type == DType::kRational) {
         return v;
@@ -483,6 +499,9 @@ Value Evaluator::Evaluate(const parser::Expression& expr) {
   if (const auto* boolean = dynamic_cast<const parser::BoolLiteral*>(&expr)) {
     return EvaluateBool(*boolean);
   }
+  if (const auto* str_lit = dynamic_cast<const parser::StringLiteral*>(&expr)) {
+    return Value::String(str_lit->value);
+  }
   if (const auto* unary = dynamic_cast<const parser::UnaryExpression*>(&expr)) {
     return EvaluateUnary(*unary);
   }
@@ -494,6 +513,43 @@ Value Evaluator::Evaluate(const parser::Expression& expr) {
   }
   if (const auto* call = dynamic_cast<const parser::CallExpression*>(&expr)) {
     return EvaluateCall(*call);
+  }
+  if (const auto* tuple = dynamic_cast<const parser::TupleLiteral*>(&expr)) {
+    std::vector<Value> elems;
+    elems.reserve(tuple->elements.size());
+    for (const auto& e : tuple->elements) {
+      elems.push_back(Evaluate(*e));
+    }
+    return Value::Tuple(std::move(elems));
+  }
+  if (const auto* record = dynamic_cast<const parser::RecordLiteral*>(&expr)) {
+    std::vector<std::pair<std::string, Value>> fields;
+    fields.reserve(record->fields.size());
+    for (const auto& f : record->fields) {
+      fields.emplace_back(f.first, Evaluate(*f.second));
+    }
+    return Value::Record(std::move(fields));
+  }
+  if (const auto* idx = dynamic_cast<const parser::IndexExpression*>(&expr)) {
+    Value object = Evaluate(*idx->object);
+    Value index = Evaluate(*idx->index);
+    if (object.type == DType::kTuple) {
+      int64_t pos = static_cast<int64_t>(index.f64);
+      if (pos < 0 || pos >= static_cast<int64_t>(object.tuple.elements.size())) {
+        throw util::Error("Tuple index out of range", idx->line, idx->column);
+      }
+      return object.tuple.elements[static_cast<size_t>(pos)];
+    } else if (object.type == DType::kRecord) {
+      if (index.type != DType::kString) {
+        throw util::Error("Record index must be a string", idx->line, idx->column);
+      }
+      auto it = object.record.index.find(index.str);
+      if (it == object.record.index.end()) {
+        throw util::Error("Record key not found: " + index.str, idx->line, idx->column);
+      }
+      return object.record.fields[it->second].second;
+    }
+    throw util::Error("Indexing not supported on this type", idx->line, idx->column);
   }
   throw std::runtime_error("Unknown expression type");
 }
@@ -686,6 +742,16 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
             throw util::Error("Complex comparison not supported", 0, 0);
         }
       } break;
+      case DType::kString: {
+        switch (expr.op) {
+          case parser::BinaryOp::kEq:
+            return Value::Bool(lhs.str == rhs.str);
+          case parser::BinaryOp::kNe:
+            return Value::Bool(lhs.str != rhs.str);
+          default:
+            throw util::Error("Only equality/inequality supported for strings", 0, 0);
+        }
+      } break;
       default:
         break;
     }
@@ -752,6 +818,37 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
       }
     }
     return out;
+  }
+  if (lhs.type == DType::kTuple && rhs.type == DType::kTuple) {
+    if (expr.op == parser::BinaryOp::kEq || expr.op == parser::BinaryOp::kNe) {
+      bool equal = lhs.tuple.elements.size() == rhs.tuple.elements.size();
+      if (equal) {
+        for (size_t i = 0; i < lhs.tuple.elements.size(); ++i) {
+          if (lhs.tuple.elements[i].ToString() != rhs.tuple.elements[i].ToString()) {
+            equal = false;
+            break;
+          }
+        }
+      }
+      return Value::Bool(expr.op == parser::BinaryOp::kEq ? equal : !equal);
+    }
+    throw util::Error("Tuple comparison only supports == and !=", 0, 0);
+  }
+  if (lhs.type == DType::kRecord && rhs.type == DType::kRecord) {
+    if (expr.op == parser::BinaryOp::kEq || expr.op == parser::BinaryOp::kNe) {
+      bool equal = lhs.record.fields.size() == rhs.record.fields.size();
+      if (equal) {
+        for (size_t i = 0; i < lhs.record.fields.size(); ++i) {
+          if (lhs.record.fields[i].first != rhs.record.fields[i].first ||
+              lhs.record.fields[i].second.ToString() != rhs.record.fields[i].second.ToString()) {
+            equal = false;
+            break;
+          }
+        }
+      }
+      return Value::Bool(expr.op == parser::BinaryOp::kEq ? equal : !equal);
+    }
+    throw util::Error("Record comparison only supports == and !=", 0, 0);
   }
   auto is_int = [](DType t) {
     return t == DType::kI8 || t == DType::kI16 || t == DType::kI32 || t == DType::kI64 ||
@@ -1317,6 +1414,55 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     double mean = total / static_cast<double>(v.tensor.size);
     return Value::F64(mean);
   }
+  if (name == "len") {
+    expect_args(1, name);
+    const Value& v = args[0];
+    if (v.type == DType::kTensor) {
+      return Value::I64(v.tensor.size);
+    }
+    if (v.type == DType::kTuple) {
+      return Value::I64(static_cast<int64_t>(v.tuple.elements.size()));
+    }
+    if (v.type == DType::kRecord) {
+      return Value::I64(static_cast<int64_t>(v.record.fields.size()));
+    }
+    throw util::Error("len expects tuple, record, or tensor", 0, 0);
+  }
+  if (name == "keys") {
+    expect_args(1, name);
+    const Value& v = args[0];
+    if (v.type != DType::kRecord) {
+      throw util::Error("keys expects a record", 0, 0);
+    }
+    std::vector<Value> elems;
+    elems.reserve(v.record.fields.size());
+    for (const auto& f : v.record.fields) {
+      elems.push_back(Value::String(f.first));
+    }
+    return Value::Tuple(std::move(elems));
+  }
+  if (name == "values") {
+    expect_args(1, name);
+    const Value& v = args[0];
+    if (v.type != DType::kRecord) {
+      throw util::Error("values expects a record", 0, 0);
+    }
+    std::vector<Value> elems;
+    elems.reserve(v.record.fields.size());
+    for (const auto& f : v.record.fields) {
+      elems.push_back(f.second);
+    }
+    return Value::Tuple(std::move(elems));
+  }
+  if (name == "has_key") {
+    expect_args(2, name);
+    const Value& v = args[0];
+    const Value& key = args[1];
+    if (v.type != DType::kRecord || key.type != DType::kString) {
+      throw util::Error("has_key expects (record, string)", 0, 0);
+    }
+    return Value::Bool(v.record.index.find(key.str) != v.record.index.end());
+  }
   if (name == "floor") {
     expect_args(1, name);
     ensure_not_tensor(args[0], name);
@@ -1518,10 +1664,46 @@ ExecResult Evaluator::EvaluateAssignment(const parser::AssignmentStatement& stmt
   if (env_ == nullptr) {
     throw util::Error("Environment is not configured", 0, 0);
   }
+  if (stmt.tuple_pattern) {
+    Value rhs = Evaluate(*stmt.value);
+    if (rhs.type != DType::kTuple) {
+      throw util::Error("Destructuring expects a tuple value", stmt.tuple_pattern->line,
+                        stmt.tuple_pattern->column);
+    }
+    if (rhs.tuple.elements.size() != stmt.tuple_pattern->names.size()) {
+      throw util::Error("Tuple destructuring arity mismatch", stmt.tuple_pattern->line,
+                        stmt.tuple_pattern->column);
+    }
+    for (size_t i = 0; i < stmt.tuple_pattern->names.size(); ++i) {
+      env_->Define(stmt.tuple_pattern->names[i], rhs.tuple.elements[i]);
+    }
+    return ExecResult{rhs, ControlSignal::kNone};
+  }
+  if (stmt.record_pattern) {
+    Value rhs = Evaluate(*stmt.value);
+    if (rhs.type != DType::kRecord) {
+      throw util::Error("Destructuring expects a record value", stmt.record_pattern->line,
+                        stmt.record_pattern->column);
+    }
+    if (rhs.record.fields.size() != stmt.record_pattern->fields.size()) {
+      throw util::Error("Record destructuring field mismatch", stmt.record_pattern->line,
+                        stmt.record_pattern->column);
+    }
+    for (size_t i = 0; i < stmt.record_pattern->fields.size(); ++i) {
+      const auto& key = stmt.record_pattern->fields[i].first;
+      if (rhs.record.index.find(key) == rhs.record.index.end()) {
+        throw util::Error("Record key not found in destructuring: " + key,
+                          stmt.record_pattern->line, stmt.record_pattern->column);
+      }
+      size_t idx = rhs.record.index[key];
+      env_->Define(stmt.record_pattern->fields[i].second, rhs.record.fields[idx].second);
+    }
+    return ExecResult{rhs, ControlSignal::kNone};
+  }
   Value value = Evaluate(*stmt.value);
   if (stmt.annotation.type) {
     if (!ValueMatchesType(value, stmt.annotation.type->name)) {
-      throw util::Error("Type mismatch for variable '" + stmt.name + "'", 0, 0);
+      throw util::Error("Type mismatch for variable '" + stmt.name + "'", stmt.line, stmt.column);
     }
     value.type_name = stmt.annotation.type->name;
   }
@@ -1558,6 +1740,8 @@ std::string Value::ToString() const {
       oss << std::setprecision(precision) << f64;
       return oss.str();
     }
+    case DType::kString:
+      return "\"" + str + "\"";
     case DType::kC64:
     case DType::kC128: {
       std::ostringstream oss;
@@ -1579,6 +1763,27 @@ std::string Value::ToString() const {
       std::ostringstream oss;
       oss << "tensor" << ShapeToString(tensor.shape) << "<" << DTypeToString(tensor.elem_type)
           << ">";
+      return oss.str();
+    }
+    case DType::kTuple: {
+      std::ostringstream oss;
+      oss << "(";
+      for (size_t i = 0; i < tuple.elements.size(); ++i) {
+        if (i > 0) oss << ", ";
+        oss << tuple.elements[i].ToString();
+      }
+      if (tuple.elements.size() == 1) oss << ",";  // singleton tuple syntax
+      oss << ")";
+      return oss.str();
+    }
+    case DType::kRecord: {
+      std::ostringstream oss;
+      oss << "{";
+      for (size_t i = 0; i < record.fields.size(); ++i) {
+        if (i > 0) oss << ", ";
+        oss << record.fields[i].first << ": " << record.fields[i].second.ToString();
+      }
+      oss << "}";
       return oss.str();
     }
     case DType::kFunction:

@@ -35,6 +35,8 @@ add_executable(lattice_tests
     tests/runtime/decimal_rational_tests.cpp
     tests/runtime/complex_tests.cpp
     tests/runtime/tensor_tests.cpp
+    tests/runtime/tuple_record_tests.cpp
+    tests/runtime/destructuring_tests.cpp
     tests/runtime/type_checker_tests.cpp
     tests/builtin/builtin_tests.cpp
     tests/builtin/print_tests.cpp

@@ -24,6 +24,7 @@ class Lexer {
   void SkipWhitespace();
   Token NumberToken();
   Token IdentifierToken();
+  Token StringToken();
 
   std::string source_;
   size_t index_;

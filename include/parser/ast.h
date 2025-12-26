@@ -20,6 +20,8 @@ enum class BinaryOp { kAdd, kSub, kMul, kDiv, kEq, kNe, kGt, kGe, kLt, kLe };
 
 struct Expression {
   virtual ~Expression() = default;
+  int line = 0;
+  int column = 0;
 };
 
 /// Numeric literal value.
@@ -37,11 +39,18 @@ struct BoolLiteral : public Expression {
   bool value;
 };
 
+struct StringLiteral : public Expression {
+  explicit StringLiteral(std::string v) : value(std::move(v)) {}
+  std::string value;
+};
+
 /// Unary expression such as negation.
 struct UnaryExpression : public Expression {
   UnaryExpression(UnaryOp o, std::unique_ptr<Expression> expr) : op(o), operand(std::move(expr)) {}
   UnaryOp op;
   std::unique_ptr<Expression> operand;
+  int line = 0;
+  int column = 0;
 };
 
 /// Binary expression for arithmetic operators.
@@ -52,6 +61,8 @@ struct BinaryExpression : public Expression {
   BinaryOp op;
   std::unique_ptr<Expression> lhs;
   std::unique_ptr<Expression> rhs;
+  int line = 0;
+  int column = 0;
 };
 
 /// Named identifier reference.
@@ -74,6 +85,35 @@ struct CallExpression : public Expression {
       : callee(std::move(callee_name)), args(std::move(arguments)) {}
   std::string callee;
   std::vector<std::unique_ptr<Expression>> args;
+  int line = 0;
+  int column = 0;
+};
+
+struct TupleLiteral : public Expression {
+  explicit TupleLiteral(std::vector<std::unique_ptr<Expression>> elems, int l = 0, int c = 0)
+      : elements(std::move(elems)), line(l), column(c) {}
+  std::vector<std::unique_ptr<Expression>> elements;
+  int line = 0;
+  int column = 0;
+};
+
+struct RecordLiteral : public Expression {
+  explicit RecordLiteral(std::vector<std::pair<std::string, std::unique_ptr<Expression>>> fs,
+                         int l = 0, int c = 0)
+      : fields(std::move(fs)), line(l), column(c) {}
+  std::vector<std::pair<std::string, std::unique_ptr<Expression>>> fields;
+  int line = 0;
+  int column = 0;
+};
+
+struct IndexExpression : public Expression {
+  IndexExpression(std::unique_ptr<Expression> o, std::unique_ptr<Expression> idx, int l = 0,
+                  int c = 0)
+      : object(std::move(o)), index(std::move(idx)), line(l), column(c) {}
+  std::unique_ptr<Expression> object;
+  std::unique_ptr<Expression> index;
+  int line = 0;
+  int column = 0;
 };
 
 /// Optional type annotation for bindings.
@@ -83,8 +123,25 @@ struct BindingAnnotation {
   std::unique_ptr<TypeName> type;
 };
 
+struct Pattern {
+  virtual ~Pattern() = default;
+  int line = 0;
+  int column = 0;
+};
+
+struct TuplePattern : public Pattern {
+  std::vector<std::string> names;
+};
+
+struct RecordPattern : public Pattern {
+  // key name -> binding name (for now they match).
+  std::vector<std::pair<std::string, std::string>> fields;
+};
+
 struct Statement {
   virtual ~Statement() = default;
+  int line = 0;
+  int column = 0;
 };
 
 /// Expression used as a statement.
@@ -97,7 +154,15 @@ struct ExpressionStatement : public Statement {
 struct AssignmentStatement : public Statement {
   AssignmentStatement(std::string n, BindingAnnotation ann, std::unique_ptr<Expression> v)
       : name(std::move(n)), annotation(std::move(ann)), value(std::move(v)) {}
-  std::string name;
+  AssignmentStatement(std::unique_ptr<TuplePattern> tp, BindingAnnotation ann,
+                      std::unique_ptr<Expression> v)
+      : tuple_pattern(std::move(tp)), annotation(std::move(ann)), value(std::move(v)) {}
+  AssignmentStatement(std::unique_ptr<RecordPattern> rp, BindingAnnotation ann,
+                      std::unique_ptr<Expression> v)
+      : record_pattern(std::move(rp)), annotation(std::move(ann)), value(std::move(v)) {}
+  std::string name;  // empty when using destructuring patterns.
+  std::unique_ptr<TuplePattern> tuple_pattern;
+  std::unique_ptr<RecordPattern> record_pattern;
   BindingAnnotation annotation;
   std::unique_ptr<Expression> value;
 };
