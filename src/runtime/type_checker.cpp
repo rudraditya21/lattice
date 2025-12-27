@@ -221,6 +221,36 @@ TypeChecker::TypeChecker() {
       FunSig{{Type{DType::kU64}, Type{DType::kU64}, Type{DType::kU64}}, Type{DType::kF64}};
   functions_["threefry"] =
       FunSig{{Type{DType::kU64}, Type{DType::kU64}, Type{DType::kU64}}, Type{DType::kF64}};
+  functions_["gamma"] = FunSig{{std::nullopt}, Type{DType::kF64}};
+  functions_["beta"] = FunSig{{std::nullopt, std::nullopt}, Type{DType::kF64}};
+  functions_["erf"] = FunSig{{std::nullopt}, Type{DType::kF64}};
+  functions_["erfc"] = FunSig{{std::nullopt}, Type{DType::kF64}};
+  functions_["igamma"] = FunSig{{std::nullopt, std::nullopt}, Type{DType::kF64}};
+  functions_["normal_pdf"] = FunSig{{std::nullopt, std::nullopt, std::nullopt}, Type{DType::kF64}};
+  functions_["normal_cdf"] = FunSig{{std::nullopt, std::nullopt, std::nullopt}, Type{DType::kF64}};
+  functions_["normal_sample"] =
+      FunSig{{std::nullopt, std::nullopt, Type{DType::kU64}, Type{DType::kU64}, Type{DType::kU64}},
+             Type{DType::kF64}};
+  functions_["uniform_pdf"] = FunSig{{std::nullopt, std::nullopt, std::nullopt}, Type{DType::kF64}};
+  functions_["uniform_cdf"] = FunSig{{std::nullopt, std::nullopt, std::nullopt}, Type{DType::kF64}};
+  functions_["uniform_sample"] =
+      FunSig{{std::nullopt, std::nullopt, Type{DType::kU64}, Type{DType::kU64}}, Type{DType::kF64}};
+  functions_["exponential_pdf"] = FunSig{{std::nullopt, std::nullopt}, Type{DType::kF64}};
+  functions_["exponential_cdf"] = FunSig{{std::nullopt, std::nullopt}, Type{DType::kF64}};
+  functions_["exponential_sample"] =
+      FunSig{{std::nullopt, Type{DType::kU64}, Type{DType::kU64}}, Type{DType::kF64}};
+  functions_["poisson_pmf"] = FunSig{{std::nullopt, std::nullopt}, Type{DType::kF64}};
+  functions_["poisson_sample"] =
+      FunSig{{std::nullopt, Type{DType::kU64}, Type{DType::kU64}}, Type{DType::kI64}};
+  functions_["binomial_pmf"] =
+      FunSig{{std::nullopt, std::nullopt, std::nullopt}, Type{DType::kF64}};
+  functions_["binomial_sample"] =
+      FunSig{{std::nullopt, std::nullopt, Type{DType::kU64}, Type{DType::kU64}}, Type{DType::kI64}};
+  functions_["quantile"] = FunSig{{Type{DType::kTensor}, std::nullopt}, Type{DType::kF64}};
+  functions_["correlation"] =
+      FunSig{{Type{DType::kTensor}, Type{DType::kTensor}}, Type{DType::kF64}};
+  functions_["regression"] =
+      FunSig{{Type{DType::kTensor}, Type{DType::kTensor}}, Type{DType::kTuple}};
   functions_["len"] = FunSig{{std::nullopt}, Type{DType::kI64}};
   functions_["keys"] = FunSig{{Type{DType::kRecord}}, Type{DType::kTuple}};
   functions_["values"] = FunSig{{Type{DType::kRecord}}, Type{DType::kTuple}};

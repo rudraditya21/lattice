@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "runtime/decimal.h"
 #include "util/error.h"
@@ -37,6 +38,9 @@ bool IsDenseTensor(const Value& v) {
 DType PromoteTensorElem(DType a, DType b, int line, int column) {
   return PromoteType(a, b, line, column);
 }
+
+// Forward declarations for helpers.
+Value ToDenseTensor(const Value& v, int line, int column);
 
 // Philox2x32-10 and Threefry2x32 implementations for deterministic RNG.
 uint64_t MulHi32(uint32_t a, uint32_t b) {
@@ -106,6 +110,34 @@ double Uint64ToUnitDouble(uint64_t v) {
   // Use upper 53 bits for a double in [0,1).
   constexpr double kInv = 1.0 / static_cast<double>(uint64_t{1} << 53);
   return (static_cast<double>(v >> 11)) * kInv;
+}
+
+double ScalarF64(const Value& v, int line, int column) {
+  if (v.type == DType::kTensor) {
+    Value dense = ToDenseTensor(v, line, column);
+    if (dense.tensor.size != 1) {
+      throw util::Error("Expected scalar tensor", line, column);
+    }
+    return dense.tensor.Data()[0];
+  }
+  if (v.type == DType::kTensor) {
+    throw util::Error("Expected scalar value", line, column);
+  }
+  return v.f64;
+}
+
+std::vector<double> Tensor1DToVector(const Value& v, int line, int column) {
+  if (v.type != DType::kTensor) {
+    throw util::Error("Expected a tensor argument", line, column);
+  }
+  Value dense = ToDenseTensor(v, line, column);
+  if (dense.tensor.shape.size() != 1) {
+    throw util::Error("Expected a 1D tensor", line, column);
+  }
+  std::vector<double> out(static_cast<size_t>(dense.tensor.size), 0.0);
+  for (int64_t i = 0; i < dense.tensor.size; ++i)
+    out[static_cast<size_t>(i)] = dense.tensor.Data()[i];
+  return out;
 }
 
 Value ToDenseTensor(const Value& v, int line, int column) {
@@ -2498,6 +2530,74 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     Value v_t = make_dense_tensor(v_flat, {2, 2}, A.tensor.elem_type);
     return Value::Tuple({u_t, s_t, v_t});
   }
+  if (name == "gamma") {
+    expect_args(1, name);
+    double x = ScalarF64(args[0], call_line, call_col);
+    return Value::F64(std::tgamma(x));
+  }
+  if (name == "beta") {
+    expect_args(2, name);
+    double a = ScalarF64(args[0], call_line, call_col);
+    double b = ScalarF64(args[1], call_line, call_col);
+    return Value::F64(std::tgamma(a) * std::tgamma(b) / std::tgamma(a + b));
+  }
+  if (name == "erf") {
+    expect_args(1, name);
+    double x = ScalarF64(args[0], call_line, call_col);
+    return Value::F64(std::erf(x));
+  }
+  if (name == "erfc") {
+    expect_args(1, name);
+    double x = ScalarF64(args[0], call_line, call_col);
+    return Value::F64(std::erfc(x));
+  }
+  if (name == "igamma") {  // Regularized lower incomplete gamma P(a,x)
+    expect_args(2, name);
+    double a = ScalarF64(args[0], call_line, call_col);
+    double x = ScalarF64(args[1], call_line, call_col);
+    if (a <= 0 || x < 0) {
+      throw util::Error("igamma expects a>0 and x>=0", call_line, call_col);
+    }
+    auto series = [&](double aa, double xx) {
+      double sum = 1.0 / aa;
+      double del = sum;
+      for (int n = 1; n < 100; ++n) {
+        del *= xx / (aa + n);
+        sum += del;
+        if (std::abs(del) < std::abs(sum) * 1e-12) break;
+      }
+      return sum * std::exp(-xx + aa * std::log(xx) - std::lgamma(aa));
+    };
+    auto contfrac = [&](double aa, double xx) {
+      const double eps = 1e-12;
+      const double fpmin = 1e-30;
+      double b0 = 0.0;
+      double b1 = 1.0;
+      double fac = 1.0;
+      double c1 = 1.0 / fpmin;
+      double d1 = 1.0 / (xx - aa + 1.0);
+      double h = d1;
+      for (int i = 1; i < 1000; ++i) {
+        double an = -static_cast<double>(i) * (static_cast<double>(i) - aa);
+        double d = an * d1 + (xx + 2.0 * static_cast<double>(i) - aa);
+        if (std::abs(d) < fpmin) d = fpmin;
+        c1 = (xx + 2.0 * static_cast<double>(i) - aa) + an / c1;
+        if (std::abs(c1) < fpmin) c1 = fpmin;
+        d1 = 1.0 / d;
+        double del = d1 * c1;
+        h *= del;
+        if (std::abs(del - 1.0) < eps) break;
+      }
+      return std::exp(-xx + aa * std::log(xx) - std::lgamma(aa)) * h;
+    };
+    double result;
+    if (x < a + 1.0) {
+      result = series(a, x);
+    } else {
+      result = 1.0 - contfrac(a, x);
+    }
+    return Value::F64(result);
+  }
   if (name == "philox") {
     expect_args(3, name);
     uint64_t seed = static_cast<uint64_t>(CastTo(DType::kU64, args[0], call_line, call_col).u64);
@@ -2515,6 +2615,210 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     uint64_t key = seed ^ (stream + 0x9E3779B97F4A7C15ULL);
     double out = Uint64ToUnitDouble(Threefry2x32(ctr, key));
     return Value::F64(out);
+  }
+  if (name == "normal_pdf") {
+    expect_args(3, name);
+    double x = ScalarF64(args[0], call_line, call_col);
+    double mu = ScalarF64(args[1], call_line, call_col);
+    double sigma = ScalarF64(args[2], call_line, call_col);
+    if (sigma <= 0.0) throw util::Error("normal_pdf sigma must be > 0", call_line, call_col);
+    double z = (x - mu) / sigma;
+    double coef = 1.0 / (sigma * std::sqrt(2.0 * M_PI));
+    return Value::F64(coef * std::exp(-0.5 * z * z));
+  }
+  if (name == "normal_cdf") {
+    expect_args(3, name);
+    double x = ScalarF64(args[0], call_line, call_col);
+    double mu = ScalarF64(args[1], call_line, call_col);
+    double sigma = ScalarF64(args[2], call_line, call_col);
+    if (sigma <= 0.0) throw util::Error("normal_cdf sigma must be > 0", call_line, call_col);
+    double z = (x - mu) / (sigma * std::sqrt(2.0));
+    return Value::F64(0.5 * (1.0 + std::erf(z)));
+  }
+  if (name == "normal_sample") {
+    expect_args(5, name);
+    double mu = ScalarF64(args[0], call_line, call_col);
+    double sigma = ScalarF64(args[1], call_line, call_col);
+    if (sigma <= 0.0) throw util::Error("normal_sample sigma must be > 0", call_line, call_col);
+    uint64_t seed = static_cast<uint64_t>(CastTo(DType::kU64, args[2], call_line, call_col).u64);
+    uint64_t stream = static_cast<uint64_t>(CastTo(DType::kU64, args[3], call_line, call_col).u64);
+    uint64_t ctr = static_cast<uint64_t>(CastTo(DType::kU64, args[4], call_line, call_col).u64);
+    uint64_t key = seed ^ (stream + 0x9E3779B97F4A7C15ULL);
+    double u1 = Uint64ToUnitDouble(Philox2x32(ctr, key));
+    double u2 = Uint64ToUnitDouble(Philox2x32(ctr + 1, key));
+    double r = std::sqrt(-2.0 * std::log(std::max(u1, 1e-12)));
+    double theta = 2.0 * M_PI * u2;
+    double z = r * std::cos(theta);
+    return Value::F64(mu + sigma * z);
+  }
+  if (name == "uniform_pdf") {
+    expect_args(3, name);
+    double x = ScalarF64(args[0], call_line, call_col);
+    double a = ScalarF64(args[1], call_line, call_col);
+    double b = ScalarF64(args[2], call_line, call_col);
+    if (!(a < b)) throw util::Error("uniform_pdf requires a < b", call_line, call_col);
+    if (x < a || x > b) return Value::F64(0.0);
+    return Value::F64(1.0 / (b - a));
+  }
+  if (name == "uniform_cdf") {
+    expect_args(3, name);
+    double x = ScalarF64(args[0], call_line, call_col);
+    double a = ScalarF64(args[1], call_line, call_col);
+    double b = ScalarF64(args[2], call_line, call_col);
+    if (!(a < b)) throw util::Error("uniform_cdf requires a < b", call_line, call_col);
+    if (x <= a) return Value::F64(0.0);
+    if (x >= b) return Value::F64(1.0);
+    return Value::F64((x - a) / (b - a));
+  }
+  if (name == "uniform_sample") {
+    expect_args(4, name);
+    double a = ScalarF64(args[0], call_line, call_col);
+    double b = ScalarF64(args[1], call_line, call_col);
+    if (!(a < b)) throw util::Error("uniform_sample requires a < b", call_line, call_col);
+    uint64_t seed = static_cast<uint64_t>(CastTo(DType::kU64, args[2], call_line, call_col).u64);
+    uint64_t ctr = static_cast<uint64_t>(CastTo(DType::kU64, args[3], call_line, call_col).u64);
+    double u = Uint64ToUnitDouble(Philox2x32(ctr, seed ^ 0x9E3779B97F4A7C15ULL));
+    return Value::F64(a + (b - a) * u);
+  }
+  if (name == "exponential_pdf") {
+    expect_args(2, name);
+    double x = ScalarF64(args[0], call_line, call_col);
+    double lambda = ScalarF64(args[1], call_line, call_col);
+    if (lambda <= 0) throw util::Error("exponential_pdf lambda must be > 0", call_line, call_col);
+    if (x < 0) return Value::F64(0.0);
+    return Value::F64(lambda * std::exp(-lambda * x));
+  }
+  if (name == "exponential_cdf") {
+    expect_args(2, name);
+    double x = ScalarF64(args[0], call_line, call_col);
+    double lambda = ScalarF64(args[1], call_line, call_col);
+    if (lambda <= 0) throw util::Error("exponential_cdf lambda must be > 0", call_line, call_col);
+    if (x < 0) return Value::F64(0.0);
+    return Value::F64(1.0 - std::exp(-lambda * x));
+  }
+  if (name == "exponential_sample") {
+    expect_args(3, name);
+    double lambda = ScalarF64(args[0], call_line, call_col);
+    if (lambda <= 0)
+      throw util::Error("exponential_sample lambda must be > 0", call_line, call_col);
+    uint64_t seed = static_cast<uint64_t>(CastTo(DType::kU64, args[1], call_line, call_col).u64);
+    uint64_t ctr = static_cast<uint64_t>(CastTo(DType::kU64, args[2], call_line, call_col).u64);
+    double u = std::max(Uint64ToUnitDouble(Philox2x32(ctr, seed ^ 0x517cc1b727220a95ULL)), 1e-12);
+    return Value::F64(-std::log(u) / lambda);
+  }
+  if (name == "poisson_pmf") {
+    expect_args(2, name);
+    double k = ScalarF64(args[0], call_line, call_col);
+    double lambda = ScalarF64(args[1], call_line, call_col);
+    if (lambda <= 0) throw util::Error("poisson_pmf lambda must be > 0", call_line, call_col);
+    if (k < 0 || std::floor(k) != k) return Value::F64(0.0);
+    double pmf = std::exp(-lambda + k * std::log(lambda) - std::lgamma(k + 1.0));
+    return Value::F64(pmf);
+  }
+  if (name == "poisson_sample") {
+    expect_args(3, name);
+    double lambda = ScalarF64(args[0], call_line, call_col);
+    if (lambda <= 0) throw util::Error("poisson_sample lambda must be > 0", call_line, call_col);
+    uint64_t seed = static_cast<uint64_t>(CastTo(DType::kU64, args[1], call_line, call_col).u64);
+    uint64_t ctr = static_cast<uint64_t>(CastTo(DType::kU64, args[2], call_line, call_col).u64);
+    double L = std::exp(-lambda);
+    double p = 1.0;
+    int k = 0;
+    uint64_t key = seed ^ 0x94d049bb133111ebULL;
+    uint64_t local_ctr = ctr;
+    do {
+      ++k;
+      p *= Uint64ToUnitDouble(Philox2x32(local_ctr++, key));
+    } while (p > L && k < 1000000);
+    return Value::I64(k - 1);
+  }
+  if (name == "binomial_pmf") {
+    expect_args(3, name);
+    double k = ScalarF64(args[0], call_line, call_col);
+    double n = ScalarF64(args[1], call_line, call_col);
+    double p = ScalarF64(args[2], call_line, call_col);
+    if (p < 0 || p > 1) throw util::Error("binomial_pmf p must be in [0,1]", call_line, call_col);
+    if (n < 0 || std::floor(n) != n)
+      throw util::Error("binomial_pmf n must be integer >=0", call_line, call_col);
+    if (k < 0 || k > n || std::floor(k) != k) return Value::F64(0.0);
+    double log_c = std::lgamma(n + 1.0) - std::lgamma(k + 1.0) - std::lgamma(n - k + 1.0);
+    double pmf = std::exp(log_c + k * std::log(p) + (n - k) * std::log(1 - p));
+    return Value::F64(pmf);
+  }
+  if (name == "binomial_sample") {
+    expect_args(4, name);
+    double n = ScalarF64(args[0], call_line, call_col);
+    double p = ScalarF64(args[1], call_line, call_col);
+    if (n < 0 || std::floor(n) != n)
+      throw util::Error("binomial_sample n must be integer >=0", call_line, call_col);
+    if (p < 0 || p > 1)
+      throw util::Error("binomial_sample p must be in [0,1]", call_line, call_col);
+    uint64_t seed = static_cast<uint64_t>(CastTo(DType::kU64, args[2], call_line, call_col).u64);
+    uint64_t ctr = static_cast<uint64_t>(CastTo(DType::kU64, args[3], call_line, call_col).u64);
+    uint64_t key = seed ^ 0xd9532fca9d4b5c15ULL;
+    int64_t successes = 0;
+    for (int64_t i = 0; i < static_cast<int64_t>(n); ++i) {
+      double u = Uint64ToUnitDouble(Philox2x32(ctr++, key));
+      if (u < p) ++successes;
+    }
+    return Value::I64(successes);
+  }
+  if (name == "quantile") {
+    expect_args(2, name);
+    auto data = Tensor1DToVector(args[0], call_line, call_col);
+    double q = ScalarF64(args[1], call_line, call_col);
+    if (data.empty()) throw util::Error("quantile of empty data", call_line, call_col);
+    if (q < 0.0 || q > 1.0) throw util::Error("quantile q must be in [0,1]", call_line, call_col);
+    std::sort(data.begin(), data.end());
+    double pos = q * (static_cast<double>(data.size() - 1));
+    size_t idx = static_cast<size_t>(pos);
+    double frac = pos - static_cast<double>(idx);
+    double val = data[idx];
+    if (idx + 1 < data.size()) val = val + frac * (data[idx + 1] - data[idx]);
+    return Value::F64(val);
+  }
+  if (name == "correlation") {
+    expect_args(2, name);
+    auto x = Tensor1DToVector(args[0], call_line, call_col);
+    auto y = Tensor1DToVector(args[1], call_line, call_col);
+    if (x.size() != y.size() || x.empty()) {
+      throw util::Error("correlation requires equal non-empty vectors", call_line, call_col);
+    }
+    double sumx = 0, sumy = 0, sumxx = 0, sumyy = 0, sumxy = 0;
+    for (size_t i = 0; i < x.size(); ++i) {
+      sumx += x[i];
+      sumy += y[i];
+      sumxx += x[i] * x[i];
+      sumyy += y[i] * y[i];
+      sumxy += x[i] * y[i];
+    }
+    double n = static_cast<double>(x.size());
+    double num = n * sumxy - sumx * sumy;
+    double den = std::sqrt((n * sumxx - sumx * sumx) * (n * sumyy - sumy * sumy));
+    if (den == 0.0) throw util::Error("correlation undefined (zero variance)", call_line, call_col);
+    return Value::F64(num / den);
+  }
+  if (name == "regression") {
+    expect_args(2, name);
+    auto x = Tensor1DToVector(args[0], call_line, call_col);
+    auto y = Tensor1DToVector(args[1], call_line, call_col);
+    if (x.size() != y.size() || x.empty()) {
+      throw util::Error("regression requires equal non-empty vectors", call_line, call_col);
+    }
+    double sumx = 0, sumy = 0, sumxx = 0, sumxy = 0;
+    for (size_t i = 0; i < x.size(); ++i) {
+      sumx += x[i];
+      sumy += y[i];
+      sumxx += x[i] * x[i];
+      sumxy += x[i] * y[i];
+    }
+    double n = static_cast<double>(x.size());
+    double denom = (n * sumxx - sumx * sumx);
+    if (denom == 0.0)
+      throw util::Error("regression undefined (zero variance)", call_line, call_col);
+    double slope = (n * sumxy - sumx * sumy) / denom;
+    double intercept = (sumy - slope * sumx) / n;
+    return Value::Tuple({Value::F64(slope), Value::F64(intercept)});
   }
   if (name == "keys") {
     expect_args(1, name);
