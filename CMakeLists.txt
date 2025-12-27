@@ -11,6 +11,7 @@ add_library(lattice_lib
     src/parser/parser.cpp
     src/repl/repl.cpp
     src/runtime/ops.cpp
+    src/runtime/backends/cpu/backend.cpp
     src/runtime/decimal.cpp
     src/runtime/runner.cpp
     src/runtime/type_checker.cpp
@@ -36,6 +37,7 @@ add_executable(lattice_tests
     tests/runtime/complex_tests.cpp
     tests/runtime/tensor_tests.cpp
     tests/runtime/tuple_record_tests.cpp
+    tests/runtime/backend_tests.cpp
     tests/runtime/destructuring_tests.cpp
     tests/runtime/error_location_tests.cpp
     tests/runtime/type_checker_tests.cpp

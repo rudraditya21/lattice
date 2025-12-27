@@ -1,3 +1,4 @@
+#include "runtime/backend.h"
 #include "test_util.h"
 
 namespace test {
@@ -148,6 +149,9 @@ void RunRuntimeTests(TestContext* ctx) {
       "{ func fact(n) { if (n <= 1) { return 1; } else { return n * fact(n - 1); } } fact(5); }",
       &env);
   ExpectNear(Unwrap(func_nested.value, "func_recursion", ctx).number, 120.0, "func_recursion", ctx);
+
+  // Backend scaffold defaults to CPU.
+  ExpectTrue(rt::GetDefaultBackend()->Type() == rt::BackendType::kCPU, "default_backend_cpu", ctx);
 
   // Type annotations enforcement.
   bool caught_assign = false;
