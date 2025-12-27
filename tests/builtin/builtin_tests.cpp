@@ -47,6 +47,24 @@ void RunBuiltinTests(TestContext* ctx) {
   ExpectTrue(pmf.f64 > 0.0, "poisson_pmf_positive", ctx);
   auto binom = EvalExpr("binomial_pmf(2,4,0.5)", &env);
   ExpectNear(binom.f64, 0.375, "binomial_pmf_value", ctx);
+
+  // Domain and shape errors.
+  auto expect_error = [&](const std::string& expr, const std::string& name) {
+    bool threw = false;
+    try {
+      EvalExpr(expr, &env);
+    } catch (const util::Error&) {
+      threw = true;
+    }
+    ExpectTrue(threw, name, ctx);
+  };
+  expect_error("normal_pdf(0,0,-1)", "normal_pdf_sigma_error");
+  expect_error("uniform_pdf(0,1,0)", "uniform_pdf_bounds_error");
+  expect_error("exponential_pdf(-1,1)", "exponential_pdf_domain_error");
+  expect_error("poisson_pmf(-1,2)", "poisson_pmf_domain_error");
+  expect_error("binomial_pmf(5,4,0.5)", "binomial_pmf_kgt_n_error");
+  expect_error("quantile(tensor_values((1,2)), 1.2)", "quantile_q_range_error");
+  expect_error("correlation(tensor_values((1,2)), tensor_values((1)))", "correlation_shape_error");
 }
 
 }  // namespace test

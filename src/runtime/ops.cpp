@@ -2685,7 +2685,7 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     double x = ScalarF64(args[0], call_line, call_col);
     double lambda = ScalarF64(args[1], call_line, call_col);
     if (lambda <= 0) throw util::Error("exponential_pdf lambda must be > 0", call_line, call_col);
-    if (x < 0) return Value::F64(0.0);
+    if (x < 0) throw util::Error("exponential_pdf domain requires x>=0", call_line, call_col);
     return Value::F64(lambda * std::exp(-lambda * x));
   }
   if (name == "exponential_cdf") {
@@ -2693,7 +2693,7 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     double x = ScalarF64(args[0], call_line, call_col);
     double lambda = ScalarF64(args[1], call_line, call_col);
     if (lambda <= 0) throw util::Error("exponential_cdf lambda must be > 0", call_line, call_col);
-    if (x < 0) return Value::F64(0.0);
+    if (x < 0) throw util::Error("exponential_cdf domain requires x>=0", call_line, call_col);
     return Value::F64(1.0 - std::exp(-lambda * x));
   }
   if (name == "exponential_sample") {
@@ -2711,7 +2711,9 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     double k = ScalarF64(args[0], call_line, call_col);
     double lambda = ScalarF64(args[1], call_line, call_col);
     if (lambda <= 0) throw util::Error("poisson_pmf lambda must be > 0", call_line, call_col);
-    if (k < 0 || std::floor(k) != k) return Value::F64(0.0);
+    if (k < 0 || std::floor(k) != k) {
+      throw util::Error("poisson_pmf k must be non-negative integer", call_line, call_col);
+    }
     double pmf = std::exp(-lambda + k * std::log(lambda) - std::lgamma(k + 1.0));
     return Value::F64(pmf);
   }
@@ -2740,7 +2742,9 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     if (p < 0 || p > 1) throw util::Error("binomial_pmf p must be in [0,1]", call_line, call_col);
     if (n < 0 || std::floor(n) != n)
       throw util::Error("binomial_pmf n must be integer >=0", call_line, call_col);
-    if (k < 0 || k > n || std::floor(k) != k) return Value::F64(0.0);
+    if (k < 0 || k > n || std::floor(k) != k) {
+      throw util::Error("binomial_pmf k must be integer in [0,n]", call_line, call_col);
+    }
     double log_c = std::lgamma(n + 1.0) - std::lgamma(k + 1.0) - std::lgamma(n - k + 1.0);
     double pmf = std::exp(log_c + k * std::log(p) + (n - k) * std::log(1 - p));
     return Value::F64(pmf);
