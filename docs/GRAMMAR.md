@@ -71,7 +71,8 @@ assignment_or_expr → IDENTIFIER type_annot? "=" expression
 type_annot    → ":" IDENTIFIER ;
 ```
 - Semicolons are optional after statements but required inside `for` headers.
-- Blocks do not currently introduce new variable scopes (all bindings are in the current environment).
+- Blocks introduce new lexical scopes; assignments rebind existing names and otherwise define in the
+  current scope.
 
 ## Truthiness
 - Control flow requires `bool` conditions. Arithmetic still treats `true/false` as `1/0`. Comparisons yield booleans (`true`/`false`).

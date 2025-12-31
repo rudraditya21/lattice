@@ -41,7 +41,7 @@ void RunReplTests(TestContext* ctx) {
   bool has_sum = out.find("2") != std::string::npos;
   ExpectTrue(has_sum, "repl_evaluates_expression", ctx);
 
-  std::istringstream input2("{ a = 4; if (a) a = a + 1; a }\nexit\n");
+  std::istringstream input2("{ a = 4; if (a != 0) a = a + 1; a }\nexit\n");
   std::ostringstream output2;
   StreamRedirect redirect2(std::cin, std::cout, input2, output2);
 
@@ -53,7 +53,7 @@ void RunReplTests(TestContext* ctx) {
   bool has_block = out2.find("5") != std::string::npos;
   ExpectTrue(has_block, "repl_handles_block_and_if", ctx);
 
-  std::istringstream input3("{ n = 0; while (n - 2) { n = n + 1; }; n }\nexit\n");
+  std::istringstream input3("{ n = 0; while (n < 2) { n = n + 1; }; n }\nexit\n");
   std::ostringstream output3;
   StreamRedirect redirect3(std::cin, std::cout, input3, output3);
   lattice::repl::Repl repl3;
@@ -64,7 +64,7 @@ void RunReplTests(TestContext* ctx) {
   ExpectTrue(has_loop, "repl_handles_while", ctx);
 
   std::istringstream input4(
-      "{ s = 0; for (i = 0; i - 3; i = i + 1) { if (i - 1) { } else { continue; } s = s + 1; }; s "
+      "{ s = 0; for (i = 0; i < 3; i = i + 1) { if (i != 1) { } else { continue; } s = s + 1; }; s "
       "}\nexit\n");
   std::ostringstream output4;
   StreamRedirect redirect4(std::cin, std::cout, input4, output4);

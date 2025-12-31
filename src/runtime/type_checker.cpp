@@ -265,6 +265,17 @@ void TypeChecker::ExitScope() {
   scopes_.pop_back();
 }
 
+void TypeChecker::BindName(const std::string& name, std::optional<Type> type) {
+  for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+    auto found = it->find(name);
+    if (found != it->end()) {
+      found->second = type;
+      return;
+    }
+  }
+  scopes_.back()[name] = type;
+}
+
 bool TypeChecker::IsAssignable(const std::optional<Type>& from, const std::optional<Type>& to) {
   if (!to.has_value()) return true;
   if (!from.has_value()) return true;
@@ -587,8 +598,8 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
       }
       for (size_t i = 0; i < asn->tuple_pattern->names.size(); ++i) {
         const auto& elem = val_t->tuple_elems[i];
-        scopes_.back()[asn->tuple_pattern->names[i]] =
-            elem.has_value() ? std::optional<Type>{Type{elem.value()}} : std::nullopt;
+        BindName(asn->tuple_pattern->names[i],
+                 elem.has_value() ? std::optional<Type>{Type{elem.value()}} : std::nullopt);
       }
       return;
     }
@@ -606,9 +617,9 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
         for (const auto& tfield : val_t->record_fields) {
           if (tfield.first == field.first) {
             found = true;
-            scopes_.back()[field.second] = tfield.second.has_value()
-                                               ? std::optional<Type>{Type{tfield.second.value()}}
-                                               : std::nullopt;
+            BindName(field.second, tfield.second.has_value()
+                                       ? std::optional<Type>{Type{tfield.second.value()}}
+                                       : std::nullopt);
             break;
           }
         }
@@ -629,9 +640,9 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
                               OptTypeName(annot) + ", got " + OptTypeName(val_t) + ")",
                           asn->line, asn->column);
       }
-      scopes_.back()[asn->name] = annot;
+      BindName(asn->name, annot);
     } else {
-      scopes_.back()[asn->name] = val_t;
+      BindName(asn->name, val_t);
     }
     return;
   }

@@ -35,6 +35,13 @@ bool IsDenseTensor(const Value& v) {
   return v.type == DType::kTensor && v.tensor.kind == TensorKind::kDense;
 }
 
+bool RequireBool(const Value& v, int line, int column) {
+  if (v.type != DType::kBool) {
+    throw util::Error("Condition must be bool", line, column);
+  }
+  return v.boolean;
+}
+
 DType PromoteTensorElem(DType a, DType b, int line, int column) {
   return PromoteType(a, b, line, column);
 }
@@ -706,7 +713,7 @@ std::string DeriveTypeName(const Value& v) {
   return "";
 }
 
-Evaluator::Evaluator(Environment* env) : env_(env) {}
+Evaluator::Evaluator(std::shared_ptr<Environment> env) : env_(std::move(env)) {}
 
 Value Evaluator::Evaluate(const parser::Expression& expr) {
   if (const auto* num = dynamic_cast<const parser::NumberLiteral*>(&expr)) {
@@ -1473,7 +1480,7 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
 }
 
 Value Evaluator::EvaluateIdentifier(const parser::Identifier& identifier) {
-  if (env_ == nullptr) {
+  if (!env_) {
     throw util::Error("Environment is not configured", identifier.line, identifier.column);
   }
   auto value = env_->Get(identifier.name);
@@ -1485,7 +1492,7 @@ Value Evaluator::EvaluateIdentifier(const parser::Identifier& identifier) {
 }
 
 Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
-  if (env_ == nullptr) {
+  if (!env_) {
     throw util::Error("Environment is not configured", 0, 0);
   }
   // Handle cast before evaluating all args to allow type-name first arg.
@@ -1532,7 +1539,7 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
       throw util::Error(name + " expects " + std::to_string(fn->parameters.size()) + " arguments",
                         call.line, call.column);
     }
-    Environment fn_env(fn->defining_env);
+    auto fn_env = std::make_shared<Environment>(fn->defining_env);
     for (size_t i = 0; i < args.size(); ++i) {
       if (!fn->parameter_types.empty() && i < fn->parameter_types.size()) {
         const std::string& annot = fn->parameter_types[i];
@@ -1542,9 +1549,9 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
                             call.line, call.column);
         }
       }
-      fn_env.Define(fn->parameters[i], args[i]);
+      fn_env->Define(fn->parameters[i], args[i]);
     }
-    Evaluator fn_evaluator(&fn_env);
+    Evaluator fn_evaluator(fn_env);
     ExecResult body_result = fn_evaluator.EvaluateStatement(*fn->body);
     if (!fn->return_type.empty() && body_result.value.has_value()) {
       if (!ValueMatchesType(body_result.value.value(), fn->return_type)) {
@@ -2932,9 +2939,14 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
 }
 
 ExecResult Evaluator::EvaluateBlock(const parser::BlockStatement& block) {
+  if (!env_) {
+    throw util::Error("Environment is not configured", 0, 0);
+  }
+  auto block_env = std::make_shared<Environment>(env_);
+  Evaluator block_eval(block_env);
   ExecResult last;
   for (const auto& stmt : block.statements) {
-    ExecResult result = EvaluateStatement(*stmt);
+    ExecResult result = block_eval.EvaluateStatement(*stmt);
     if (result.control != ControlSignal::kNone) {
       return result;
     }
@@ -2945,8 +2957,7 @@ ExecResult Evaluator::EvaluateBlock(const parser::BlockStatement& block) {
 
 ExecResult Evaluator::EvaluateIf(const parser::IfStatement& stmt) {
   Value condition = Evaluate(*stmt.condition);
-  bool truthy = condition.boolean || condition.f64 != 0.0;
-  if (truthy) {
+  if (RequireBool(condition, stmt.condition->line, stmt.condition->column)) {
     return EvaluateStatement(*stmt.then_branch);
   }
   if (stmt.else_branch) {
@@ -2959,7 +2970,7 @@ ExecResult Evaluator::EvaluateWhile(const parser::WhileStatement& stmt) {
   ExecResult last;
   while (true) {
     Value condition = Evaluate(*stmt.condition);
-    if (condition.f64 == 0.0) {
+    if (!RequireBool(condition, stmt.condition->line, stmt.condition->column)) {
       break;
     }
     ExecResult body = EvaluateStatement(*stmt.body);
@@ -2979,21 +2990,26 @@ ExecResult Evaluator::EvaluateWhile(const parser::WhileStatement& stmt) {
 }
 
 ExecResult Evaluator::EvaluateFor(const parser::ForStatement& stmt) {
+  if (!env_) {
+    throw util::Error("Environment is not configured", 0, 0);
+  }
+  auto loop_env = std::make_shared<Environment>(env_);
+  Evaluator loop_eval(loop_env);
   ExecResult last;
   if (stmt.init) {
-    ExecResult init_result = EvaluateStatement(*stmt.init);
+    ExecResult init_result = loop_eval.EvaluateStatement(*stmt.init);
     if (init_result.control != ControlSignal::kNone) {
       return init_result;
     }
   }
   while (true) {
     if (stmt.condition) {
-      Value cond_val = Evaluate(*stmt.condition);
-      if (cond_val.f64 == 0.0) {
+      Value cond_val = loop_eval.Evaluate(*stmt.condition);
+      if (!RequireBool(cond_val, stmt.condition->line, stmt.condition->column)) {
         break;
       }
     }
-    ExecResult body = EvaluateStatement(*stmt.body);
+    ExecResult body = loop_eval.EvaluateStatement(*stmt.body);
     if (body.control == ControlSignal::kBreak) {
       body.control = ControlSignal::kNone;
       return body;
@@ -3007,7 +3023,7 @@ ExecResult Evaluator::EvaluateFor(const parser::ForStatement& stmt) {
       last = body;
     }
     if (stmt.increment) {
-      ExecResult inc = EvaluateStatement(*stmt.increment);
+      ExecResult inc = loop_eval.EvaluateStatement(*stmt.increment);
       if (inc.control == ControlSignal::kBreak) {
         inc.control = ControlSignal::kNone;
         return inc;
@@ -3035,7 +3051,7 @@ ExecResult Evaluator::EvaluateReturn(const parser::ReturnStatement& stmt) {
 }
 
 ExecResult Evaluator::EvaluateFunction(parser::FunctionStatement& stmt) {
-  if (env_ == nullptr) {
+  if (!env_) {
     throw util::Error("Environment is not configured", 0, 0);
   }
   auto fn = std::make_shared<Function>();
@@ -3058,9 +3074,14 @@ ExecResult Evaluator::EvaluateFunction(parser::FunctionStatement& stmt) {
 }
 
 ExecResult Evaluator::EvaluateAssignment(const parser::AssignmentStatement& stmt) {
-  if (env_ == nullptr) {
+  if (!env_) {
     throw util::Error("Environment is not configured", 0, 0);
   }
+  auto bind_value = [&](const std::string& name, const Value& value) {
+    if (!env_->Assign(name, value)) {
+      env_->Define(name, value);
+    }
+  };
   if (stmt.tuple_pattern) {
     Value rhs = Evaluate(*stmt.value);
     if (rhs.type != DType::kTuple) {
@@ -3072,7 +3093,7 @@ ExecResult Evaluator::EvaluateAssignment(const parser::AssignmentStatement& stmt
                         stmt.tuple_pattern->column);
     }
     for (size_t i = 0; i < stmt.tuple_pattern->names.size(); ++i) {
-      env_->Define(stmt.tuple_pattern->names[i], rhs.tuple.elements[i]);
+      bind_value(stmt.tuple_pattern->names[i], rhs.tuple.elements[i]);
     }
     return ExecResult{rhs, ControlSignal::kNone};
   }
@@ -3093,7 +3114,7 @@ ExecResult Evaluator::EvaluateAssignment(const parser::AssignmentStatement& stmt
                           stmt.record_pattern->line, stmt.record_pattern->column);
       }
       size_t idx = rhs.record.index[key];
-      env_->Define(stmt.record_pattern->fields[i].second, rhs.record.fields[idx].second);
+      bind_value(stmt.record_pattern->fields[i].second, rhs.record.fields[idx].second);
     }
     return ExecResult{rhs, ControlSignal::kNone};
   }
@@ -3104,7 +3125,7 @@ ExecResult Evaluator::EvaluateAssignment(const parser::AssignmentStatement& stmt
     }
     value.type_name = stmt.annotation.type->name;
   }
-  env_->Define(stmt.name, value);
+  bind_value(stmt.name, value);
   return ExecResult{value, ControlSignal::kNone};
 }
 

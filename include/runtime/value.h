@@ -26,7 +26,7 @@ struct Function {
   std::vector<std::string> parameter_types;
   std::string return_type;
   std::unique_ptr<parser::Statement> body;
-  Environment* defining_env;
+  std::shared_ptr<Environment> defining_env;
 };
 
 struct Value {

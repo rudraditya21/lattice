@@ -31,6 +31,7 @@ class TypeChecker {
   void CheckStatement(parser::Statement* stmt);
   void CheckBlock(const parser::BlockStatement* block);
   void CheckFunction(parser::FunctionStatement* fn);
+  void BindName(const std::string& name, std::optional<Type> type);
   bool IsAssignable(const std::optional<Type>& from, const std::optional<Type>& to);
   void EnterScope();
   void ExitScope();

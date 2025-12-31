@@ -2,13 +2,17 @@
 
 #include <cctype>
 #include <iostream>
+#include <memory>
 #include <string>
+
+#include "runtime/type_checker.h"
 
 namespace lattice::repl {
 
 Repl::Repl() {
-  builtin::InstallBuiltins(&env_);
-  builtin::InstallPrint(&env_);
+  env_ = std::make_shared<runtime::Environment>();
+  builtin::InstallBuiltins(env_);
+  builtin::InstallPrint(env_);
 }
 
 void Repl::Run() {
@@ -37,7 +41,9 @@ bool Repl::ProcessLine(const std::string& line) {
     lexer::Lexer lexer(trimmed);
     parser::Parser parser(std::move(lexer));
     auto stmt = parser.ParseStatement();
-    runtime::Evaluator evaluator(&env_);
+    runtime::TypeChecker checker;
+    checker.Check(stmt.get());
+    runtime::Evaluator evaluator(env_);
     auto result = evaluator.EvaluateStatement(*stmt);
     if (result.control == runtime::ControlSignal::kBreak ||
         result.control == runtime::ControlSignal::kContinue ||

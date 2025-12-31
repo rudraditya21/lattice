@@ -3,14 +3,14 @@
 namespace test {
 
 void RunParserTests(TestContext* ctx) {
-  rt::Environment env;
-  bt::InstallBuiltins(&env);
+  auto env = std::make_shared<rt::Environment>();
+  bt::InstallBuiltins(env);
 
-  ExpectNear(EvalExpr("(1 + 2) * 3", &env).number, 9.0, "grouping", ctx);
+  ExpectNear(EvalExpr("(1 + 2) * 3", env).number, 9.0, "grouping", ctx);
 
   bool caught = false;
   try {
-    EvalExpr("1 2", &env);
+    EvalExpr("1 2", env);
   } catch (const util::Error&) {
     caught = true;
   }
@@ -19,7 +19,7 @@ void RunParserTests(TestContext* ctx) {
   // If/else statement parses and evaluates.
   bool parsed_if = false;
   try {
-    auto val = EvalStmt("if (1) 2 else 3", &env);
+    auto val = EvalStmt("if (true) 2 else 3", env);
     parsed_if = true;
     ExpectNear(Unwrap(val.value, "if_else_true_branch", ctx).number, 2.0, "if_else_true_branch",
                ctx);
@@ -30,8 +30,8 @@ void RunParserTests(TestContext* ctx) {
   // Type-annotated function and variable parse and enforce.
   bool parsed_types = true;
   try {
-    EvalStmt("func add(a: i32, b: f64) -> f64 { return a + b; }", &env);
-    EvalStmt("x: i32 = 3", &env);
+    EvalStmt("func add(a: i32, b: f64) -> f64 { return a + b; }", env);
+    EvalStmt("x: i32 = 3", env);
   } catch (const util::Error&) {
     parsed_types = false;
   }

@@ -24,19 +24,19 @@ void ExpectTrue(bool value, const std::string& name, TestContext* ctx) {
   std::cerr << "[FAIL] " << name << " expected true\n";
 }
 
-rt::Value EvalExpr(const std::string& expr, rt::Environment* env) {
+rt::Value EvalExpr(const std::string& expr, std::shared_ptr<rt::Environment> env) {
   lx::Lexer lex(expr);
   ps::Parser parser(std::move(lex));
   auto ast = parser.ParseExpression();
-  rt::Evaluator evaluator(env);
+  rt::Evaluator evaluator(std::move(env));
   return evaluator.Evaluate(*ast);
 }
 
-rt::ExecResult EvalStmt(const std::string& stmt, rt::Environment* env) {
+rt::ExecResult EvalStmt(const std::string& stmt, std::shared_ptr<rt::Environment> env) {
   lx::Lexer lex(stmt);
   ps::Parser parser(std::move(lex));
   auto parsed = parser.ParseStatement();
-  rt::Evaluator evaluator(env);
+  rt::Evaluator evaluator(std::move(env));
   return evaluator.EvaluateStatement(*parsed);
 }
 

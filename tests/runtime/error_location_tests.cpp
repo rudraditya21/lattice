@@ -3,13 +3,13 @@
 namespace test {
 
 void RunErrorLocationTests(TestContext* ctx) {
-  rt::Environment env;
-  bt::InstallBuiltins(&env);
+  auto env = std::make_shared<rt::Environment>();
+  bt::InstallBuiltins(env);
 
   auto expect_loc = [&](const std::string& code, const std::string& name) {
     bool has_loc = false;
     try {
-      EvalExpr(code, &env);
+      EvalExpr(code, env);
     } catch (const util::Error& e) {
       has_loc = e.line() > 0 && e.column() > 0;
     }

@@ -1,5 +1,8 @@
 # Lattice Semantic Spec (Draft)
 
+Note: This document is the source of truth for scoping and control-flow truthiness. The grammar
+document describes syntax only.
+
 ## Lexical Grammar (high level)
 - Whitespace: spaces/tabs/newlines separate tokens; `//` line comments are skipped.
 - Identifiers: `[A-Za-z_][A-Za-z0-9_]*`.
@@ -18,20 +21,21 @@
 8. Assignment (right-associative): `=` in statements, not an expression operator in arithmetic contexts.
 
 ## Assignment Semantics
-- Simple assignment binds or rebinds in the nearest enclosing lexical scope; shadowing is allowed on first introduction.
+- Simple assignment rebinds the nearest existing binding; if the name is unbound in all enclosing
+  scopes, it creates a new binding in the current scope.
 - Assignment is a statement, not an expression; `x = y = 3` is not permitted.
 - Annotated bindings (`x: i32 = 3`) enforce the declared type; unannotated remain dynamic.
 - Function parameters are immutable bindings inside the function body unless explicitly reassigned.
 
 ## Evaluation Model
-- Lexical scoping; blocks `{ ... }` introduce new scopes for bindings. Inner scopes may shadow outer
-  names; lookup always resolves to the nearest enclosing binding.
+- Lexical scoping; blocks `{ ... }` introduce new scopes for bindings, and `for` headers introduce a
+  loop-local scope shared with the loop body. Lookup resolves to the nearest enclosing binding.
 - Call-by-value: arguments are evaluated left-to-right before a call; the callee body executes after
   all arguments are computed.
 - Deterministic evaluation order: subexpressions evaluate left-to-right; there is no reordering of
   side effects or control-flow guards.
 - Control flow: `if/else`, `while`, `for` with `break`/`continue`; `return` exits the current
-  function.
+  function. Conditions must evaluate to `bool`.
 - Aggregates:
   - Tuples: immutable, positional, created with `(a, b)` (singleton `(a,)`). Indexing `t[0]` bounds-checks. Equality is structural.
   - Records: immutable, ordered fields `{x: a, y: b}`; keys are identifiers or strings. Access via `r["x"]`; missing keys are errors. Equality is structural (field names/order and values).

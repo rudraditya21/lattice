@@ -26,19 +26,19 @@ void RunPromotionTests(TestContext* ctx) {
   ExpectTrue(threw_cross_decimal, "decimal_cross_type_blocks", ctx);
 
   // Interpreter-level promotion behavior.
-  rt::Environment env;
-  bt::InstallBuiltins(&env);
+  auto env = std::make_shared<rt::Environment>();
+  bt::InstallBuiltins(env);
 
-  auto int_add = EvalExpr("1 + 2", &env);
+  auto int_add = EvalExpr("1 + 2", env);
   ExpectTrue(int_add.type == rt::DType::kI32, "int_add_stays_i32", ctx);
   ExpectNear(static_cast<double>(int_add.i64), 3.0, "int_add_value", ctx);
 
-  auto float_mix = EvalExpr("1 + 2.5", &env);
+  auto float_mix = EvalExpr("1 + 2.5", env);
   ExpectTrue(float_mix.type == rt::DType::kF32 || float_mix.type == rt::DType::kF64,
              "int_float_promotes_to_float", ctx);
   ExpectNear(float_mix.f64, 3.5, "int_float_value", ctx);
 
-  auto div_float = EvalExpr("3 / 2", &env);
+  auto div_float = EvalExpr("3 / 2", env);
   ExpectTrue(div_float.type == rt::DType::kF64, "int_division_yields_float", ctx);
   ExpectNear(div_float.f64, 1.5, "int_division_value", ctx);
 

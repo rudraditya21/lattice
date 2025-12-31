@@ -24,7 +24,7 @@ Value CastTo(DType target, const Value& v, int line = 0, int column = 0);
 class Evaluator {
  public:
   /// Evaluates AST nodes against the provided environment (not owned).
-  explicit Evaluator(Environment* env);
+  explicit Evaluator(std::shared_ptr<Environment> env);
 
   /// Dispatches to the appropriate visitor for the expression kind.
   Value Evaluate(const parser::Expression& expr);
@@ -48,7 +48,7 @@ class Evaluator {
   ExecResult EvaluateAssignment(const parser::AssignmentStatement& stmt);
   ExecResult EvaluateExpressionStatement(const parser::ExpressionStatement& stmt);
 
-  Environment* env_;
+  std::shared_ptr<Environment> env_;
 };
 
 }  // namespace lattice::runtime

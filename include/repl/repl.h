@@ -2,6 +2,7 @@
 #define LATTICE_REPL_REPL_H_
 
 #include <iostream>
+#include <memory>
 #include <string>
 
 #include "builtin/builtins.h"
@@ -23,7 +24,7 @@ class Repl {
   /// Processes one line; returns true when the loop should terminate.
   bool ProcessLine(const std::string& line);
 
-  runtime::Environment env_;
+  std::shared_ptr<runtime::Environment> env_;
 };
 
 }  // namespace lattice::repl

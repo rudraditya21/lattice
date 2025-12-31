@@ -1,6 +1,7 @@
 // Entry point for the lattice REPL or script runner.
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <sstream>
 
 #include "builtin/builtins.h"
@@ -18,12 +19,12 @@ int main(int argc, char** argv) {
     }
     std::stringstream buffer;
     buffer << in.rdbuf();
-    lattice::runtime::Environment env;
-    lattice::builtin::InstallBuiltins(&env);
-    lattice::builtin::InstallPrint(&env);
+    auto env = std::make_shared<lattice::runtime::Environment>();
+    lattice::builtin::InstallBuiltins(env);
+    lattice::builtin::InstallPrint(env);
     try {
       lattice::runtime::ExecResult result =
-          lattice::runtime::RunSource(buffer.str(), &env);
+          lattice::runtime::RunSource(buffer.str(), env);
       (void)result;  // Script mode only prints via explicit print().
       return 0;
     } catch (const lattice::util::Error& err) {

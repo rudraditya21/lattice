@@ -1,5 +1,6 @@
 #include "runtime/runner.h"
 
+#include <memory>
 #include <string>
 
 #include "lexer/lexer.h"
@@ -9,7 +10,7 @@
 
 namespace lattice::runtime {
 
-ExecResult RunSource(const std::string& source, Environment* env) {
+ExecResult RunSource(const std::string& source, std::shared_ptr<Environment> env) {
   // Wrap in a block so multiple top-level statements are allowed.
   std::string wrapped = "{\n" + source + "\n}";
   lexer::Lexer lex(wrapped);

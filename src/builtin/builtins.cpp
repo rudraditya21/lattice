@@ -5,8 +5,8 @@
 
 namespace lattice::builtin {
 
-void InstallBuiltins(runtime::Environment* env) {
-  if (env == nullptr) {
+void InstallBuiltins(const std::shared_ptr<runtime::Environment>& env) {
+  if (!env) {
     return;
   }
   const double pi = std::acos(-1.0);
@@ -19,8 +19,8 @@ void InstallBuiltins(runtime::Environment* env) {
   env->Define("inf", runtime::Value::Number(inf));
 }
 
-void InstallPrint(runtime::Environment* env) {
-  if (env == nullptr) {
+void InstallPrint(const std::shared_ptr<runtime::Environment>& env) {
+  if (!env) {
     return;
   }
   auto print_fn = std::make_shared<runtime::Function>();
