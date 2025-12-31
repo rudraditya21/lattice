@@ -4,6 +4,7 @@ Lattice is a small scientific computing language aimed at reproducible numerics 
 - Arithmetic expressions with identifiers, unary minus, calls, assignments, and blocks.
 - Control flow via `if/else` statements, nested blocks, `while` loops, `for` loops, and `break`/`continue`.
 - Strict typing with optional annotations and a numeric tower (ints, floats, complex, decimals, rationals) plus tensors.
+- Roadmap: OpenCL backend with in-house kernels (no external BLAS/FFT libraries).
  - Built-in constants `pi`, `e`, `gamma`, `inf` and math helpers `pow`, `gcd`, `lcm`, `abs`, `sign`, `mod`, `floor`, `ceil`, `round`, `clamp`, `min`, `max`, `sum`, `mean`, `var`, `std`, `transpose`, `matmul`, `conv2d`, `max_pool2d`, `fft1d`.
  - Typed constructors/casts: `int()`, `float()`, `complex()`, `decimal()`, `rational()`, `tensor()`, `tensor_values()`, `tensor_sparse_csr()`, `tensor_sparse_coo()`, `tensor_ragged()`, `to_dense()`, `to_sparse_csr()`, `to_sparse_coo()`.
 The project is organized with headers in `include/` and sources in `src/`.
