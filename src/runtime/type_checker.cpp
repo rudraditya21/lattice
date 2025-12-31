@@ -32,6 +32,39 @@ std::optional<Type> LookupDType(const std::string& name) {
   return std::nullopt;
 }
 
+bool IsNumericKind(DType t) {
+  switch (t) {
+    case DType::kBool:
+    case DType::kI8:
+    case DType::kI16:
+    case DType::kI32:
+    case DType::kI64:
+    case DType::kU8:
+    case DType::kU16:
+    case DType::kU32:
+    case DType::kU64:
+    case DType::kF16:
+    case DType::kBF16:
+    case DType::kF32:
+    case DType::kF64:
+    case DType::kC64:
+    case DType::kC128:
+    case DType::kDecimal:
+    case DType::kRational:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool IsFloatKind(DType t) {
+  return t == DType::kF16 || t == DType::kBF16 || t == DType::kF32 || t == DType::kF64;
+}
+
+bool IsComplexKind(DType t) {
+  return t == DType::kC64 || t == DType::kC128;
+}
+
 std::string DTypeName(DType t) {
   switch (t) {
     case DType::kBool:
@@ -122,6 +155,9 @@ std::string TypeNameStr(const Type& t) {
           break;
       }
     }
+    if (t.tensor_elem.has_value()) {
+      return "tensor<" + kind + "," + DTypeName(t.tensor_elem.value()) + ">";
+    }
     return "tensor<" + kind + ">";
   }
   return DTypeName(t.kind);
@@ -161,7 +197,7 @@ bool IsAssignableType(const Type& from, const Type& to) {
         to.tensor_kind.value() != from.tensor_kind.value()) {
       return false;
     }
-    return true;
+    return IsAssignableD(from.tensor_elem, to.tensor_elem);
   }
   if (from.kind == to.kind) return true;
   return PromoteType(from.kind, to.kind) == to.kind;
@@ -177,6 +213,14 @@ TypeChecker::TypeChecker() {
   functions_["gcd"] = FunSig{{std::nullopt, std::nullopt}, Type{DType::kI64}};
   functions_["lcm"] = FunSig{{std::nullopt, std::nullopt}, Type{DType::kI64}};
   functions_["abs"] = FunSig{{std::nullopt}, std::nullopt};
+  functions_["sign"] = FunSig{{std::nullopt}, std::nullopt};
+  functions_["mod"] = FunSig{{std::nullopt, std::nullopt}, std::nullopt};
+  functions_["floor"] = FunSig{{std::nullopt}, std::nullopt};
+  functions_["ceil"] = FunSig{{std::nullopt}, std::nullopt};
+  functions_["round"] = FunSig{{std::nullopt}, std::nullopt};
+  functions_["clamp"] = FunSig{{std::nullopt, std::nullopt, std::nullopt}, std::nullopt};
+  functions_["min"] = FunSig{{std::nullopt, std::nullopt}, std::nullopt};
+  functions_["max"] = FunSig{{std::nullopt, std::nullopt}, std::nullopt};
   functions_["set_decimal_precision"] = FunSig{{Type{DType::kI32}}, std::nullopt};
   functions_["get_decimal_precision"] = FunSig{{}, Type{DType::kI32}};
   functions_["int"] = FunSig{{std::nullopt}, Type{DType::kI64}};
@@ -184,10 +228,8 @@ TypeChecker::TypeChecker() {
   functions_["decimal"] = FunSig{{std::nullopt}, Type{DType::kDecimal}};
   functions_["rational"] = FunSig{{std::nullopt, std::nullopt}, Type{DType::kRational}};
   functions_["complex"] = FunSig{{std::nullopt, std::nullopt}, Type{DType::kC128}};
-  auto tensor_type = [&](TensorKind k) {
-    Type t{DType::kTensor};
-    t.tensor_kind = k;
-    return t;
+  auto tensor_type = [&](TensorKind k, std::optional<DType> elem = std::nullopt) {
+    return Type::Tensor(k, elem);
   };
   functions_["tensor"] = FunSig{{std::nullopt, std::nullopt}, tensor_type(TensorKind::kDense)};
   functions_["tensor_values"] = FunSig{{std::nullopt}, tensor_type(TensorKind::kDense)};
@@ -200,10 +242,10 @@ TypeChecker::TypeChecker() {
   functions_["to_dense"] = FunSig{{Type{DType::kTensor}}, tensor_type(TensorKind::kDense)};
   functions_["to_sparse_csr"] = FunSig{{Type{DType::kTensor}}, tensor_type(TensorKind::kSparseCSR)};
   functions_["to_sparse_coo"] = FunSig{{Type{DType::kTensor}}, tensor_type(TensorKind::kSparseCOO)};
-  functions_["sum"] = FunSig{{Type{DType::kTensor}}, Type{DType::kF64}};
-  functions_["mean"] = FunSig{{Type{DType::kTensor}}, Type{DType::kF64}};
-  functions_["var"] = FunSig{{Type{DType::kTensor}}, Type{DType::kF64}};
-  functions_["std"] = FunSig{{Type{DType::kTensor}}, Type{DType::kF64}};
+  functions_["sum"] = FunSig{{std::nullopt}, std::nullopt};
+  functions_["mean"] = FunSig{{std::nullopt}, std::nullopt};
+  functions_["var"] = FunSig{{std::nullopt}, std::nullopt};
+  functions_["std"] = FunSig{{std::nullopt}, std::nullopt};
   functions_["transpose"] = FunSig{{Type{DType::kTensor}}, tensor_type(TensorKind::kDense)};
   functions_["matmul"] =
       FunSig{{Type{DType::kTensor}, Type{DType::kTensor}}, tensor_type(TensorKind::kDense)};
@@ -331,37 +373,53 @@ std::optional<Type> TypeChecker::TypeOf(const parser::Expression* expr) {
       auto kind_of = [&](const std::optional<Type>& t) -> std::optional<TensorKind> {
         return t.has_value() ? t->tensor_kind : std::nullopt;
       };
+      auto elem_of = [&](const std::optional<Type>& t) -> std::optional<DType> {
+        if (!t.has_value()) return std::nullopt;
+        if (t->kind == DType::kTensor) return t->tensor_elem;
+        return t->kind;
+      };
+      auto promote_elem = [&](std::optional<DType> a,
+                              std::optional<DType> b) -> std::optional<DType> {
+        if (!a.has_value() && !b.has_value()) return std::nullopt;
+        if (!a.has_value()) return b;
+        if (!b.has_value()) return a;
+        return PromoteType(a.value(), b.value(), bin->line, bin->column);
+      };
       auto lk = kind_of(lt);
       auto rk = kind_of(rt);
       auto line = bin->line;
       auto col = bin->column;
+      std::optional<DType> elem;
+      if (lt->kind == DType::kTensor && rt->kind == DType::kTensor) {
+        elem = promote_elem(lt->tensor_elem, rt->tensor_elem);
+      } else if (lt->kind == DType::kTensor) {
+        elem = promote_elem(lt->tensor_elem, rt->kind);
+      } else if (rt->kind == DType::kTensor) {
+        elem = promote_elem(rt->tensor_elem, lt->kind);
+      }
       if (lk.has_value() && rk.has_value()) {
         if (lk.value() == TensorKind::kRagged || rk.value() == TensorKind::kRagged) {
           if (lk.value() != TensorKind::kRagged || rk.value() != TensorKind::kRagged) {
             throw util::Error("Ragged tensors only operate with matching ragged tensors", line,
                               col);
           }
-          Type t{DType::kTensor};
-          t.tensor_kind = TensorKind::kRagged;
+          Type t = Type::Tensor(TensorKind::kRagged, elem);
           return t;
         }
         // Dense with sparse -> result dense.
         if ((lk.value() == TensorKind::kDense && rk.value() != TensorKind::kDense) ||
             (rk.value() == TensorKind::kDense && lk.value() != TensorKind::kDense)) {
-          Type t{DType::kTensor};
-          t.tensor_kind = TensorKind::kDense;
+          Type t = Type::Tensor(TensorKind::kDense, elem);
           return t;
         }
         if (lk.value() != rk.value()) {
           throw util::Error("Sparse tensor formats must match; convert first", line, col);
         }
-        Type t{DType::kTensor};
-        t.tensor_kind = lk;
+        Type t = Type::Tensor(lk.value(), elem);
         return t;
       }
       // Mixed dense/sparse: result dense tensor.
-      Type t{DType::kTensor};
-      t.tensor_kind = TensorKind::kDense;
+      Type t = Type::Tensor(TensorKind::kDense, elem);
       return t;
     }
     if (bin->op == BinaryOp::kEq || bin->op == BinaryOp::kNe || bin->op == BinaryOp::kGt ||
@@ -387,50 +445,228 @@ std::optional<Type> TypeChecker::TypeOf(const parser::Expression* expr) {
       }
       return dt;
     }
+    std::vector<std::optional<Type>> arg_types;
+    arg_types.reserve(call->args.size());
+    for (const auto& arg : call->args) {
+      arg_types.push_back(TypeOf(arg.get()));
+    }
+
+    auto tensor_type = [&](TensorKind k, std::optional<DType> elem = std::nullopt) {
+      return Type::Tensor(k, elem);
+    };
+    auto promote_opt = [&](std::optional<DType> a, std::optional<DType> b) -> std::optional<DType> {
+      if (!a.has_value() && !b.has_value()) return std::nullopt;
+      if (!a.has_value()) return b;
+      if (!b.has_value()) return a;
+      return PromoteType(a.value(), b.value(), call->line, call->column);
+    };
+    auto elem_from_tuple = [&](const std::optional<Type>& t) -> std::optional<DType> {
+      if (!t.has_value() || t->kind != DType::kTuple) return std::nullopt;
+      std::optional<DType> elem;
+      for (const auto& e : t->tuple_elems) {
+        if (!e.has_value()) return std::nullopt;
+        if (e.value() == DType::kTuple || e.value() == DType::kRecord ||
+            e.value() == DType::kFunction || e.value() == DType::kTensor) {
+          return std::nullopt;
+        }
+        elem = promote_opt(elem, e.value());
+      }
+      return elem;
+    };
+    auto elem_from_values = [&](const std::vector<std::optional<Type>>& args,
+                                size_t start) -> std::optional<DType> {
+      std::optional<DType> elem;
+      for (size_t i = start; i < args.size(); ++i) {
+        if (!args[i].has_value()) return std::nullopt;
+        if (args[i]->kind == DType::kTensor) return std::nullopt;
+        elem = promote_opt(elem, args[i]->kind);
+      }
+      return elem;
+    };
+
+    if (call->callee == "tensor") {
+      if (call->args.size() < 2) {
+        throw util::Error("tensor expects at least shape and fill value", call->line, call->column);
+      }
+      std::optional<DType> elem;
+      if (!arg_types.empty() && arg_types.back().has_value()) {
+        elem = arg_types.back()->kind;
+      }
+      return tensor_type(TensorKind::kDense, elem);
+    }
+    if (call->callee == "tensor_values") {
+      if (call->args.empty()) {
+        throw util::Error("tensor_values expects at least one value", call->line, call->column);
+      }
+      std::optional<DType> elem;
+      if (call->args.size() == 1) {
+        elem = elem_from_tuple(arg_types[0]);
+      }
+      if (!elem.has_value()) {
+        elem = elem_from_values(arg_types, 0);
+      }
+      return tensor_type(TensorKind::kDense, elem);
+    }
+
     auto fn = functions_.find(call->callee);
     if (fn != functions_.end()) {
       const auto& sig = fn->second;
-      if (sig.params.size() == call->args.size()) {
-        for (size_t i = 0; i < call->args.size(); ++i) {
-          auto arg_t = TypeOf(call->args[i].get());
-          if (!IsAssignable(arg_t, sig.params[i])) {
-            throw util::Error("Type mismatch for argument " + std::to_string(i + 1) + " to " +
-                                  call->callee + " (expected " + OptTypeName(sig.params[i]) +
-                                  ", got " + OptTypeName(arg_t) + ")",
-                              call->line, call->column);
-          }
+      if (sig.params.size() != call->args.size()) {
+        throw util::Error(
+            call->callee + " expects " + std::to_string(sig.params.size()) + " arguments",
+            call->line, call->column);
+      }
+      for (size_t i = 0; i < call->args.size(); ++i) {
+        if (!IsAssignable(arg_types[i], sig.params[i])) {
+          throw util::Error("Type mismatch for argument " + std::to_string(i + 1) + " to " +
+                                call->callee + " (expected " + OptTypeName(sig.params[i]) +
+                                ", got " + OptTypeName(arg_types[i]) + ")",
+                            call->line, call->column);
         }
       }
-      return sig.ret;
-    }
-    auto tensor_type = [&](TensorKind k) {
-      Type t{DType::kTensor};
-      t.tensor_kind = k;
-      return t;
-    };
-    if (call->callee == "tensor") {
-      return tensor_type(TensorKind::kDense);
-    }
-    if (call->callee == "tensor_values") {
-      return tensor_type(TensorKind::kDense);
-    }
-    if (call->callee == "tensor_sparse_csr") {
-      return tensor_type(TensorKind::kSparseCSR);
-    }
-    if (call->callee == "tensor_sparse_coo") {
-      return tensor_type(TensorKind::kSparseCOO);
-    }
-    if (call->callee == "tensor_ragged") {
-      return tensor_type(TensorKind::kRagged);
-    }
-    if (call->callee == "to_dense") {
-      return tensor_type(TensorKind::kDense);
-    }
-    if (call->callee == "to_sparse_csr") {
-      return tensor_type(TensorKind::kSparseCSR);
-    }
-    if (call->callee == "to_sparse_coo") {
-      return tensor_type(TensorKind::kSparseCOO);
+
+      if (call->callee == "tensor_sparse_csr" || call->callee == "tensor_sparse_coo") {
+        std::optional<DType> elem =
+            elem_from_tuple(arg_types.size() > 3 ? arg_types[3] : std::nullopt);
+        TensorKind kind =
+            call->callee == "tensor_sparse_csr" ? TensorKind::kSparseCSR : TensorKind::kSparseCOO;
+        return tensor_type(kind, elem);
+      }
+      if (call->callee == "tensor_ragged") {
+        std::optional<DType> elem =
+            elem_from_tuple(arg_types.size() > 1 ? arg_types[1] : std::nullopt);
+        return tensor_type(TensorKind::kRagged, elem);
+      }
+      if (call->callee == "to_dense" || call->callee == "to_sparse_csr" ||
+          call->callee == "to_sparse_coo") {
+        TensorKind kind = TensorKind::kDense;
+        if (call->callee == "to_sparse_csr") kind = TensorKind::kSparseCSR;
+        if (call->callee == "to_sparse_coo") kind = TensorKind::kSparseCOO;
+        std::optional<DType> elem;
+        if (!arg_types.empty() && arg_types[0].has_value()) {
+          elem = arg_types[0]->tensor_elem;
+        }
+        return tensor_type(kind, elem);
+      }
+      if (call->callee == "sum" || call->callee == "mean" || call->callee == "var" ||
+          call->callee == "std") {
+        if (!arg_types.empty() && arg_types[0].has_value()) {
+          if (arg_types[0]->kind == DType::kTensor) {
+            if (arg_types[0]->tensor_elem.has_value()) {
+              return Type{arg_types[0]->tensor_elem.value()};
+            }
+            return std::nullopt;
+          }
+          if (IsNumericKind(arg_types[0]->kind)) {
+            return Type{DType::kF64};
+          }
+          throw util::Error(call->callee + " expects a tensor or numeric value", call->line,
+                            call->column);
+        }
+        return std::nullopt;
+      }
+      if (call->callee == "sign") {
+        return Type{DType::kI32};
+      }
+      if (call->callee == "mod") {
+        if (arg_types.size() >= 2 && arg_types[0].has_value() && arg_types[1].has_value()) {
+          DType a = arg_types[0]->kind;
+          DType b = arg_types[1]->kind;
+          if (IsNumericKind(a) && IsNumericKind(b)) {
+            if (IsFloatKind(a) || IsFloatKind(b) || IsComplexKind(a) || IsComplexKind(b) ||
+                a == DType::kDecimal || a == DType::kRational || b == DType::kDecimal ||
+                b == DType::kRational) {
+              return Type{DType::kF64};
+            }
+            return Type{DType::kI64};
+          }
+        }
+        return std::nullopt;
+      }
+      if (call->callee == "floor" || call->callee == "ceil" || call->callee == "round") {
+        return Type{DType::kF64};
+      }
+      if (call->callee == "min" || call->callee == "max") {
+        if (arg_types.size() >= 2 && arg_types[0].has_value() && arg_types[1].has_value()) {
+          return Type{
+              PromoteType(arg_types[0]->kind, arg_types[1]->kind, call->line, call->column)};
+        }
+        return std::nullopt;
+      }
+      if (call->callee == "clamp") {
+        if (arg_types.size() >= 3 && arg_types[0].has_value() && arg_types[1].has_value() &&
+            arg_types[2].has_value()) {
+          auto t0 = PromoteType(arg_types[0]->kind, arg_types[1]->kind, call->line, call->column);
+          auto t1 = PromoteType(t0, arg_types[2]->kind, call->line, call->column);
+          return Type{t1};
+        }
+        return std::nullopt;
+      }
+      if (call->callee == "transpose" || call->callee == "max_pool2d") {
+        std::optional<DType> elem;
+        if (!arg_types.empty() && arg_types[0].has_value()) {
+          elem = arg_types[0]->tensor_elem;
+        }
+        return tensor_type(TensorKind::kDense, elem);
+      }
+      if (call->callee == "matmul" || call->callee == "solve" || call->callee == "conv2d") {
+        std::optional<DType> elem;
+        if (arg_types.size() >= 2 && arg_types[0].has_value() && arg_types[1].has_value()) {
+          elem = promote_opt(arg_types[0]->tensor_elem, arg_types[1]->tensor_elem);
+        }
+        return tensor_type(TensorKind::kDense, elem);
+      }
+      if (call->callee == "fft1d") {
+        Type t;
+        t.kind = DType::kTuple;
+        t.tuple_elems = {DType::kTensor, DType::kTensor};
+        return t;
+      }
+      if (call->callee == "lu" || call->callee == "qr") {
+        Type t;
+        t.kind = DType::kTuple;
+        t.tuple_elems = {DType::kTensor, DType::kTensor};
+        return t;
+      }
+      if (call->callee == "svd") {
+        Type t;
+        t.kind = DType::kTuple;
+        t.tuple_elems = {DType::kTensor, DType::kTensor, DType::kTensor};
+        return t;
+      }
+      if (call->callee == "regression") {
+        Type t;
+        t.kind = DType::kTuple;
+        t.tuple_elems = {DType::kF64, DType::kF64};
+        return t;
+      }
+      if (call->callee == "len") {
+        if (!arg_types.empty() && arg_types[0].has_value()) {
+          auto k = arg_types[0]->kind;
+          if (k != DType::kTensor && k != DType::kTuple && k != DType::kRecord) {
+            throw util::Error("len expects tuple, record, or tensor", call->line, call->column);
+          }
+        }
+        return Type{DType::kI64};
+      }
+      if (call->callee == "keys" || call->callee == "values" || call->callee == "has_key") {
+        if (!arg_types.empty() && arg_types[0].has_value() &&
+            arg_types[0]->kind != DType::kRecord) {
+          throw util::Error(call->callee + " expects a record", call->line, call->column);
+        }
+        if (call->callee == "has_key") {
+          if (arg_types.size() > 1 && arg_types[1].has_value() &&
+              arg_types[1]->kind != DType::kString) {
+            throw util::Error("has_key expects a string key", call->line, call->column);
+          }
+          return Type{DType::kBool};
+        }
+        return sig.ret;
+      }
+      if (sig.ret.has_value()) {
+        return sig.ret;
+      }
+      return std::nullopt;
     }
     return std::nullopt;
   }
@@ -588,6 +824,10 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
   if (auto* asn = dynamic_cast<AssignmentStatement*>(stmt)) {
     auto val_t = TypeOf(asn->value.get());
     if (asn->tuple_pattern) {
+      if (asn->annotation.type) {
+        throw util::Error("Annotations are not supported on destructuring assignments", asn->line,
+                          asn->column);
+      }
       if (!val_t.has_value() || val_t->kind != DType::kTuple) {
         throw util::Error("Tuple destructuring expects a tuple value", asn->tuple_pattern->line,
                           asn->tuple_pattern->column);
@@ -604,6 +844,10 @@ void TypeChecker::CheckStatement(parser::Statement* stmt) {
       return;
     }
     if (asn->record_pattern) {
+      if (asn->annotation.type) {
+        throw util::Error("Annotations are not supported on destructuring assignments", asn->line,
+                          asn->column);
+      }
       if (!val_t.has_value() || val_t->kind != DType::kRecord) {
         throw util::Error("Record destructuring expects a record value", asn->record_pattern->line,
                           asn->record_pattern->column);

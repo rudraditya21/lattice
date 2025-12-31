@@ -52,7 +52,7 @@ lattice> exit
 
 ## Tensor Ops and Shapes
 - Creation:
-  - Dense: `tensor(d0, d1, ..., fill)` for row-major dense; `tensor_values((1,2,3))` for 1D; nested tuples for nD (e.g., `tensor_values(((1,2),(3,4)))`). Square-bracket list literals are **not** supported yet.
+  - Dense: `tensor(d0, d1, ..., fill)` for row-major dense; `tensor_values((1,2,3))` for 1D; nested tuples for nD (e.g., `tensor_values(((1,2),(3,4)))`). Square-bracket list literals are not supported; tuples are the only literal collection.
   - Sparse: `tensor_sparse_csr((rows, cols), indptr_tuple, indices_tuple, values_tuple)`, `tensor_sparse_coo((rows, cols), rows_tuple, cols_tuple, values_tuple)`.
   - Ragged: `tensor_ragged(row_splits_tuple, values_tuple)`.
   - Conversion: `to_dense`, `to_sparse_csr`, `to_sparse_coo`.

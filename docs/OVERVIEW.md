@@ -12,8 +12,8 @@
 - Functions: `func name(a: i32, b) -> f64 { return a + b; }`.
 - Variables: `x = 3`, annotated `x: i32 = 3`.
 - Control flow: `if (cond) { ... } else { ... }`, `while`, `for (init; cond; step)`, `break`, `continue`, `return`.
-- Tuples: `(a, b)`; singleton `(a,)`; indexing `t[0]`.
-- Records: `{x: 1, y: 2}`; access `r["x"]`.
+- Tuples: `(a, b)`; singleton `(a,)`; indexing `t[0]`. Tuples are the only literal collection.
+- Records: `{x: 1, y: 2}`; access `r["x"]`. Square-bracket list literals are not supported.
 - Comments: `// comment`.
 
 ## Types

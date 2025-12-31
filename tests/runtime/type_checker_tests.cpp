@@ -166,6 +166,14 @@ void RunTypeCheckerTests(TestContext* ctx) {
     record_access_err = true;
   }
   ExpectTrue(record_access_err, "typecheck_record_access_error", ctx);
+
+  bool destructure_annot_err = false;
+  try {
+    TypeCheckStmt("(a, b): i32 = (1, 2)");
+  } catch (const util::Error&) {
+    destructure_annot_err = true;
+  }
+  ExpectTrue(destructure_annot_err, "typecheck_destructure_annotation_reject", ctx);
 }
 
 }  // namespace test

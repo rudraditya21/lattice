@@ -50,6 +50,14 @@ void RunDestructuringTests(TestContext* ctx) {
     record_type_err = true;
   }
   ExpectTrue(record_type_err, "destructure_record_wrong_type", ctx);
+
+  bool annot_err = false;
+  try {
+    EvalStmt("(a, b): i32 = (1, 2)", env);
+  } catch (const util::Error&) {
+    annot_err = true;
+  }
+  ExpectTrue(annot_err, "destructure_annotation_reject", ctx);
 }
 
 }  // namespace test

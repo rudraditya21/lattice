@@ -43,6 +43,8 @@ struct Type {
   std::vector<std::pair<std::string, std::optional<DType>>> record_fields;
   // Optional tensor kind metadata.
   std::optional<TensorKind> tensor_kind;
+  // Optional tensor element dtype metadata.
+  std::optional<DType> tensor_elem;
 
   static Type Tuple(std::vector<std::optional<DType>> elems) {
     Type t;
@@ -55,6 +57,14 @@ struct Type {
     Type t;
     t.kind = DType::kRecord;
     t.record_fields = std::move(fields);
+    return t;
+  }
+
+  static Type Tensor(TensorKind kind, std::optional<DType> elem = std::nullopt) {
+    Type t;
+    t.kind = DType::kTensor;
+    t.tensor_kind = kind;
+    t.tensor_elem = elem;
     return t;
   }
 };

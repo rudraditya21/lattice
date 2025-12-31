@@ -1553,7 +1553,10 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     }
     Evaluator fn_evaluator(fn_env);
     ExecResult body_result = fn_evaluator.EvaluateStatement(*fn->body);
-    if (!fn->return_type.empty() && body_result.value.has_value()) {
+    if (!fn->return_type.empty()) {
+      if (!body_result.value.has_value()) {
+        throw util::Error("Missing return value in function " + name, call.line, call.column);
+      }
       if (!ValueMatchesType(body_result.value.value(), fn->return_type)) {
         throw util::Error("Return type mismatch in function " + name + " (expected " +
                               fn->return_type + ", got " +
@@ -3083,6 +3086,10 @@ ExecResult Evaluator::EvaluateAssignment(const parser::AssignmentStatement& stmt
     }
   };
   if (stmt.tuple_pattern) {
+    if (stmt.annotation.type) {
+      throw util::Error("Annotations are not supported on destructuring assignments", stmt.line,
+                        stmt.column);
+    }
     Value rhs = Evaluate(*stmt.value);
     if (rhs.type != DType::kTuple) {
       throw util::Error("Destructuring expects a tuple value", stmt.tuple_pattern->line,
@@ -3098,6 +3105,10 @@ ExecResult Evaluator::EvaluateAssignment(const parser::AssignmentStatement& stmt
     return ExecResult{rhs, ControlSignal::kNone};
   }
   if (stmt.record_pattern) {
+    if (stmt.annotation.type) {
+      throw util::Error("Annotations are not supported on destructuring assignments", stmt.line,
+                        stmt.column);
+    }
     Value rhs = Evaluate(*stmt.value);
     if (rhs.type != DType::kRecord) {
       throw util::Error("Destructuring expects a record value", stmt.record_pattern->line,

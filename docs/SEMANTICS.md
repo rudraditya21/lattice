@@ -25,6 +25,7 @@ document describes syntax only.
   scopes, it creates a new binding in the current scope.
 - Assignment is a statement, not an expression; `x = y = 3` is not permitted.
 - Annotated bindings (`x: i32 = 3`) enforce the declared type; unannotated remain dynamic.
+- Annotations apply to simple bindings only; destructuring assignments do not support annotations.
 - Function parameters are immutable bindings inside the function body unless explicitly reassigned.
 
 ## Evaluation Model
@@ -37,8 +38,8 @@ document describes syntax only.
 - Control flow: `if/else`, `while`, `for` with `break`/`continue`; `return` exits the current
   function. Conditions must evaluate to `bool`.
 - Aggregates:
-  - Tuples: immutable, positional, created with `(a, b)` (singleton `(a,)`). Indexing `t[0]` bounds-checks. Equality is structural.
-  - Records: immutable, ordered fields `{x: a, y: b}`; keys are identifiers or strings. Access via `r["x"]`; missing keys are errors. Equality is structural (field names/order and values).
+  - Tuples: immutable, positional, created with `(a, b)` (singleton `(a,)`). Indexing `t[0]` bounds-checks. Equality is structural. Tuples are the only literal collection.
+  - Records: immutable, ordered fields `{x: a, y: b}`; keys are identifiers or strings. Access via `r["x"]`; missing keys are errors. Equality is structural (field names/order and values). Square-bracket list literals are not supported.
   - Strings: immutable; only `==/!=` supported.
 
 ## Tensors and Broadcasting
