@@ -6,21 +6,57 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_library(lattice_lib
+set(LATTICE_SOURCES
     src/lexer/lexer.cpp
     src/parser/parser.cpp
     src/repl/repl.cpp
     src/runtime/ops.cpp
     src/runtime/backends/cpu/backend.cpp
+    src/runtime/backends/gpu/dynloader.cpp
+    src/runtime/backends/gpu/opencl_loader.cpp
+    src/runtime/backends/gpu/opencl_backend.cpp
+    src/runtime/backends/gpu/cuda_loader.cpp
+    src/runtime/backends/gpu/cuda_backend.cpp
+    src/runtime/backends/gpu/hip_loader.cpp
+    src/runtime/backends/gpu/hip_backend.cpp
     src/runtime/decimal.cpp
     src/runtime/runner.cpp
     src/runtime/type_checker.cpp
     src/builtin/builtins.cpp
 )
 
+if(APPLE)
+    list(APPEND LATTICE_SOURCES src/runtime/backends/gpu/metal_backend.mm)
+else()
+    list(APPEND LATTICE_SOURCES src/runtime/backends/gpu/metal_backend_stub.cpp)
+endif()
+
+add_library(lattice_lib ${LATTICE_SOURCES})
+
 target_include_directories(lattice_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/OpenCL-Headers
 )
+
+if(UNIX AND NOT APPLE)
+    target_link_libraries(lattice_lib PRIVATE dl)
+endif()
+
+if(APPLE)
+    set_source_files_properties(src/runtime/backends/gpu/metal_backend.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    find_library(METAL_FRAMEWORK Metal)
+    find_library(FOUNDATION_FRAMEWORK Foundation)
+    find_library(QUARTZCORE_FRAMEWORK QuartzCore)
+    if(METAL_FRAMEWORK)
+        target_link_libraries(lattice_lib PRIVATE ${METAL_FRAMEWORK})
+    endif()
+    if(FOUNDATION_FRAMEWORK)
+        target_link_libraries(lattice_lib PRIVATE ${FOUNDATION_FRAMEWORK})
+    endif()
+    if(QUARTZCORE_FRAMEWORK)
+        target_link_libraries(lattice_lib PRIVATE ${QUARTZCORE_FRAMEWORK})
+    endif()
+endif()
 
 add_executable(lattice main.cpp)
 

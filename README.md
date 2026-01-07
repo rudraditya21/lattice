@@ -4,7 +4,7 @@ Lattice is a small scientific computing language aimed at reproducible numerics 
 - Arithmetic expressions with identifiers, unary minus, calls, assignments, and blocks.
 - Control flow via `if/else` statements, nested blocks, `while` loops, `for` loops, and `break`/`continue`.
 - Strict typing with optional annotations and a numeric tower (ints, floats, complex, decimals, rationals) plus tensors.
-- Roadmap: OpenCL backend with in-house kernels (no external BLAS/FFT libraries).
+- GPU backends: OpenCL, CUDA, HIP, and Metal with in-house kernels (no external BLAS/FFT libraries).
  - Built-in constants `pi`, `e`, `gamma`, `inf` and math helpers `pow`, `gcd`, `lcm`, `abs`, `sign`, `mod`, `floor`, `ceil`, `round`, `clamp`, `min`, `max`, `sum`, `mean`, `var`, `std`, `transpose`, `matmul`, `conv2d`, `max_pool2d`, `fft1d`.
  - Typed constructors/casts: `int()`, `float()`, `complex()`, `decimal()`, `rational()`, `tensor()`, `tensor_values()`, `tensor_sparse_csr()`, `tensor_sparse_coo()`, `tensor_ragged()`, `to_dense()`, `to_sparse_csr()`, `to_sparse_coo()`.
 The project is organized with headers in `include/` and sources in `src/`.
@@ -48,6 +48,16 @@ lattice> var(tensor_values((1,3)))
 lattice> fft1d(tensor_values((1,0,1,0)))
 (tensor[dense][4]<f64>, tensor[dense][4]<f64>)
 lattice> exit
+```
+
+## GPU Backend (experimental)
+```bash
+LATTICE_BACKEND=auto ./build/lattice
+LATTICE_BACKEND=cuda ./build/lattice
+LATTICE_BACKEND=hip ./build/lattice
+LATTICE_BACKEND=metal ./build/lattice
+LATTICE_BACKEND=opencl ./build/lattice
+LATTICE_GPU_SMOKE_TEST=1 ctest --test-dir build -R lattice_tests
 ```
 
 ## Tensor Ops and Shapes

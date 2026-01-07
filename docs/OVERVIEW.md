@@ -5,7 +5,7 @@
 - Numeric rigor: full scalar tower (ints, floats, complex, decimal, rational), tensors/arrays, and typed builtins.
 - Gradual typing: optional annotations enforced at boundaries; dynamic when omitted.
 - Multi-backend ready: CPU reference backend today with alloc/stream/event scaffolding and capability
-  flags. Planned OpenCL backend will use in-house kernels rather than external BLAS/FFT libraries.
+  flags. GPU backends (OpenCL/CUDA/HIP/Metal) use in-house kernels rather than external BLAS/FFT libraries.
 
 ## Syntax (C-like, expression-oriented)
 - Statements end by newline or `;`. Blocks with `{ ... }`.

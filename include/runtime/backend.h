@@ -13,7 +13,7 @@
 
 namespace lattice::runtime {
 
-enum class BackendType { kCPU };
+enum class BackendType { kCPU, kOpenCL, kCUDA, kHIP, kMetal };
 
 enum class StatusCode { kOk, kInvalidArgument, kUnavailable, kInternal };
 
@@ -63,6 +63,7 @@ struct BackendCapabilities {
 
 struct Allocation {
   void* ptr = nullptr;
+  void* device_handle = nullptr;
   size_t bytes = 0;
   size_t alignment = 64;  // default cacheline alignment
   bool from_pool = false;
@@ -148,8 +149,17 @@ class CpuBackend final : public Backend {
 
 // Returns a singleton CPU backend instance.
 const Backend* GetCpuBackend();
+const Backend* GetOpenCLBackend();
+const Backend* GetCudaBackend();
+const Backend* GetHipBackend();
+const Backend* GetMetalBackend();
+const Backend* GetBackendByType(BackendType type);
 // Returns the default backend (CPU today).
 const Backend* GetDefaultBackend();
+Status RunOpenCLSmokeTest();
+Status RunCudaSmokeTest();
+Status RunHipSmokeTest();
+Status RunMetalSmokeTest();
 
 }  // namespace lattice::runtime
 

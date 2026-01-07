@@ -1,13 +1,16 @@
 #include "runtime/backend.h"
 
 #include <atomic>
+#include <cctype>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <future>
 #include <mutex>
 #include <new>
 #include <queue>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -39,6 +42,21 @@ struct AllocInfo {
 std::mutex g_alloc_mu;
 std::unordered_map<void*, AllocInfo> g_allocs;
 std::unordered_map<size_t, std::vector<void*>> g_pool;
+
+std::string NormalizeBackendName(const char* name) {
+  std::string out;
+  if (!name) return out;
+  for (const char* p = name; *p; ++p) {
+    out.push_back(static_cast<char>(std::tolower(*p)));
+  }
+  return out;
+}
+
+bool BackendAvailable(const Backend* backend) {
+  if (!backend) return false;
+  auto stream_or = backend->CreateStream();
+  return stream_or.ok();
+}
 
 class ThreadPool {
  public:
@@ -374,7 +392,50 @@ const Backend* GetCpuBackend() {
   return backend;
 }
 
+const Backend* GetBackendByType(BackendType type) {
+  switch (type) {
+    case BackendType::kCPU:
+      return GetCpuBackend();
+    case BackendType::kOpenCL:
+      return GetOpenCLBackend();
+    case BackendType::kCUDA:
+      return GetCudaBackend();
+    case BackendType::kHIP:
+      return GetHipBackend();
+    case BackendType::kMetal:
+      return GetMetalBackend();
+  }
+  return GetCpuBackend();
+}
+
 const Backend* GetDefaultBackend() {
+  const char* env = std::getenv("LATTICE_BACKEND");
+  const std::string name = NormalizeBackendName(env);
+  if (!name.empty()) {
+    BackendType requested = BackendType::kCPU;
+    if (name == "opencl" || name == "ocl") {
+      requested = BackendType::kOpenCL;
+    } else if (name == "cuda") {
+      requested = BackendType::kCUDA;
+    } else if (name == "hip") {
+      requested = BackendType::kHIP;
+    } else if (name == "metal" || name == "mtl") {
+      requested = BackendType::kMetal;
+    } else if (name == "cpu") {
+      requested = BackendType::kCPU;
+    } else if (name == "auto") {
+      const Backend* candidates[] = {GetCudaBackend(), GetHipBackend(), GetMetalBackend(),
+                                     GetOpenCLBackend(), GetCpuBackend()};
+      for (const auto* candidate : candidates) {
+        if (BackendAvailable(candidate)) return candidate;
+      }
+      return GetCpuBackend();
+    }
+    const Backend* backend = GetBackendByType(requested);
+    if (BackendAvailable(backend)) {
+      return backend;
+    }
+  }
   return GetCpuBackend();
 }
 

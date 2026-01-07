@@ -151,7 +151,13 @@ void RunRuntimeTests(TestContext* ctx) {
   ExpectNear(Unwrap(func_nested.value, "func_recursion", ctx).number, 120.0, "func_recursion", ctx);
 
   // Backend scaffold defaults to CPU.
-  ExpectTrue(rt::GetDefaultBackend()->Type() == rt::BackendType::kCPU, "default_backend_cpu", ctx);
+  auto backend_type = rt::GetDefaultBackend()->Type();
+  ExpectTrue(backend_type == rt::BackendType::kCPU ||
+                 backend_type == rt::BackendType::kOpenCL ||
+                 backend_type == rt::BackendType::kCUDA ||
+                 backend_type == rt::BackendType::kHIP ||
+                 backend_type == rt::BackendType::kMetal,
+             "default_backend_supported", ctx);
 
   // Type annotations enforcement.
   bool caught_assign = false;
