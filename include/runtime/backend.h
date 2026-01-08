@@ -152,14 +152,16 @@ const Backend* GetCpuBackend();
 const Backend* GetOpenCLBackend();
 const Backend* GetCudaBackend();
 const Backend* GetHipBackend();
-const Backend* GetMetalBackend();
 const Backend* GetBackendByType(BackendType type);
 // Returns the default backend (CPU today).
 const Backend* GetDefaultBackend();
 Status RunOpenCLSmokeTest();
 Status RunCudaSmokeTest();
 Status RunHipSmokeTest();
+#if defined(__APPLE__)
+const Backend* GetMetalBackend();
 Status RunMetalSmokeTest();
+#endif
 
 }  // namespace lattice::runtime
 

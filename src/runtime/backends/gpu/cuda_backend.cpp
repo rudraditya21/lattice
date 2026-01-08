@@ -12,12 +12,34 @@
 #include <unordered_map>
 #include <vector>
 
+#include "runtime/backends/cuda_abi.h"
+#include "runtime/backends/device_quirks.h"
+#include "runtime/backends/device_selector.h"
+
 namespace lattice::runtime {
 
 namespace {
 
-constexpr int kAttrMultiprocessorCount = 16;
+constexpr int kAttrMaxThreadsPerBlock = 1;
+constexpr int kAttrSharedMemPerBlock = 8;
 constexpr int kAttrClockRate = 13;  // kHz
+constexpr int kAttrMultiprocessorCount = 16;
+
+std::string FormatCudaVersion(int version) {
+  if (version <= 0) return "";
+  int major = version / 1000;
+  int minor = (version % 1000) / 10;
+  std::ostringstream ss;
+  ss << major << "." << minor;
+  return ss.str();
+}
+
+std::string FormatRuntimeVersion(int major, int minor) {
+  if (major <= 0 && minor <= 0) return "";
+  std::ostringstream ss;
+  ss << major << "." << minor;
+  return ss.str();
+}
 
 uint64_t Fnv1a64(const std::string& data) {
   uint64_t hash = 14695981039346656037ull;
@@ -141,6 +163,7 @@ struct CudaBackend::DeviceContext {
   gpu::CUcontext context = nullptr;
   gpu::CUstream stream = nullptr;
   CudaDeviceDesc desc;
+  DeviceCapabilities caps;
   std::unordered_map<std::string, gpu::CUmodule> module_cache;
 };
 
@@ -270,6 +293,16 @@ std::vector<CudaDeviceDesc> CudaBackend::DeviceInfo() const {
   if (!status.ok()) return out;
   for (const auto& dev : devices_) {
     out.push_back(dev.desc);
+  }
+  return out;
+}
+
+std::vector<DeviceCapabilities> CudaBackend::DeviceCaps() const {
+  Status status = EnsureInitialized();
+  std::vector<DeviceCapabilities> out;
+  if (!status.ok()) return out;
+  for (const auto& dev : devices_) {
+    out.push_back(dev.caps);
   }
   return out;
 }
@@ -550,6 +583,20 @@ Status CudaBackend::EnsureInitialized() const {
     return init_status_;
   }
 
+  int driver_version = 0;
+  if (loader_.cuDriverGetVersion) {
+    loader_.cuDriverGetVersion(&driver_version);
+  }
+  const std::string driver_str = FormatCudaVersion(driver_version);
+
+  int rtc_major = 0;
+  int rtc_minor = 0;
+  if (loader_.nvrtcVersion) {
+    loader_.nvrtcVersion(&rtc_major, &rtc_minor);
+  }
+  std::string runtime_str = FormatRuntimeVersion(rtc_major, rtc_minor);
+  if (runtime_str.empty()) runtime_str = driver_str;
+
   int count = 0;
   err = loader_.cuDeviceGetCount(&count);
   if (err != gpu::CUDA_SUCCESS || count <= 0) {
@@ -557,10 +604,17 @@ Status CudaBackend::EnsureInitialized() const {
     return init_status_;
   }
 
-  devices_.clear();
-  devices_.reserve(static_cast<size_t>(count));
+  std::vector<DeviceContext> candidates;
+  std::vector<DeviceIdentity> identities;
+  candidates.reserve(static_cast<size_t>(count));
+  identities.reserve(static_cast<size_t>(count));
+
   for (int i = 0; i < count; ++i) {
     DeviceContext dev;
+    dev.desc.index = i;
+    dev.desc.vendor = "NVIDIA";
+    dev.desc.driver_version = driver_str;
+    dev.desc.runtime_version = runtime_str;
     if (loader_.cuDeviceGet(&dev.device, i) != gpu::CUDA_SUCCESS) continue;
     char name[256] = {0};
     if (loader_.cuDeviceGetName) {
@@ -588,10 +642,76 @@ Status CudaBackend::EnsureInitialized() const {
       if (loader_.cuDeviceGetAttribute(&clock, kAttrClockRate, dev.device) == gpu::CUDA_SUCCESS) {
         dev.desc.clock_khz = clock;
       }
+      int max_threads = 0;
+      if (loader_.cuDeviceGetAttribute(&max_threads, kAttrMaxThreadsPerBlock, dev.device) ==
+          gpu::CUDA_SUCCESS) {
+        dev.caps.max_threads_per_block = static_cast<size_t>(max_threads);
+        dev.caps.max_work_group_size = dev.caps.max_threads_per_block;
+      }
+      int shared_mem = 0;
+      if (loader_.cuDeviceGetAttribute(&shared_mem, kAttrSharedMemPerBlock, dev.device) ==
+          gpu::CUDA_SUCCESS) {
+        dev.caps.shared_mem_bytes = static_cast<size_t>(shared_mem);
+      }
     }
 
+    dev.caps.is_gpu = true;
+    if (dev.desc.major == 0 && dev.desc.minor == 0) {
+      dev.caps.fp64 = CapabilityStatus::kUnknown;
+      dev.caps.fp16 = CapabilityStatus::kUnknown;
+    } else {
+      dev.caps.fp64 = (dev.desc.major > 1 || (dev.desc.major == 1 && dev.desc.minor >= 3))
+                          ? CapabilityStatus::kYes
+                          : CapabilityStatus::kNo;
+      dev.caps.fp16 = (dev.desc.major > 5 || (dev.desc.major == 5 && dev.desc.minor >= 3))
+                          ? CapabilityStatus::kYes
+                          : CapabilityStatus::kNo;
+    }
+    dev.caps.quirks =
+        QueryDeviceQuirks(BackendType::kCUDA, dev.desc.vendor, dev.desc.name, driver_str);
+    dev.caps.is_software = (dev.caps.quirks.flags & kSoftwareEmulation) != 0;
+    if (dev.caps.quirks.flags & kDisableFp16) dev.caps.fp16 = CapabilityStatus::kNo;
+    if (dev.caps.quirks.flags & kDisableFp64) dev.caps.fp64 = CapabilityStatus::kNo;
+
+    DeviceIdentity identity;
+    identity.index = i;
+    identity.name = dev.desc.name;
+    identity.vendor = dev.desc.vendor;
+    identity.driver = dev.desc.driver_version;
+    identity.kind = DeviceKind::kGPU;
+    identities.push_back(identity);
+    candidates.push_back(std::move(dev));
+  }
+
+  DeviceSelectionOptions selection = LoadDeviceSelectionOptions("LATTICE_CUDA");
+  DeviceSelectionResult selected = SelectDevices(identities, selection);
+  if (selected.indices.empty()) {
+    init_status_ = Status::Unavailable(selected.diagnostics.empty() ? "No CUDA devices selected"
+                                                                    : selected.diagnostics);
+    return init_status_;
+  }
+
+  devices_.clear();
+  devices_.reserve(selected.indices.size());
+  for (int idx : selected.indices) {
+    if (idx < 0 || idx >= static_cast<int>(candidates.size())) continue;
+    DeviceContext dev = std::move(candidates[static_cast<size_t>(idx)]);
+    if (dev.caps.quirks.disabled) {
+      if (const char* verbose = std::getenv("LATTICE_CUDA_VERBOSE")) {
+        if (verbose[0] != '\0') {
+          std::cerr << "* Skipping CUDA device '" << dev.desc.name
+                    << "': " << dev.caps.quirks.reason << "\n";
+        }
+      }
+      continue;
+    }
     if (!loader_.cuCtxCreate) continue;
     if (loader_.cuCtxCreate(&dev.context, 0, dev.device) != gpu::CUDA_SUCCESS) {
+      if (const char* verbose = std::getenv("LATTICE_CUDA_VERBOSE")) {
+        if (verbose[0] != '\0') {
+          std::cerr << "* CUDA device '" << dev.desc.name << "' context init failed\n";
+        }
+      }
       continue;
     }
     if (loader_.cuCtxSetCurrent) {
@@ -600,10 +720,14 @@ Status CudaBackend::EnsureInitialized() const {
     if (loader_.cuStreamCreate) {
       if (loader_.cuStreamCreate(&dev.stream, 0) != gpu::CUDA_SUCCESS) {
         if (loader_.cuCtxDestroy) loader_.cuCtxDestroy(dev.context);
+        if (const char* verbose = std::getenv("LATTICE_CUDA_VERBOSE")) {
+          if (verbose[0] != '\0') {
+            std::cerr << "* CUDA device '" << dev.desc.name << "' stream init failed\n";
+          }
+        }
         continue;
       }
     }
-
     devices_.push_back(std::move(dev));
   }
 
@@ -653,6 +777,15 @@ std::string CudaBackend::BuildOptions(const DeviceContext& dev, const std::strin
   const std::string kernel_dir = KernelDir();
   if (!kernel_dir.empty()) {
     opts << " -I" << kernel_dir;
+  }
+  opts << " -DLATTICE_DEVICE_INDEX=" << dev.desc.index;
+  opts << " -DLATTICE_ABI_VERSION=" << cuda::kAbiVersion;
+  opts << " -DLATTICE_ABI_VERSION_MIN=" << cuda::kAbiVersionMin;
+  if (dev.caps.fp16 == CapabilityStatus::kYes) {
+    opts << " -DLATTICE_HAS_FP16=1";
+  }
+  if (dev.caps.fp64 == CapabilityStatus::kYes) {
+    opts << " -DLATTICE_HAS_FP64=1";
   }
   if (const char* env = std::getenv("LATTICE_CUDA_BUILD_OPTIONS")) {
     if (env[0] != '\0') {

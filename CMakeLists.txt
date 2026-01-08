@@ -15,6 +15,8 @@ set(LATTICE_SOURCES
     src/runtime/backends/gpu/dynloader.cpp
     src/runtime/backends/gpu/opencl_loader.cpp
     src/runtime/backends/gpu/opencl_backend.cpp
+    src/runtime/backends/device_quirks.cpp
+    src/runtime/backends/device_selector.cpp
     src/runtime/backends/gpu/cuda_loader.cpp
     src/runtime/backends/gpu/cuda_backend.cpp
     src/runtime/backends/gpu/hip_loader.cpp
@@ -27,8 +29,6 @@ set(LATTICE_SOURCES
 
 if(APPLE)
     list(APPEND LATTICE_SOURCES src/runtime/backends/gpu/metal_backend.mm)
-else()
-    list(APPEND LATTICE_SOURCES src/runtime/backends/gpu/metal_backend_stub.cpp)
 endif()
 
 add_library(lattice_lib ${LATTICE_SOURCES})
@@ -74,6 +74,8 @@ add_executable(lattice_tests
     tests/runtime/tensor_tests.cpp
     tests/runtime/tuple_record_tests.cpp
     tests/runtime/backend_tests.cpp
+    tests/runtime/abi_tests.cpp
+    tests/runtime/device_selector_tests.cpp
     tests/runtime/destructuring_tests.cpp
     tests/runtime/error_location_tests.cpp
     tests/runtime/type_checker_tests.cpp

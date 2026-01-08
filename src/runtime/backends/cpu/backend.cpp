@@ -403,7 +403,11 @@ const Backend* GetBackendByType(BackendType type) {
     case BackendType::kHIP:
       return GetHipBackend();
     case BackendType::kMetal:
+#if defined(__APPLE__)
       return GetMetalBackend();
+#else
+      return nullptr;
+#endif
   }
   return GetCpuBackend();
 }
@@ -420,12 +424,21 @@ const Backend* GetDefaultBackend() {
     } else if (name == "hip") {
       requested = BackendType::kHIP;
     } else if (name == "metal" || name == "mtl") {
+#if defined(__APPLE__)
       requested = BackendType::kMetal;
+#else
+      requested = BackendType::kCPU;
+#endif
     } else if (name == "cpu") {
       requested = BackendType::kCPU;
     } else if (name == "auto") {
-      const Backend* candidates[] = {GetCudaBackend(), GetHipBackend(), GetMetalBackend(),
-                                     GetOpenCLBackend(), GetCpuBackend()};
+      const Backend* candidates[] = {
+          GetCudaBackend(),   GetHipBackend(),
+#if defined(__APPLE__)
+          GetMetalBackend(),
+#endif
+          GetOpenCLBackend(), GetCpuBackend(),
+      };
       for (const auto* candidate : candidates) {
         if (BackendAvailable(candidate)) return candidate;
       }

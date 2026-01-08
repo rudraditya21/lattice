@@ -12,6 +12,16 @@
 - Kernel cache is on by default (per-device, per-build-options). Metal uses an in-memory pipeline cache per run.
 - `LATTICE_GPU_SMOKE_TEST=1` runs the vector-add smoke test for the selected GPU backend during `backend_tests`.
 - All detected devices for the active backend are initialized and kept active.
+- `LATTICE_DEVICE_BLACKLIST=<pattern[,pattern...]>` skips devices whose name/vendor/driver contains any pattern (case-insensitive).
+- `LATTICE_DISABLE_SOFTWARE_DEVICES=1` disables devices tagged as software emulation in the quirk table.
+- `LATTICE_IGNORE_DEVICE_QUIRKS=1` ignores the built-in quirk table (still applies `LATTICE_DEVICE_BLACKLIST`).
+- Device selection envs are supported per backend (prefix with `LATTICE_OPENCL`, `LATTICE_CUDA`, `LATTICE_HIP`, `LATTICE_METAL`) or globally (prefix with `LATTICE`):
+  - `_DEVICE_TYPE=cpu|gpu|accel|any` filters by device type (OpenCL only honors CPU/accel).
+  - `_DEVICE_INCLUDE=<pattern[,pattern...]>` keeps devices matching any pattern (name/vendor/driver).
+  - `_DEVICE_EXCLUDE=<pattern[,pattern...]>` drops devices matching any pattern.
+  - `_DEVICE_INDICES=<list>` selects indices (e.g. `0,2-4`).
+  - `_DEVICE_MASK=<bitmask>` selects indices by bitmask order (e.g. `1010`).
+  - `_DEVICE_ORDER=<list>` reorders selected indices (e.g. `2,0`).
 
 ### OpenCL
 - `LATTICE_OPENCL_BUILD_OPTIONS=<opts>` appends OpenCL compiler options.
@@ -35,3 +45,13 @@
 - HIP: `HIP/lattice_abi.h` and `include/runtime/backends/hip_abi.h`.
 - Metal: `Metal/lattice_abi.h` and `include/runtime/backends/metal_abi.h`.
 - Kernels should include `lattice_abi.h` and follow the fixed argument order expected by the host launcher.
+- ABI versioning: `LATTICE_ABI_VERSION` is encoded as `0xMMMMmmmm` (major/minor). Compatibility rule: major must match and kernel version must be >= `LATTICE_ABI_VERSION_MIN`.
+- Host build options inject `LATTICE_ABI_VERSION` and `LATTICE_ABI_VERSION_MIN`; kernel headers validate this at compile time.
+
+### Kernel Argument Order & Alignment
+- Order is fixed across backends: all input/output buffers first, then a single params struct passed by value (or by `constant` reference in Metal).
+- Params structs are 8-byte aligned and have fixed sizes: `ElemwiseParams`=16 bytes, `ReduceParams`=24 bytes, `MatmulParams`=56 bytes.
+- OpenCL: `__kernel void op(__global T* in0, ..., lattice_*_params_t params)`.
+- CUDA/HIP: `extern "C" __global__ void op(const T* in0, ..., lattice_*_params_t params)`.
+- Metal: `kernel void op(const device T* in0 [[buffer(0)]], ..., constant lattice_*_params_t& params [[buffer(N)]])`.
+- Feature macros: `LATTICE_HAS_FP16` / `LATTICE_HAS_FP64` are defined for CUDA/HIP/Metal when supported (OpenCL uses the same macros via extensions).

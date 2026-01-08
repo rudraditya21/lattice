@@ -9,13 +9,20 @@
 #include <vector>
 
 #include "runtime/backend.h"
+#include "runtime/backends/device_caps.h"
 #include "runtime/backends/gpu/opencl_loader.h"
 
 namespace lattice::runtime {
 
 struct OpenCLDeviceDesc {
+  int index = -1;
   std::string name;
   std::string vendor;
+  std::string platform_name;
+  std::string platform_vendor;
+  std::string platform_version;
+  std::string device_version;
+  std::string runtime_version;
   std::string driver_version;
   cl_device_type type = 0;
   cl_uint vendor_id = 0;
@@ -87,6 +94,7 @@ class OpenCLBackend final : public Backend {
 
   int DeviceCount() const;
   std::vector<OpenCLDeviceDesc> DeviceInfo() const;
+  std::vector<DeviceCapabilities> DeviceCaps() const;
 
   StatusOr<OpenCLBuffer> CreateBuffer(int device_index, size_t bytes,
                                       cl_mem_flags flags = CL_MEM_READ_WRITE) const;
@@ -114,6 +122,7 @@ class OpenCLBackend final : public Backend {
   Status EnsureInitialized() const;
   std::string KernelDir() const;
   std::string DeviceInfoString(cl_device_id device, cl_device_info param) const;
+  std::string PlatformInfoString(cl_platform_id platform, cl_platform_info param) const;
   std::string BuildOptions(const DeviceContext& dev, const std::string& extra) const;
   int DeviceIndex(const DeviceContext& dev) const;
   std::string CacheKey(const DeviceContext& dev, const std::string& kernel_name,

@@ -128,6 +128,7 @@ bool CudaLoader::Load(std::string* error) {
     LoadSymbol(nvrtc, "nvrtcGetProgramLogSize", &nvrtcGetProgramLogSize, nullptr);
     LoadSymbol(nvrtc, "nvrtcGetProgramLog", &nvrtcGetProgramLog, nullptr);
     LoadSymbol(nvrtc, "nvrtcGetErrorString", &nvrtcGetErrorString, nullptr);
+    LoadSymbol(nvrtc, "nvrtcVersion", &nvrtcVersion, nullptr);
   }
 
   return true;

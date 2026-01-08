@@ -12,9 +12,31 @@
 #include <unordered_map>
 #include <vector>
 
+#include "runtime/backends/device_quirks.h"
+#include "runtime/backends/device_selector.h"
+#include "runtime/backends/hip_abi.h"
+
 namespace lattice::runtime {
 
 namespace {
+
+constexpr int kAttrMaxThreadsPerBlock = 1;
+constexpr int kAttrSharedMemPerBlock = 8;
+constexpr int kAttrClockRate = 13;
+constexpr int kAttrMultiprocessorCount = 16;
+
+std::string FormatHipVersion(int version) {
+  if (version <= 0) return "";
+  int major = version / 100000;
+  int minor = (version / 1000) % 100;
+  int patch = version % 1000;
+  std::ostringstream ss;
+  ss << major << "." << minor;
+  if (patch != 0) {
+    ss << "." << patch;
+  }
+  return ss.str();
+}
 
 uint64_t Fnv1a64(const std::string& data) {
   uint64_t hash = 14695981039346656037ull;
@@ -138,6 +160,7 @@ struct HipBackend::DeviceContext {
   gpu::hipCtx_t context = nullptr;
   gpu::hipStream_t stream = nullptr;
   HipDeviceDesc desc;
+  DeviceCapabilities caps;
   std::unordered_map<std::string, gpu::hipModule_t> module_cache;
 };
 
@@ -266,6 +289,16 @@ std::vector<HipDeviceDesc> HipBackend::DeviceInfo() const {
   if (!status.ok()) return out;
   for (const auto& dev : devices_) {
     out.push_back(dev.desc);
+  }
+  return out;
+}
+
+std::vector<DeviceCapabilities> HipBackend::DeviceCaps() const {
+  Status status = EnsureInitialized();
+  std::vector<DeviceCapabilities> out;
+  if (!status.ok()) return out;
+  for (const auto& dev : devices_) {
+    out.push_back(dev.caps);
   }
   return out;
 }
@@ -557,10 +590,29 @@ Status HipBackend::EnsureInitialized() const {
     return init_status_;
   }
 
-  devices_.clear();
-  devices_.reserve(static_cast<size_t>(count));
+  int driver_version = 0;
+  if (loader_.hipDriverGetVersion) {
+    loader_.hipDriverGetVersion(&driver_version);
+  }
+  const std::string driver_str = FormatHipVersion(driver_version);
+
+  int runtime_version = 0;
+  if (loader_.hipRuntimeGetVersion) {
+    loader_.hipRuntimeGetVersion(&runtime_version);
+  }
+  std::string runtime_str = FormatHipVersion(runtime_version);
+  if (runtime_str.empty()) runtime_str = driver_str;
+
+  std::vector<DeviceContext> candidates(static_cast<size_t>(count));
+  std::vector<bool> candidate_valid(static_cast<size_t>(count), false);
+  std::vector<DeviceIdentity> identities;
+  identities.reserve(static_cast<size_t>(count));
   for (int i = 0; i < count; ++i) {
     DeviceContext dev;
+    dev.desc.index = i;
+    dev.desc.vendor = "AMD";
+    dev.desc.driver_version = driver_str;
+    dev.desc.runtime_version = runtime_str;
     if (loader_.hipDeviceGet(&dev.device, i) != gpu::hipSuccess) continue;
     char name[256] = {0};
     if (loader_.hipDeviceGetName) {
@@ -575,8 +627,79 @@ Status HipBackend::EnsureInitialized() const {
         dev.desc.total_mem = total_mem;
       }
     }
+    if (loader_.hipDeviceGetAttribute) {
+      int max_threads = 0;
+      if (loader_.hipDeviceGetAttribute(&max_threads, kAttrMaxThreadsPerBlock, dev.device) ==
+          gpu::hipSuccess) {
+        dev.caps.max_threads_per_block = static_cast<size_t>(max_threads);
+        dev.caps.max_work_group_size = dev.caps.max_threads_per_block;
+      }
+      int shared_mem = 0;
+      if (loader_.hipDeviceGetAttribute(&shared_mem, kAttrSharedMemPerBlock, dev.device) ==
+          gpu::hipSuccess) {
+        dev.caps.shared_mem_bytes = static_cast<size_t>(shared_mem);
+      }
+      int clock = 0;
+      if (loader_.hipDeviceGetAttribute(&clock, kAttrClockRate, dev.device) == gpu::hipSuccess) {
+        dev.desc.clock_khz = clock;
+      }
+      int mp = 0;
+      if (loader_.hipDeviceGetAttribute(&mp, kAttrMultiprocessorCount, dev.device) ==
+          gpu::hipSuccess) {
+        dev.desc.multiprocessor_count = mp;
+      }
+    }
+
+    dev.caps.is_gpu = true;
+    dev.caps.fp64 = CapabilityStatus::kUnknown;
+    dev.caps.fp16 = CapabilityStatus::kUnknown;
+    dev.caps.quirks =
+        QueryDeviceQuirks(BackendType::kHIP, dev.desc.vendor, dev.desc.name, driver_str);
+    dev.caps.is_software = (dev.caps.quirks.flags & kSoftwareEmulation) != 0;
+    if (dev.caps.quirks.flags & kDisableFp16) dev.caps.fp16 = CapabilityStatus::kNo;
+    if (dev.caps.quirks.flags & kDisableFp64) dev.caps.fp64 = CapabilityStatus::kNo;
+
+    DeviceIdentity identity;
+    identity.index = i;
+    identity.name = dev.desc.name;
+    identity.vendor = dev.desc.vendor;
+    identity.driver = dev.desc.driver_version;
+    identity.kind = DeviceKind::kGPU;
+    identities.push_back(identity);
+    candidates[static_cast<size_t>(i)] = std::move(dev);
+    candidate_valid[static_cast<size_t>(i)] = true;
+  }
+
+  DeviceSelectionOptions selection = LoadDeviceSelectionOptions("LATTICE_HIP");
+  DeviceSelectionResult selected = SelectDevices(identities, selection);
+  if (selected.indices.empty()) {
+    init_status_ = Status::Unavailable(selected.diagnostics.empty() ? "No HIP devices selected"
+                                                                    : selected.diagnostics);
+    return init_status_;
+  }
+
+  devices_.clear();
+  devices_.reserve(selected.indices.size());
+  for (int idx : selected.indices) {
+    if (idx < 0 || idx >= static_cast<int>(candidates.size())) continue;
+    if (!candidate_valid[static_cast<size_t>(idx)]) continue;
+    DeviceContext dev = std::move(candidates[static_cast<size_t>(idx)]);
+    if (dev.caps.quirks.disabled) {
+      if (const char* verbose = std::getenv("LATTICE_HIP_VERBOSE")) {
+        if (verbose[0] != '\0') {
+          std::cerr << "* Skipping HIP device '" << dev.desc.name << "': " << dev.caps.quirks.reason
+                    << "\n";
+        }
+      }
+      continue;
+    }
     if (loader_.hipCtxCreate) {
       if (loader_.hipCtxCreate(&dev.context, 0, dev.device) != gpu::hipSuccess) {
+        if (const char* verbose = std::getenv("LATTICE_HIP_VERBOSE")) {
+          if (verbose[0] != '\0') {
+            std::cerr << "* HIP device '" << dev.desc.name << "' context init failed\n";
+          }
+        }
         continue;
       }
       if (loader_.hipCtxSetCurrent) {
@@ -586,6 +709,11 @@ Status HipBackend::EnsureInitialized() const {
     if (loader_.hipStreamCreate) {
       if (loader_.hipStreamCreate(&dev.stream) != gpu::hipSuccess) {
         if (loader_.hipCtxDestroy && dev.context) loader_.hipCtxDestroy(dev.context);
+        if (const char* verbose = std::getenv("LATTICE_HIP_VERBOSE")) {
+          if (verbose[0] != '\0') {
+            std::cerr << "* HIP device '" << dev.desc.name << "' stream init failed\n";
+          }
+        }
         continue;
       }
     }
@@ -633,6 +761,15 @@ std::string HipBackend::BuildOptions(const DeviceContext& dev, const std::string
   const std::string kernel_dir = KernelDir();
   if (!kernel_dir.empty()) {
     opts << " -I" << kernel_dir;
+  }
+  opts << " -DLATTICE_DEVICE_INDEX=" << dev.desc.index;
+  opts << " -DLATTICE_ABI_VERSION=" << hip::kAbiVersion;
+  opts << " -DLATTICE_ABI_VERSION_MIN=" << hip::kAbiVersionMin;
+  if (dev.caps.fp16 == CapabilityStatus::kYes) {
+    opts << " -DLATTICE_HAS_FP16=1";
+  }
+  if (dev.caps.fp64 == CapabilityStatus::kYes) {
+    opts << " -DLATTICE_HAS_FP64=1";
   }
   if (const char* arch = std::getenv("LATTICE_HIP_ARCH")) {
     if (arch[0] != '\0') {

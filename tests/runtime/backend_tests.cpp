@@ -61,7 +61,11 @@ void RunBackendTests(TestContext* ctx) {
         status = rt::RunHipSmokeTest();
         break;
       case rt::BackendType::kMetal:
+#if defined(__APPLE__)
         status = rt::RunMetalSmokeTest();
+#else
+        status = rt::Status::Unavailable("Metal backend not supported");
+#endif
         break;
       case rt::BackendType::kCPU:
         status = rt::Status::OK();

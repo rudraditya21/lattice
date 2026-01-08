@@ -9,12 +9,17 @@
 #include <vector>
 
 #include "runtime/backend.h"
+#include "runtime/backends/device_caps.h"
 #include "runtime/backends/gpu/cuda_loader.h"
 
 namespace lattice::runtime {
 
 struct CudaDeviceDesc {
+  int index = -1;
   std::string name;
+  std::string vendor;
+  std::string driver_version;
+  std::string runtime_version;
   int major = 0;
   int minor = 0;
   size_t total_mem = 0;
@@ -82,6 +87,7 @@ class CudaBackend final : public Backend {
 
   int DeviceCount() const;
   std::vector<CudaDeviceDesc> DeviceInfo() const;
+  std::vector<DeviceCapabilities> DeviceCaps() const;
 
   StatusOr<CudaBuffer> CreateBuffer(int device_index, size_t bytes) const;
   Status ReleaseBuffer(CudaBuffer* buffer) const;

@@ -61,6 +61,7 @@ using NvrtcGetPTX = NvrtcResult (*)(nvrtcProgram, char*);
 using NvrtcGetProgramLogSize = NvrtcResult (*)(nvrtcProgram, size_t*);
 using NvrtcGetProgramLog = NvrtcResult (*)(nvrtcProgram, char*);
 using NvrtcGetErrorString = const char* (*)(NvrtcResult);
+using NvrtcVersion = NvrtcResult (*)(int*, int*);
 
 struct CudaLoader {
   DynLib driver = nullptr;
@@ -100,6 +101,7 @@ struct CudaLoader {
   NvrtcGetProgramLogSize nvrtcGetProgramLogSize = nullptr;
   NvrtcGetProgramLog nvrtcGetProgramLog = nullptr;
   NvrtcGetErrorString nvrtcGetErrorString = nullptr;
+  NvrtcVersion nvrtcVersion = nullptr;
 
   bool Load(std::string* error);
   void Unload();

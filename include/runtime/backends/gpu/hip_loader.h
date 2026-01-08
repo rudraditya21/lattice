@@ -48,6 +48,7 @@ using HipModuleLaunchKernel = hipError_t (*)(hipFunction_t, unsigned int, unsign
                                              unsigned int, unsigned int, unsigned int, unsigned int,
                                              unsigned int, hipStream_t, void**, void**);
 using HipGetErrorString = const char* (*)(hipError_t);
+using HipRuntimeGetVersion = hipError_t (*)(int*);
 
 using HiprtcResult = int;
 using hiprtcProgram = void*;
@@ -86,6 +87,7 @@ struct HipLoader {
   HipModuleGetFunction hipModuleGetFunction = nullptr;
   HipModuleLaunchKernel hipModuleLaunchKernel = nullptr;
   HipGetErrorString hipGetErrorString = nullptr;
+  HipRuntimeGetVersion hipRuntimeGetVersion = nullptr;
 
   HiprtcCreateProgram hiprtcCreateProgram = nullptr;
   HiprtcCompileProgram hiprtcCompileProgram = nullptr;

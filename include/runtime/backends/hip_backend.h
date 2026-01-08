@@ -9,12 +9,17 @@
 #include <vector>
 
 #include "runtime/backend.h"
+#include "runtime/backends/device_caps.h"
 #include "runtime/backends/gpu/hip_loader.h"
 
 namespace lattice::runtime {
 
 struct HipDeviceDesc {
+  int index = -1;
   std::string name;
+  std::string vendor;
+  std::string driver_version;
+  std::string runtime_version;
   size_t total_mem = 0;
   int multiprocessor_count = 0;
   int clock_khz = 0;
@@ -80,6 +85,7 @@ class HipBackend final : public Backend {
 
   int DeviceCount() const;
   std::vector<HipDeviceDesc> DeviceInfo() const;
+  std::vector<DeviceCapabilities> DeviceCaps() const;
 
   StatusOr<HipBuffer> CreateBuffer(int device_index, size_t bytes) const;
   Status ReleaseBuffer(HipBuffer* buffer) const;

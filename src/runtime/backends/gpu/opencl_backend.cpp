@@ -16,7 +16,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include "runtime/backends/device_quirks.h"
+#include "runtime/backends/device_selector.h"
 #include "runtime/backends/gpu/opencl_loader.h"
+#include "runtime/backends/opencl_abi.h"
 
 namespace lattice::runtime {
 
@@ -25,6 +28,17 @@ namespace {
 using gpu::OpenCLLoader;
 
 constexpr size_t kMaxPlatforms = 16;
+
+bool HasExtension(const std::string& extensions, const char* needle) {
+  return extensions.find(needle) != std::string::npos;
+}
+
+DeviceKind DeviceKindFromType(cl_device_type type) {
+  if (type & CL_DEVICE_TYPE_CPU) return DeviceKind::kCPU;
+  if (type & CL_DEVICE_TYPE_GPU) return DeviceKind::kGPU;
+  if (type & CL_DEVICE_TYPE_ACCELERATOR) return DeviceKind::kAccelerator;
+  return DeviceKind::kAny;
+}
 
 uint64_t Fnv1a64(const std::string& data) {
   uint64_t hash = 14695981039346656037ull;
@@ -163,6 +177,7 @@ struct OpenCLBackend::DeviceContext {
   cl_context context = nullptr;
   cl_command_queue queue = nullptr;
   OpenCLDeviceDesc desc;
+  DeviceCapabilities caps;
   std::unordered_map<std::string, cl_program> program_cache;
 };
 
@@ -286,6 +301,16 @@ std::vector<OpenCLDeviceDesc> OpenCLBackend::DeviceInfo() const {
   std::vector<OpenCLDeviceDesc> out;
   for (const auto& dev : devices_) {
     out.push_back(dev.desc);
+  }
+  return out;
+}
+
+std::vector<DeviceCapabilities> OpenCLBackend::DeviceCaps() const {
+  Status status = EnsureInitialized();
+  if (!status.ok()) return {};
+  std::vector<DeviceCapabilities> out;
+  for (const auto& dev : devices_) {
+    out.push_back(dev.caps);
   }
   return out;
 }
@@ -598,6 +623,9 @@ Status OpenCLBackend::EnsureInitialized() const {
     return init_status_;
   }
 
+  std::vector<DeviceContext> candidates;
+  std::vector<DeviceIdentity> identities;
+  int device_index = 0;
   for (cl_platform_id platform : platforms) {
     cl_uint num_devices = 0;
     err = loader_.clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 0, nullptr, &num_devices);
@@ -614,25 +642,23 @@ Status OpenCLBackend::EnsureInitialized() const {
       continue;
     }
 
+    const std::string platform_name = PlatformInfoString(platform, CL_PLATFORM_NAME);
+    const std::string platform_vendor = PlatformInfoString(platform, CL_PLATFORM_VENDOR);
+    const std::string platform_version = PlatformInfoString(platform, CL_PLATFORM_VERSION);
+
     for (cl_device_id device : devices) {
       DeviceContext ctx;
       ctx.platform = platform;
       ctx.device = device;
-
-      cl_int create_err = CL_SUCCESS;
-      ctx.context = loader_.clCreateContext(nullptr, 1, &device, nullptr, nullptr, &create_err);
-      if (create_err != CL_SUCCESS || !ctx.context) {
-        continue;
-      }
-      ctx.queue = loader_.clCreateCommandQueue(ctx.context, device, 0, &create_err);
-      if (create_err != CL_SUCCESS || !ctx.queue) {
-        loader_.clReleaseContext(ctx.context);
-        ctx.context = nullptr;
-        continue;
-      }
+      ctx.desc.index = device_index;
+      ctx.desc.platform_name = platform_name;
+      ctx.desc.platform_vendor = platform_vendor;
+      ctx.desc.platform_version = platform_version;
+      ctx.desc.runtime_version = platform_version;
 
       ctx.desc.name = DeviceInfoString(device, CL_DEVICE_NAME);
       ctx.desc.vendor = DeviceInfoString(device, CL_DEVICE_VENDOR);
+      ctx.desc.device_version = DeviceInfoString(device, CL_DEVICE_VERSION);
       ctx.desc.driver_version = DeviceInfoString(device, CL_DRIVER_VERSION);
       loader_.clGetDeviceInfo(device, CL_DEVICE_TYPE, sizeof(ctx.desc.type), &ctx.desc.type,
                               nullptr);
@@ -649,13 +675,94 @@ Status OpenCLBackend::EnsureInitialized() const {
                               &ctx.desc.compute_units, nullptr);
       loader_.clGetDeviceInfo(device, CL_DEVICE_MAX_CLOCK_FREQUENCY, sizeof(ctx.desc.max_clock_mhz),
                               &ctx.desc.max_clock_mhz, nullptr);
+      size_t work_item_sizes[3] = {0, 0, 0};
+      loader_.clGetDeviceInfo(device, CL_DEVICE_MAX_WORK_ITEM_SIZES, sizeof(work_item_sizes),
+                              work_item_sizes, nullptr);
 
-      devices_.push_back(std::move(ctx));
+      const std::string extensions = DeviceInfoString(device, CL_DEVICE_EXTENSIONS);
+      ctx.caps.is_cpu = (ctx.desc.type & CL_DEVICE_TYPE_CPU) != 0;
+      ctx.caps.is_gpu = (ctx.desc.type & CL_DEVICE_TYPE_GPU) != 0;
+      ctx.caps.local_mem_bytes = ctx.desc.local_mem_size;
+      ctx.caps.max_work_group_size = ctx.desc.max_work_group_size;
+      ctx.caps.max_threads_per_block = ctx.desc.max_work_group_size;
+      ctx.caps.max_work_item_sizes[0] = work_item_sizes[0];
+      ctx.caps.max_work_item_sizes[1] = work_item_sizes[1];
+      ctx.caps.max_work_item_sizes[2] = work_item_sizes[2];
+      ctx.caps.fp64 =
+          HasExtension(extensions, "cl_khr_fp64") || HasExtension(extensions, "cl_amd_fp64")
+              ? CapabilityStatus::kYes
+              : CapabilityStatus::kNo;
+      ctx.caps.fp16 =
+          HasExtension(extensions, "cl_khr_fp16") || HasExtension(extensions, "cl_amd_fp16")
+              ? CapabilityStatus::kYes
+              : CapabilityStatus::kNo;
+      ctx.caps.quirks = QueryDeviceQuirks(BackendType::kOpenCL, ctx.desc.vendor, ctx.desc.name,
+                                          ctx.desc.driver_version);
+      ctx.caps.is_software = (ctx.caps.quirks.flags & kSoftwareEmulation) != 0;
+      if (ctx.caps.quirks.flags & kDisableFp16) {
+        ctx.caps.fp16 = CapabilityStatus::kNo;
+      }
+      if (ctx.caps.quirks.flags & kDisableFp64) {
+        ctx.caps.fp64 = CapabilityStatus::kNo;
+      }
+
+      DeviceIdentity identity;
+      identity.index = device_index;
+      identity.name = ctx.desc.name;
+      identity.vendor = ctx.desc.vendor;
+      identity.driver = ctx.desc.driver_version;
+      identity.kind = DeviceKindFromType(ctx.desc.type);
+      identities.push_back(identity);
+      candidates.push_back(std::move(ctx));
+      ++device_index;
     }
   }
 
+  DeviceSelectionOptions selection = LoadDeviceSelectionOptions("LATTICE_OPENCL");
+  DeviceSelectionResult selected = SelectDevices(identities, selection);
+  if (selected.indices.empty()) {
+    init_status_ = Status::Unavailable(selected.diagnostics.empty() ? "No OpenCL devices selected"
+                                                                    : selected.diagnostics);
+    return init_status_;
+  }
+
+  for (int idx : selected.indices) {
+    if (idx < 0 || idx >= static_cast<int>(candidates.size())) continue;
+    DeviceContext ctx = std::move(candidates[static_cast<size_t>(idx)]);
+    if (ctx.caps.quirks.disabled) {
+      if (IsTrueEnv("LATTICE_OPENCL_VERBOSE")) {
+        std::cerr << "* Skipping OpenCL device '" << ctx.desc.name
+                  << "': " << ctx.caps.quirks.reason << "\n";
+      }
+      continue;
+    }
+    cl_int create_err = CL_SUCCESS;
+    ctx.context = loader_.clCreateContext(nullptr, 1, &ctx.device, nullptr, nullptr, &create_err);
+    if (create_err != CL_SUCCESS || !ctx.context) {
+      if (IsTrueEnv("LATTICE_OPENCL_VERBOSE")) {
+        std::cerr << "* OpenCL device '" << ctx.desc.name << "' context init failed\n";
+      }
+      continue;
+    }
+    ctx.queue = loader_.clCreateCommandQueue(ctx.context, ctx.device, 0, &create_err);
+    if (create_err != CL_SUCCESS || !ctx.queue) {
+      loader_.clReleaseContext(ctx.context);
+      ctx.context = nullptr;
+      if (IsTrueEnv("LATTICE_OPENCL_VERBOSE")) {
+        std::cerr << "* OpenCL device '" << ctx.desc.name << "' queue init failed\n";
+      }
+      continue;
+    }
+    devices_.push_back(std::move(ctx));
+  }
+
   if (devices_.empty()) {
-    init_status_ = Status::Unavailable("No OpenCL devices found");
+    if (!selected.indices.empty()) {
+      init_status_ =
+          Status::Unavailable("No OpenCL devices initialized (all selected devices failed)");
+    } else {
+      init_status_ = Status::Unavailable("No OpenCL devices found");
+    }
     return init_status_;
   }
 
@@ -698,6 +805,17 @@ std::string OpenCLBackend::DeviceInfoString(cl_device_id device, cl_device_info 
   return out;
 }
 
+std::string OpenCLBackend::PlatformInfoString(cl_platform_id platform,
+                                              cl_platform_info param) const {
+  size_t size = 0;
+  loader_.clGetPlatformInfo(platform, param, 0, nullptr, &size);
+  if (size == 0) return "";
+  std::string out(size, '\0');
+  loader_.clGetPlatformInfo(platform, param, size, out.data(), nullptr);
+  if (!out.empty() && out.back() == '\0') out.pop_back();
+  return out;
+}
+
 std::string OpenCLBackend::BuildOptions(const DeviceContext& dev, const std::string& extra) const {
   std::string options;
   const std::string kernel_dir = KernelDir();
@@ -726,8 +844,9 @@ std::string OpenCLBackend::BuildOptions(const DeviceContext& dev, const std::str
   if (!options.empty()) options.push_back(' ');
   options += "-D LATTICE_DEVICE_TYPE=" + std::to_string(static_cast<uint64_t>(dev.desc.type));
   options += " -D LATTICE_VENDOR_ID=" + std::to_string(dev.desc.vendor_id);
-  options += " -D LATTICE_DEVICE_INDEX=" + std::to_string(DeviceIndex(dev));
-  options += " -D LATTICE_ABI_VERSION=1";
+  options += " -D LATTICE_DEVICE_INDEX=" + std::to_string(dev.desc.index);
+  options += " -D LATTICE_ABI_VERSION=" + std::to_string(opencl::kAbiVersion);
+  options += " -D LATTICE_ABI_VERSION_MIN=" + std::to_string(opencl::kAbiVersionMin);
 
   std::string extensions = DeviceInfoString(dev.device, CL_DEVICE_EXTENSIONS);
   if (extensions.find("cl_khr_fp64") != std::string::npos) {
@@ -738,7 +857,7 @@ std::string OpenCLBackend::BuildOptions(const DeviceContext& dev, const std::str
   }
 
   if (IsTrueEnv("LATTICE_OPENCL_VERBOSE")) {
-    std::cerr << "* Device #" << (DeviceIndex(dev) + 1) << ": build_options '" << options << "'\n";
+    std::cerr << "* Device #" << (dev.desc.index + 1) << ": build_options '" << options << "'\n";
   }
 
   return options;

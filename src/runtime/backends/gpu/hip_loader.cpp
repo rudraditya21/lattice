@@ -91,6 +91,7 @@ bool HipLoader::Load(std::string* error) {
   LoadOptional(driver, "hipModuleGetFunction", &hipModuleGetFunction);
   LoadOptional(driver, "hipModuleLaunchKernel", &hipModuleLaunchKernel);
   LoadOptional(driver, "hipGetErrorString", &hipGetErrorString);
+  LoadOptional(driver, "hipRuntimeGetVersion", &hipRuntimeGetVersion);
 
   if (!ok) {
     Unload();

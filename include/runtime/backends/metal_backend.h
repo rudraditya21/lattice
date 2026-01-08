@@ -9,11 +9,16 @@
 #include <vector>
 
 #include "runtime/backend.h"
+#include "runtime/backends/device_caps.h"
 
 namespace lattice::runtime {
 
 struct MetalDeviceDesc {
+  int index = -1;
   std::string name;
+  std::string vendor;
+  std::string driver_version;
+  std::string runtime_version;
   size_t max_threadgroup_size = 0;
   size_t shared_mem_bytes = 0;
 };
@@ -77,6 +82,7 @@ class MetalBackend final : public Backend {
 
   int DeviceCount() const;
   std::vector<MetalDeviceDesc> DeviceInfo() const;
+  std::vector<DeviceCapabilities> DeviceCaps() const;
 
   StatusOr<MetalBuffer> CreateBuffer(int device_index, size_t bytes) const;
   Status ReleaseBuffer(MetalBuffer* buffer) const;

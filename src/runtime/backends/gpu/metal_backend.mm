@@ -3,6 +3,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <CoreFoundation/CoreFoundation.h>
+#import <objc/message.h>
 
 #include <algorithm>
 #include <cctype>
@@ -16,6 +17,10 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "runtime/backends/device_quirks.h"
+#include "runtime/backends/device_selector.h"
+#include "runtime/backends/metal_abi.h"
 
 namespace lattice::runtime {
 
@@ -68,12 +73,20 @@ class MetalStream final : public Stream {
   void SetPriority(int) override {}
 };
 
+bool QueryBoolSelector(id obj, SEL sel, bool* out) {
+  if (![obj respondsToSelector:sel]) return false;
+  BOOL value = ((BOOL (*)(id, SEL))objc_msgSend)(obj, sel);
+  *out = value != NO;
+  return true;
+}
+
 }  // namespace
 
 struct MetalBackend::DeviceContext {
   id<MTLDevice> device = nil;
   id<MTLCommandQueue> queue = nil;
   MetalDeviceDesc desc;
+  DeviceCapabilities caps;
   std::unordered_map<std::string, id<MTLComputePipelineState>> pipeline_cache;
 };
 
@@ -163,6 +176,16 @@ std::vector<MetalDeviceDesc> MetalBackend::DeviceInfo() const {
   if (!status.ok()) return out;
   for (const auto& dev : devices_) {
     out.push_back(dev.desc);
+  }
+  return out;
+}
+
+std::vector<DeviceCapabilities> MetalBackend::DeviceCaps() const {
+  Status status = EnsureInitialized();
+  std::vector<DeviceCapabilities> out;
+  if (!status.ok()) return out;
+  for (const auto& dev : devices_) {
+    out.push_back(dev.caps);
   }
   return out;
 }
@@ -264,7 +287,20 @@ StatusOr<std::vector<MetalKernel>> MetalBackend::BuildKernelsFromFile(
       pipeline = cache_it->second;
     } else {
       MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
-      (void)options;
+      const uint32_t device_index = static_cast<uint32_t>(dev.desc.index);
+      NSMutableDictionary<NSString*, NSObject*>* macros =
+          [@{
+            @"LATTICE_ABI_VERSION" : [NSString stringWithFormat:@"%u", metal::kAbiVersion],
+            @"LATTICE_ABI_VERSION_MIN" : [NSString stringWithFormat:@"%u", metal::kAbiVersionMin],
+            @"LATTICE_DEVICE_INDEX" : [NSString stringWithFormat:@"%u", device_index],
+          } mutableCopy];
+      if (dev.caps.fp16 == CapabilityStatus::kYes) {
+        macros[@"LATTICE_HAS_FP16"] = @"1";
+      }
+      if (dev.caps.fp64 == CapabilityStatus::kYes) {
+        macros[@"LATTICE_HAS_FP64"] = @"1";
+      }
+      options.preprocessorMacros = macros;
       NSError* ns_error = nil;
       id<MTLLibrary> library = [dev.device newLibraryWithSource:[NSString stringWithUTF8String:source.c_str()]
                                                         options:options
@@ -433,20 +469,93 @@ Status MetalBackend::EnsureInitialized() const {
       }
     }
 
+    NSString* os_version = [[NSProcessInfo processInfo] operatingSystemVersionString];
+    const std::string runtime_str = os_version ? os_version.UTF8String : "";
+    std::vector<id<MTLDevice>> device_list;
+    device_list.reserve(static_cast<size_t>([metal_devices count]));
     for (id<MTLDevice> device in metal_devices) {
+      device_list.push_back(device);
+    }
+
+    std::vector<DeviceIdentity> identities;
+    identities.reserve(device_list.size());
+    for (size_t i = 0; i < device_list.size(); ++i) {
+      id<MTLDevice> device = device_list[i];
+      DeviceIdentity identity;
+      identity.index = static_cast<int>(i);
+      identity.name = device.name.UTF8String;
+      identity.vendor = "Apple";
+      identity.driver = runtime_str;
+      identity.kind = DeviceKind::kGPU;
+      identities.push_back(identity);
+    }
+
+    DeviceSelectionOptions selection = LoadDeviceSelectionOptions("LATTICE_METAL");
+    DeviceSelectionResult selected = SelectDevices(identities, selection);
+    if (selected.indices.empty()) {
+      init_status_ = Status::Unavailable(selected.diagnostics.empty()
+                                             ? "No Metal devices selected"
+                                             : selected.diagnostics);
+      return init_status_;
+    }
+
+    for (int idx : selected.indices) {
+      if (idx < 0 || idx >= static_cast<int>(device_list.size())) continue;
+      id<MTLDevice> device = device_list[static_cast<size_t>(idx)];
       DeviceContext ctx;
       ctx.device = device;
-      ctx.queue = [device newCommandQueue];
-      if (!ctx.queue) continue;
+      ctx.desc.index = idx;
       ctx.desc.name = device.name.UTF8String;
+      ctx.desc.vendor = "Apple";
+      ctx.desc.driver_version = runtime_str;
+      ctx.desc.runtime_version = runtime_str;
       ctx.desc.max_threadgroup_size = device.maxThreadsPerThreadgroup.width;
       ctx.desc.shared_mem_bytes = device.maxThreadgroupMemoryLength;
+      ctx.caps.is_gpu = true;
+      ctx.caps.local_mem_bytes = ctx.desc.shared_mem_bytes;
+      ctx.caps.max_work_item_sizes[0] = device.maxThreadsPerThreadgroup.width;
+      ctx.caps.max_work_item_sizes[1] = device.maxThreadsPerThreadgroup.height;
+      ctx.caps.max_work_item_sizes[2] = device.maxThreadsPerThreadgroup.depth;
+      ctx.caps.max_work_group_size = device.maxThreadsPerThreadgroup.width *
+                                     device.maxThreadsPerThreadgroup.height *
+                                     device.maxThreadsPerThreadgroup.depth;
+      ctx.caps.max_threads_per_block = ctx.caps.max_work_group_size;
+      bool feature = false;
+      if (QueryBoolSelector(device, @selector(supports64BitFloat), &feature)) {
+        ctx.caps.fp64 = feature ? CapabilityStatus::kYes : CapabilityStatus::kNo;
+      }
+      if (QueryBoolSelector(device, @selector(supports16BitFloat), &feature)) {
+        ctx.caps.fp16 = feature ? CapabilityStatus::kYes : CapabilityStatus::kNo;
+      }
+      ctx.caps.quirks =
+          QueryDeviceQuirks(BackendType::kMetal, ctx.desc.vendor, ctx.desc.name, runtime_str);
+      ctx.caps.is_software = (ctx.caps.quirks.flags & kSoftwareEmulation) != 0;
+      if (ctx.caps.quirks.flags & kDisableFp16) ctx.caps.fp16 = CapabilityStatus::kNo;
+      if (ctx.caps.quirks.flags & kDisableFp64) ctx.caps.fp64 = CapabilityStatus::kNo;
+      if (ctx.caps.quirks.disabled) {
+        if (const char* verbose = std::getenv("LATTICE_METAL_VERBOSE")) {
+          if (verbose[0] != '\0') {
+            std::cerr << "* Skipping Metal device '" << ctx.desc.name << "': "
+                      << ctx.caps.quirks.reason << "\n";
+          }
+        }
+        continue;
+      }
+      ctx.queue = [device newCommandQueue];
+      if (!ctx.queue) {
+        if (const char* verbose = std::getenv("LATTICE_METAL_VERBOSE")) {
+          if (verbose[0] != '\0') {
+            std::cerr << "* Metal device '" << ctx.desc.name << "' queue init failed\n";
+          }
+        }
+        continue;
+      }
       devices_.push_back(std::move(ctx));
     }
   }
 
   if (devices_.empty()) {
-    init_status_ = Status::Unavailable("No Metal devices found");
+    init_status_ = Status::Unavailable("No Metal devices initialized");
     return init_status_;
   }
 
