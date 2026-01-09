@@ -18,8 +18,10 @@ void RunComplexTests(TestContext* ctx);
 void RunTensorTests(TestContext* ctx);
 void RunErrorLocationTests(TestContext* ctx);
 void RunBackendTests(TestContext* ctx);
+void RunBackendEdgeTests(TestContext* ctx);
 void RunAbiTests(TestContext* ctx);
 void RunDeviceSelectorTests(TestContext* ctx);
+void RunDeviceQuirksTests(TestContext* ctx);
 void RunCacheStoreTests(TestContext* ctx);
 }  // namespace test
 
@@ -40,8 +42,10 @@ int main() {
   test::RunTensorTests(&ctx);
   test::RunErrorLocationTests(&ctx);
   test::RunBackendTests(&ctx);
+  test::RunBackendEdgeTests(&ctx);
   test::RunAbiTests(&ctx);
   test::RunDeviceSelectorTests(&ctx);
+  test::RunDeviceQuirksTests(&ctx);
   test::RunCacheStoreTests(&ctx);
 
   std::cout << "[RESULT] passed=" << ctx.passed << " failed=" << ctx.failed << "\n";

@@ -1,5 +1,6 @@
 #include "test_util.h"
 
+#include <cstdlib>
 #include <iostream>
 
 #include "runtime/type_checker.h"
@@ -22,6 +23,39 @@ void ExpectTrue(bool value, const std::string& name, TestContext* ctx) {
   }
   ++ctx->failed;
   std::cerr << "[FAIL] " << name << " expected true\n";
+}
+
+ScopedEnvVar::ScopedEnvVar(const std::string& name, const std::string& value) : name_(name) {
+  const char* current = std::getenv(name_.c_str());
+  if (current) {
+    had_value_ = true;
+    old_value_ = current;
+  }
+  SetEnv(value);
+}
+
+ScopedEnvVar::~ScopedEnvVar() {
+  if (had_value_) {
+    SetEnv(old_value_);
+  } else {
+    UnsetEnv();
+  }
+}
+
+void ScopedEnvVar::SetEnv(const std::string& value) {
+#if defined(_WIN32)
+  _putenv_s(name_.c_str(), value.c_str());
+#else
+  setenv(name_.c_str(), value.c_str(), 1);
+#endif
+}
+
+void ScopedEnvVar::UnsetEnv() {
+#if defined(_WIN32)
+  _putenv_s(name_.c_str(), "");
+#else
+  unsetenv(name_.c_str());
+#endif
 }
 
 rt::Value EvalExpr(const std::string& expr, std::shared_ptr<rt::Environment> env) {

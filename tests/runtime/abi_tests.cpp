@@ -16,12 +16,24 @@ void RunAbiTests(TestContext* ctx) {
 
   ExpectTrue(lattice::runtime::cuda::IsAbiCompatible(lattice::runtime::cuda::kAbiVersion),
              "cuda_abi_compat", ctx);
+  ExpectTrue(!lattice::runtime::cuda::IsAbiCompatible(
+                 (lattice::runtime::cuda::kAbiVersionMajor + 1) << 16),
+             "cuda_abi_wrong_major", ctx);
   ExpectTrue(lattice::runtime::hip::IsAbiCompatible(lattice::runtime::hip::kAbiVersion),
              "hip_abi_compat", ctx);
+  ExpectTrue(!lattice::runtime::hip::IsAbiCompatible(
+                 (lattice::runtime::hip::kAbiVersionMajor + 1) << 16),
+             "hip_abi_wrong_major", ctx);
   ExpectTrue(lattice::runtime::metal::IsAbiCompatible(lattice::runtime::metal::kAbiVersion),
              "metal_abi_compat", ctx);
+  ExpectTrue(!lattice::runtime::metal::IsAbiCompatible(
+                 (lattice::runtime::metal::kAbiVersionMajor + 1) << 16),
+             "metal_abi_wrong_major", ctx);
   ExpectTrue(lattice::runtime::opencl::IsAbiCompatible(lattice::runtime::opencl::kAbiVersion),
              "opencl_abi_compat", ctx);
+  ExpectTrue(!lattice::runtime::opencl::IsAbiCompatible(
+                 (lattice::runtime::opencl::kAbiVersionMajor + 1) << 16),
+             "opencl_abi_wrong_major", ctx);
 
   ExpectTrue(sizeof(ElemwiseParams) == 16, "elemwise_params_size", ctx);
   ExpectTrue(offsetof(ElemwiseParams, count) == 0, "elemwise_params_count_off", ctx);

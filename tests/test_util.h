@@ -26,6 +26,20 @@ struct TestContext {
   int failed = 0;
 };
 
+class ScopedEnvVar {
+ public:
+  ScopedEnvVar(const std::string& name, const std::string& value);
+  ~ScopedEnvVar();
+
+ private:
+  void SetEnv(const std::string& value);
+  void UnsetEnv();
+
+  std::string name_;
+  bool had_value_ = false;
+  std::string old_value_;
+};
+
 constexpr double kEpsilon = 1e-9;
 
 void ExpectNear(double actual, double expected, const std::string& name, TestContext* ctx);

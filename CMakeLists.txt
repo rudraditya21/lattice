@@ -75,8 +75,10 @@ add_executable(lattice_tests
     tests/runtime/tensor_tests.cpp
     tests/runtime/tuple_record_tests.cpp
     tests/runtime/backend_tests.cpp
+    tests/runtime/backend_edge_tests.cpp
     tests/runtime/abi_tests.cpp
     tests/runtime/device_selector_tests.cpp
+    tests/runtime/device_quirks_tests.cpp
     tests/runtime/cache_store_tests.cpp
     tests/runtime/destructuring_tests.cpp
     tests/runtime/error_location_tests.cpp
