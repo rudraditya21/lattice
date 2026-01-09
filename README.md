@@ -1,4 +1,5 @@
-# lattice
+# Lattice Programming Language
+<img src="assets/lattice.png" alt="Lattice icon" width="124" />
 
 Lattice is a small scientific computing language aimed at reproducible numerics and statistical workflows. It ships a REPL and embeddable library with:
 - Arithmetic expressions with identifiers, unary minus, calls, assignments, and blocks.

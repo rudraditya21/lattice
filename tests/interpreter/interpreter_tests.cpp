@@ -30,6 +30,30 @@ void RunInterpreterTests(TestContext* ctx) {
   auto func_val = rt::RunSource(src_func, env);
   ExpectNear(Unwrap(func_val.value, "interpreter_functions", ctx).number, 14.0,
              "interpreter_functions", ctx);
+
+  bool break_err = false;
+  try {
+    rt::RunSource("break;", env);
+  } catch (const util::Error&) {
+    break_err = true;
+  }
+  ExpectTrue(break_err, "interpreter_break_outside_loop", ctx);
+
+  bool continue_err = false;
+  try {
+    rt::RunSource("continue;", env);
+  } catch (const util::Error&) {
+    continue_err = true;
+  }
+  ExpectTrue(continue_err, "interpreter_continue_outside_loop", ctx);
+
+  bool parse_err = false;
+  try {
+    rt::RunSource("if (true) {", env);
+  } catch (const util::Error&) {
+    parse_err = true;
+  }
+  ExpectTrue(parse_err, "interpreter_parse_error", ctx);
 }
 
 }  // namespace test

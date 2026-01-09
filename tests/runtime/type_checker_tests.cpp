@@ -174,6 +174,46 @@ void RunTypeCheckerTests(TestContext* ctx) {
     destructure_annot_err = true;
   }
   ExpectTrue(destructure_annot_err, "typecheck_destructure_annotation_reject", ctx);
+
+  bool if_cond_err = false;
+  try {
+    TypeCheckStmt("if (1) 2 else 3");
+  } catch (const util::Error&) {
+    if_cond_err = true;
+  }
+  ExpectTrue(if_cond_err, "typecheck_if_condition_not_bool", ctx);
+
+  bool while_cond_err = false;
+  try {
+    TypeCheckStmt("while (2) { }");
+  } catch (const util::Error&) {
+    while_cond_err = true;
+  }
+  ExpectTrue(while_cond_err, "typecheck_while_condition_not_bool", ctx);
+
+  bool return_missing = false;
+  try {
+    TypeCheckStmt("{ func f() -> i32 { return; } }");
+  } catch (const util::Error&) {
+    return_missing = true;
+  }
+  ExpectTrue(return_missing, "typecheck_return_missing_value", ctx);
+
+  bool tuple_arity_err = false;
+  try {
+    TypeCheckStmt("(a, b) = (1, 2, 3)");
+  } catch (const util::Error&) {
+    tuple_arity_err = true;
+  }
+  ExpectTrue(tuple_arity_err, "typecheck_tuple_arity_mismatch", ctx);
+
+  bool record_key_err = false;
+  try {
+    TypeCheckStmt("{ r = {\"x\": 1}; {y} = r }");
+  } catch (const util::Error&) {
+    record_key_err = true;
+  }
+  ExpectTrue(record_key_err, "typecheck_record_destructure_invalid", ctx);
 }
 
 }  // namespace test

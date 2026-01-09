@@ -5,6 +5,17 @@ namespace test {
 void RunParserTests(TestContext* ctx) {
   auto env = std::make_shared<rt::Environment>();
   bt::InstallBuiltins(env);
+  auto expect_error = [&](const std::string& src, const std::string& name) {
+    bool caught = false;
+    try {
+      lx::Lexer lex(src);
+      ps::Parser parser(std::move(lex));
+      parser.ParseStatement();
+    } catch (const util::Error&) {
+      caught = true;
+    }
+    ExpectTrue(caught, name, ctx);
+  };
 
   ExpectNear(EvalExpr("(1 + 2) * 3", env).number, 9.0, "grouping", ctx);
 
@@ -26,6 +37,20 @@ void RunParserTests(TestContext* ctx) {
   } catch (const util::Error&) {
   }
   ExpectTrue(parsed_if, "if_else_parsed", ctx);
+
+  expect_error("if (true 1 else 2", "if_missing_paren_error");
+  expect_error("func f(a b) { return a; }", "func_missing_comma_error");
+  expect_error("for (i = 0 i < 3; i = i + 1) { }", "for_missing_semicolon_error");
+
+  try {
+    lx::Lexer lex("return;");
+    ps::Parser parser(std::move(lex));
+    auto stmt = parser.ParseStatement();
+    auto* ret = dynamic_cast<ps::ReturnStatement*>(stmt.get());
+    ExpectTrue(ret != nullptr && ret->expr == nullptr, "return_without_expr", ctx);
+  } catch (const util::Error&) {
+    ExpectTrue(false, "return_without_expr_parse", ctx);
+  }
 
   // Type-annotated function and variable parse and enforce.
   bool parsed_types = true;
