@@ -1,6 +1,5 @@
 #include "test_util.h"
 
-#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -10,16 +9,6 @@
 namespace test {
 
 namespace {
-
-std::filesystem::path MakeTempDir() {
-  const auto base = std::filesystem::temp_directory_path();
-  const auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-  std::ostringstream name;
-  name << "lattice_cache_test_" << now;
-  std::filesystem::path path = base / name.str();
-  std::filesystem::create_directories(path);
-  return path;
-}
 
 bool ReadAccessed(const std::filesystem::path& path, const std::string& key, uint64_t* out) {
   std::ifstream in(path);
@@ -60,7 +49,7 @@ void WriteIndexFile(const std::filesystem::path& path, const std::string& backen
 }  // namespace
 
 void RunCacheStoreTests(TestContext* ctx) {
-  const std::filesystem::path root = MakeTempDir();
+  const std::filesystem::path root = MakeTempDir("lattice_cache_test_");
 
   rt::CachePolicy policy;
   policy.max_bytes = 1024;

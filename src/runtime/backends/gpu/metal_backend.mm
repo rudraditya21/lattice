@@ -18,6 +18,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "runtime/backends/backend_error.h"
+#include "runtime/backends/backend_log.h"
 #include "runtime/backends/cache_store.h"
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
@@ -40,6 +42,10 @@ std::string Hex64(uint64_t value) {
   std::ostringstream out;
   out << std::hex << std::setw(16) << std::setfill('0') << value;
   return out.str();
+}
+
+Status MetalStatus(StatusCode code, BackendErrorKind kind, const std::string& message) {
+  return MakeBackendError(code, BackendType::kMetal, kind, message);
 }
 
 int CapabilityToInt(CapabilityStatus status) {
@@ -147,7 +153,10 @@ BackendCapabilities MetalBackend::Capabilities() const {
 StatusOr<std::shared_ptr<Stream>> MetalBackend::CreateStream() const {
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  if (devices_.empty()) return Status::Unavailable("No Metal devices available");
+  if (devices_.empty()) {
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                       "No Metal devices available");
+  }
   return std::make_shared<MetalStream>();
 }
 
@@ -161,7 +170,10 @@ StatusOr<Allocation> MetalBackend::Allocate(size_t bytes, size_t alignment) cons
   (void)alignment;
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  if (devices_.empty()) return Status::Unavailable("No Metal devices available");
+  if (devices_.empty()) {
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                       "No Metal devices available");
+  }
   auto buf_or = CreateBuffer(0, bytes);
   if (!buf_or.ok()) return buf_or.status();
   auto buf = buf_or.value();
@@ -223,13 +235,15 @@ StatusOr<MetalBuffer> MetalBackend::CreateBuffer(int device_index, size_t bytes)
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid Metal device index");
+    return MetalStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                       "Invalid Metal device index");
   }
   auto& dev = devices_[device_index];
   id<MTLBuffer> buffer = [dev.device newBufferWithLength:bytes
                                                  options:MTLResourceStorageModeShared];
   if (!buffer) {
-    return Status::Internal("Failed to allocate Metal buffer");
+    return MetalStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                       "Failed to allocate Metal buffer");
   }
   void* handle = (__bridge_retained void*)buffer;
   {
@@ -256,9 +270,13 @@ Status MetalBackend::WriteBuffer(int device_index, const MetalBuffer& buffer, co
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid Metal device index");
+    return MetalStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                       "Invalid Metal device index");
   }
-  if (bytes + offset > buffer.bytes) return Status::Invalid("Write exceeds buffer size");
+  if (bytes + offset > buffer.bytes) {
+    return MetalStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                       "Write exceeds buffer size");
+  }
   id<MTLBuffer> mtl_buffer = (__bridge id<MTLBuffer>)buffer.handle;
   void* dst = static_cast<char*>(mtl_buffer.contents) + static_cast<std::ptrdiff_t>(offset);
   std::memcpy(dst, data, bytes);
@@ -270,9 +288,13 @@ Status MetalBackend::ReadBuffer(int device_index, const MetalBuffer& buffer, voi
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid Metal device index");
+    return MetalStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                       "Invalid Metal device index");
   }
-  if (bytes + offset > buffer.bytes) return Status::Invalid("Read exceeds buffer size");
+  if (bytes + offset > buffer.bytes) {
+    return MetalStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                       "Read exceeds buffer size");
+  }
   id<MTLBuffer> mtl_buffer = (__bridge id<MTLBuffer>)buffer.handle;
   void* src = static_cast<char*>(mtl_buffer.contents) + static_cast<std::ptrdiff_t>(offset);
   std::memcpy(data, src, bytes);
@@ -286,7 +308,10 @@ StatusOr<MetalKernel> MetalBackend::BuildKernelFromFile(const std::string& path,
   auto kernels_or = BuildKernelsFromFile(path, kernel_name, extra_build_options);
   if (!kernels_or.ok()) return kernels_or.status();
   auto kernels = kernels_or.value();
-  if (kernels.empty()) return Status::Unavailable("No Metal kernels built");
+  if (kernels.empty()) {
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kBuild,
+                       "No Metal kernels built");
+  }
   return kernels.front();
 }
 
@@ -295,13 +320,16 @@ StatusOr<std::vector<MetalKernel>> MetalBackend::BuildKernelsFromFile(
     const std::string& extra_build_options) const {
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  if (devices_.empty()) return Status::Unavailable("No Metal devices available");
+  if (devices_.empty()) {
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                       "No Metal devices available");
+  }
 
   std::filesystem::path source_path(path);
   std::string source;
   std::string error;
   if (!ReadFile(source_path, &source, &error)) {
-    return Status::Invalid(error);
+    return MetalStatus(StatusCode::kInvalidArgument, BackendErrorKind::kIo, error);
   }
 
   std::vector<MetalKernel> out;
@@ -315,6 +343,20 @@ StatusOr<std::vector<MetalKernel>> MetalBackend::BuildKernelsFromFile(
     if (cache_it != dev.pipeline_cache.end()) {
       pipeline = cache_it->second;
     } else {
+      KernelTrace trace;
+      trace.backend = BackendType::kMetal;
+      trace.kernel_name = kernel_name;
+      trace.build_options = build_options;
+      trace.source = source;
+      trace.device_index = dev.desc.index;
+      trace.device_name = dev.desc.name;
+      std::string trace_path;
+      if (TraceKernelSource(trace, &trace_path)) {
+        LogBackend({LogLevel::kTrace, BackendType::kMetal, BackendErrorKind::kBuild,
+                    "kernel trace written", "build", dev.desc.index, dev.desc.name, 0, "",
+                    trace_path});
+      }
+
       MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
       const uint32_t device_index = static_cast<uint32_t>(dev.desc.index);
       NSMutableDictionary<NSString*, NSObject*>* macros =
@@ -337,17 +379,23 @@ StatusOr<std::vector<MetalKernel>> MetalBackend::BuildKernelsFromFile(
       if (!library) {
         last_error = ns_error ? ns_error.localizedDescription.UTF8String
                               : "Metal library compilation failed";
+        LogBackend({LogLevel::kWarn, BackendType::kMetal, BackendErrorKind::kBuild, last_error,
+                    "build", dev.desc.index, dev.desc.name});
         continue;
       }
       id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:kernel_name.c_str()]];
       if (!function) {
         last_error = "Metal function not found";
+        LogBackend({LogLevel::kWarn, BackendType::kMetal, BackendErrorKind::kBuild, last_error,
+                    "build", dev.desc.index, dev.desc.name});
         continue;
       }
       pipeline = [dev.device newComputePipelineStateWithFunction:function error:&ns_error];
       if (!pipeline) {
         last_error = ns_error ? ns_error.localizedDescription.UTF8String
                               : "Metal pipeline creation failed";
+        LogBackend({LogLevel::kWarn, BackendType::kMetal, BackendErrorKind::kBuild, last_error,
+                    "build", dev.desc.index, dev.desc.name});
         continue;
       }
       dev.pipeline_cache.emplace(cache_key, pipeline);
@@ -361,7 +409,7 @@ StatusOr<std::vector<MetalKernel>> MetalBackend::BuildKernelsFromFile(
 
   if (out.empty()) {
     if (last_error.empty()) last_error = "No Metal kernels built";
-    return Status::Unavailable(last_error);
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kBuild, last_error);
   }
   return out;
 }
@@ -377,11 +425,15 @@ Status MetalBackend::LaunchKernel(const MetalKernel& kernel, const MetalLaunchCo
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (kernel.device_index < 0 || kernel.device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid Metal device index");
+    return MetalStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                       "Invalid Metal device index");
   }
   auto& dev = devices_[kernel.device_index];
   id<MTLComputePipelineState> pipeline = (__bridge id<MTLComputePipelineState>)kernel.pipeline;
-  if (!pipeline) return Status::Invalid("Invalid Metal pipeline");
+  if (!pipeline) {
+    return MetalStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                       "Invalid Metal pipeline");
+  }
 
   id<MTLCommandBuffer> cmd = [dev.queue commandBuffer];
   id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
@@ -413,7 +465,8 @@ Status MetalBackend::LaunchKernel(const MetalKernel& kernel, const MetalLaunchCo
   [cmd commit];
   [cmd waitUntilCompleted];
   if (cmd.error) {
-    return Status::Internal(cmd.error.localizedDescription.UTF8String);
+    return MetalStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                       cmd.error.localizedDescription.UTF8String);
   }
   return Status::OK();
 }
@@ -423,13 +476,19 @@ Status MetalBackend::SmokeTest() const {
   if (!status.ok()) return status;
 
   std::string kernel_dir = KernelDir();
-  if (kernel_dir.empty()) return Status::Unavailable("Metal kernel directory not found");
+  if (kernel_dir.empty()) {
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kIo,
+                       "Metal kernel directory not found");
+  }
 
   const std::string kernel_path = (std::filesystem::path(kernel_dir) / "lattice_smoke.metal").string();
   auto kernels_or = BuildKernelsFromFile(kernel_path, "vec_add");
   if (!kernels_or.ok()) return kernels_or.status();
   auto kernels = kernels_or.value();
-  if (kernels.empty()) return Status::Unavailable("No Metal devices available");
+  if (kernels.empty()) {
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                       "No Metal devices available");
+  }
 
   constexpr size_t kCount = 1024;
   std::vector<float> a(kCount, 1.25f);
@@ -470,7 +529,8 @@ Status MetalBackend::SmokeTest() const {
 
     for (size_t i = 0; i < kCount; ++i) {
       if (out[i] != a[i] + b[i]) {
-        return Status::Internal("Metal smoke test failed: incorrect output");
+        return MetalStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                           "Metal smoke test failed: incorrect output");
       }
     }
 
@@ -522,9 +582,9 @@ Status MetalBackend::EnsureInitialized() const {
     DeviceSelectionOptions selection = LoadDeviceSelectionOptions("LATTICE_METAL");
     DeviceSelectionResult selected = SelectDevices(identities, selection);
     if (selected.indices.empty()) {
-      init_status_ = Status::Unavailable(selected.diagnostics.empty()
-                                             ? "No Metal devices selected"
-                                             : selected.diagnostics);
+      init_status_ = MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                                 selected.diagnostics.empty() ? "No Metal devices selected"
+                                                              : selected.diagnostics);
       return init_status_;
     }
 
@@ -566,21 +626,15 @@ Status MetalBackend::EnsureInitialized() const {
       ctx.fingerprint = DeviceFingerprint(meta);
 
       if (ctx.caps.quirks.disabled) {
-        if (const char* verbose = std::getenv("LATTICE_METAL_VERBOSE")) {
-          if (verbose[0] != '\0') {
-            std::cerr << "* Skipping Metal device '" << ctx.desc.name << "': "
-                      << ctx.caps.quirks.reason << "\n";
-          }
-        }
+        LogBackend({LogLevel::kWarn, BackendType::kMetal, BackendErrorKind::kDiscovery,
+                    "skipping device: " + ctx.caps.quirks.reason, "device_skip", ctx.desc.index,
+                    ctx.desc.name});
         continue;
       }
       ctx.queue = [device newCommandQueue];
       if (!ctx.queue) {
-        if (const char* verbose = std::getenv("LATTICE_METAL_VERBOSE")) {
-          if (verbose[0] != '\0') {
-            std::cerr << "* Metal device '" << ctx.desc.name << "' queue init failed\n";
-          }
-        }
+        LogBackend({LogLevel::kWarn, BackendType::kMetal, BackendErrorKind::kContext,
+                    "queue init failed", "queue", ctx.desc.index, ctx.desc.name});
         continue;
       }
       devices_.push_back(std::move(ctx));
@@ -588,7 +642,9 @@ Status MetalBackend::EnsureInitialized() const {
   }
 
   if (devices_.empty()) {
-    init_status_ = Status::Unavailable("No Metal devices initialized");
+    init_status_ =
+        MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kContext,
+                    "No Metal devices initialized");
     return init_status_;
   }
 
@@ -598,23 +654,18 @@ Status MetalBackend::EnsureInitialized() const {
     for (const auto& dev : devices_) {
       const DeviceMetadata meta = BuildDeviceMetadata(dev.desc, dev.caps);
       if (!meta_store.Write(meta, &meta_error)) {
-        if (const char* verbose = std::getenv("LATTICE_METAL_VERBOSE")) {
-          if (verbose[0] != '\0') {
-            std::cerr << "* Failed to persist Metal metadata: " << meta_error << "\n";
-          }
-        }
+        LogBackend({LogLevel::kWarn, BackendType::kMetal, BackendErrorKind::kIo,
+                    "metadata persist failed: " + meta_error, "metadata", dev.desc.index,
+                    dev.desc.name});
         meta_error.clear();
       }
     }
   }
 
-  if (const char* verbose = std::getenv("LATTICE_METAL_VERBOSE")) {
-    if (verbose[0] != '\0') {
-      for (size_t i = 0; i < devices_.size(); ++i) {
-        const auto& dev = devices_[i];
-        std::cerr << "* Metal Device #" << (i + 1) << ": " << dev.desc.name << "\n";
-      }
-    }
+  for (size_t i = 0; i < devices_.size(); ++i) {
+    const auto& dev = devices_[i];
+    LogBackend({LogLevel::kInfo, BackendType::kMetal, BackendErrorKind::kDiscovery, dev.desc.name,
+                "device_info", dev.desc.index, dev.desc.name});
   }
 
   init_status_ = Status::OK();

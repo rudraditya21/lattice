@@ -128,7 +128,8 @@ class OpenCLBackend final : public Backend {
                        const std::string& build_options, const std::string& source) const;
   StatusOr<cl_program> BuildOrLoadProgram(DeviceContext& dev, const std::string& source,
                                           const std::string& build_options,
-                                          const std::string& cache_key) const;
+                                          const std::string& cache_key,
+                                          const std::string& kernel_name) const;
 
   mutable std::vector<DeviceContext> devices_;
   mutable std::unordered_map<cl_mem, size_t> allocations_;

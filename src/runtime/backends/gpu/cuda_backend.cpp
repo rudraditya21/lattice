@@ -12,6 +12,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "runtime/backends/backend_error.h"
+#include "runtime/backends/backend_log.h"
 #include "runtime/backends/cache_store.h"
 #include "runtime/backends/cuda_abi.h"
 #include "runtime/backends/device_quirks.h"
@@ -55,6 +57,10 @@ std::string Hex64(uint64_t value) {
   std::ostringstream out;
   out << std::hex << std::setw(16) << std::setfill('0') << value;
   return out.str();
+}
+
+Status CudaStatus(StatusCode code, BackendErrorKind kind, const std::string& message) {
+  return MakeBackendError(code, BackendType::kCUDA, kind, message);
 }
 
 int CapabilityToInt(CapabilityStatus status) {
@@ -224,7 +230,10 @@ BackendCapabilities CudaBackend::Capabilities() const {
 StatusOr<std::shared_ptr<Stream>> CudaBackend::CreateStream() const {
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  if (devices_.empty()) return Status::Unavailable("No CUDA devices available");
+  if (devices_.empty()) {
+    return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                      "No CUDA devices available");
+  }
   return std::make_shared<CudaStream>(&loader_, devices_[0].stream);
 }
 
@@ -238,14 +247,18 @@ StatusOr<Allocation> CudaBackend::Allocate(size_t bytes, size_t alignment) const
   (void)alignment;
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  if (devices_.empty()) return Status::Unavailable("No CUDA devices available");
+  if (devices_.empty()) {
+    return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                      "No CUDA devices available");
+  }
   gpu::CUdeviceptr ptr = 0;
   if (loader_.cuCtxSetCurrent) {
     loader_.cuCtxSetCurrent(devices_[0].context);
   }
   gpu::CUresult err = loader_.cuMemAlloc(&ptr, bytes);
   if (err != gpu::CUDA_SUCCESS) {
-    return Status::Internal("cuMemAlloc failed: " + gpu::CudaErrorString(err, &loader_));
+    return CudaStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                      "cuMemAlloc failed: " + gpu::CudaErrorString(err, &loader_));
   }
   Allocation alloc;
   alloc.ptr = nullptr;
@@ -267,7 +280,8 @@ Status CudaBackend::Deallocate(const Allocation& alloc) const {
   auto ptr = static_cast<gpu::CUdeviceptr>(reinterpret_cast<uintptr_t>(alloc.device_handle));
   gpu::CUresult err = loader_.cuMemFree(ptr);
   if (err != gpu::CUDA_SUCCESS) {
-    return Status::Internal("cuMemFree failed: " + gpu::CudaErrorString(err, &loader_));
+    return CudaStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                      "cuMemFree failed: " + gpu::CudaErrorString(err, &loader_));
   }
   {
     std::lock_guard<std::mutex> lock(alloc_mu_);
@@ -323,7 +337,8 @@ StatusOr<CudaBuffer> CudaBackend::CreateBuffer(int device_index, size_t bytes) c
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid CUDA device index");
+    return CudaStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                      "Invalid CUDA device index");
   }
   auto& dev = devices_[device_index];
   if (loader_.cuCtxSetCurrent) {
@@ -332,7 +347,8 @@ StatusOr<CudaBuffer> CudaBackend::CreateBuffer(int device_index, size_t bytes) c
   gpu::CUdeviceptr ptr = 0;
   gpu::CUresult err = loader_.cuMemAlloc(&ptr, bytes);
   if (err != gpu::CUDA_SUCCESS) {
-    return Status::Internal("cuMemAlloc failed: " + gpu::CudaErrorString(err, &loader_));
+    return CudaStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                      "cuMemAlloc failed: " + gpu::CudaErrorString(err, &loader_));
   }
   {
     std::lock_guard<std::mutex> lock(alloc_mu_);
@@ -347,7 +363,8 @@ Status CudaBackend::ReleaseBuffer(CudaBuffer* buffer) const {
   if (!status.ok()) return status;
   gpu::CUresult err = loader_.cuMemFree(buffer->ptr);
   if (err != gpu::CUDA_SUCCESS) {
-    return Status::Internal("cuMemFree failed: " + gpu::CudaErrorString(err, &loader_));
+    return CudaStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                      "cuMemFree failed: " + gpu::CudaErrorString(err, &loader_));
   }
   {
     std::lock_guard<std::mutex> lock(alloc_mu_);
@@ -363,16 +380,21 @@ Status CudaBackend::WriteBuffer(int device_index, const CudaBuffer& buffer, cons
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid CUDA device index");
+    return CudaStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                      "Invalid CUDA device index");
   }
-  if (bytes + offset > buffer.bytes) return Status::Invalid("Write exceeds buffer size");
+  if (bytes + offset > buffer.bytes) {
+    return CudaStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                      "Write exceeds buffer size");
+  }
   auto& dev = devices_[device_index];
   if (loader_.cuCtxSetCurrent) {
     loader_.cuCtxSetCurrent(dev.context);
   }
   gpu::CUresult err = loader_.cuMemcpyHtoD(buffer.ptr + offset, data, bytes);
   if (err != gpu::CUDA_SUCCESS) {
-    return Status::Internal("cuMemcpyHtoD failed: " + gpu::CudaErrorString(err, &loader_));
+    return CudaStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                      "cuMemcpyHtoD failed: " + gpu::CudaErrorString(err, &loader_));
   }
   return Status::OK();
 }
@@ -382,16 +404,21 @@ Status CudaBackend::ReadBuffer(int device_index, const CudaBuffer& buffer, void*
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid CUDA device index");
+    return CudaStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                      "Invalid CUDA device index");
   }
-  if (bytes + offset > buffer.bytes) return Status::Invalid("Read exceeds buffer size");
+  if (bytes + offset > buffer.bytes) {
+    return CudaStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                      "Read exceeds buffer size");
+  }
   auto& dev = devices_[device_index];
   if (loader_.cuCtxSetCurrent) {
     loader_.cuCtxSetCurrent(dev.context);
   }
   gpu::CUresult err = loader_.cuMemcpyDtoH(data, buffer.ptr + offset, bytes);
   if (err != gpu::CUDA_SUCCESS) {
-    return Status::Internal("cuMemcpyDtoH failed: " + gpu::CudaErrorString(err, &loader_));
+    return CudaStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                      "cuMemcpyDtoH failed: " + gpu::CudaErrorString(err, &loader_));
   }
   return Status::OK();
 }
@@ -402,7 +429,9 @@ StatusOr<CudaKernel> CudaBackend::BuildKernelFromFile(
   auto kernels_or = BuildKernelsFromFile(path, kernel_name, extra_build_options);
   if (!kernels_or.ok()) return kernels_or.status();
   auto kernels = kernels_or.value();
-  if (kernels.empty()) return Status::Unavailable("No CUDA kernels built");
+  if (kernels.empty()) {
+    return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kBuild, "No CUDA kernels built");
+  }
   return kernels.front();
 }
 
@@ -411,13 +440,16 @@ StatusOr<std::vector<CudaKernel>> CudaBackend::BuildKernelsFromFile(
     const std::string& extra_build_options) const {
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  if (devices_.empty()) return Status::Unavailable("No CUDA devices available");
+  if (devices_.empty()) {
+    return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                      "No CUDA devices available");
+  }
 
   std::filesystem::path source_path(path);
   std::string source;
   std::string error;
   if (!ReadFile(source_path, &source, &error)) {
-    return Status::Invalid(error);
+    return CudaStatus(StatusCode::kInvalidArgument, BackendErrorKind::kIo, error);
   }
 
   bool source_is_binary = IsBinarySource(source_path);
@@ -428,7 +460,8 @@ StatusOr<std::vector<CudaKernel>> CudaBackend::BuildKernelsFromFile(
     auto& dev = devices_[i];
     std::string build_options = BuildOptions(dev, extra_build_options);
     std::string cache_key = CacheKey(dev, kernel_name, build_options, source);
-    auto module_or = BuildOrLoadModule(dev, source, build_options, cache_key, source_is_binary);
+    auto module_or =
+        BuildOrLoadModule(dev, source, build_options, cache_key, source_is_binary, kernel_name);
     if (!module_or.ok()) {
       last_error = module_or.status().message;
       continue;
@@ -449,7 +482,7 @@ StatusOr<std::vector<CudaKernel>> CudaBackend::BuildKernelsFromFile(
 
   if (out.empty()) {
     if (last_error.empty()) last_error = "No CUDA kernels built";
-    return Status::Unavailable(last_error);
+    return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kBuild, last_error);
   }
   return out;
 }
@@ -466,7 +499,8 @@ Status CudaBackend::LaunchKernel(const CudaKernel& kernel, const CudaLaunchConfi
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (kernel.device_index < 0 || kernel.device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid CUDA device index");
+    return CudaStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                      "Invalid CUDA device index");
   }
   auto& dev = devices_[kernel.device_index];
   if (loader_.cuCtxSetCurrent) {
@@ -496,12 +530,14 @@ Status CudaBackend::LaunchKernel(const CudaKernel& kernel, const CudaLaunchConfi
       config.block[2], static_cast<unsigned int>(config.shared_bytes), dev.stream, params.data(),
       nullptr);
   if (err != gpu::CUDA_SUCCESS) {
-    return Status::Internal("cuLaunchKernel failed: " + gpu::CudaErrorString(err, &loader_));
+    return CudaStatus(StatusCode::kInternal, BackendErrorKind::kLaunch,
+                      "cuLaunchKernel failed: " + gpu::CudaErrorString(err, &loader_));
   }
   if (loader_.cuStreamSynchronize) {
     err = loader_.cuStreamSynchronize(dev.stream);
     if (err != gpu::CUDA_SUCCESS) {
-      return Status::Internal("cuStreamSynchronize failed: " + gpu::CudaErrorString(err, &loader_));
+      return CudaStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                        "cuStreamSynchronize failed: " + gpu::CudaErrorString(err, &loader_));
     }
   }
   return Status::OK();
@@ -512,13 +548,19 @@ Status CudaBackend::SmokeTest() const {
   if (!status.ok()) return status;
 
   std::string kernel_dir = KernelDir();
-  if (kernel_dir.empty()) return Status::Unavailable("CUDA kernel directory not found");
+  if (kernel_dir.empty()) {
+    return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kIo,
+                      "CUDA kernel directory not found");
+  }
 
   const std::string kernel_path = (std::filesystem::path(kernel_dir) / "lattice_smoke.cu").string();
   auto kernels_or = BuildKernelsFromFile(kernel_path, "vec_add");
   if (!kernels_or.ok()) return kernels_or.status();
   auto kernels = kernels_or.value();
-  if (kernels.empty()) return Status::Unavailable("No CUDA devices available");
+  if (kernels.empty()) {
+    return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                      "No CUDA devices available");
+  }
 
   constexpr size_t kCount = 1024;
   std::vector<float> a(kCount, 1.25f);
@@ -561,7 +603,8 @@ Status CudaBackend::SmokeTest() const {
 
     for (size_t i = 0; i < kCount; ++i) {
       if (out[i] != a[i] + b[i]) {
-        return Status::Internal("CUDA smoke test failed: incorrect output");
+        return CudaStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                          "CUDA smoke test failed: incorrect output");
       }
     }
 
@@ -580,18 +623,20 @@ Status CudaBackend::EnsureInitialized() const {
 
   std::string error;
   if (!loader_.Load(&error)) {
-    init_status_ = Status::Unavailable(error);
+    init_status_ = CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kInit, error);
     return init_status_;
   }
 
   if (!loader_.cuInit) {
-    init_status_ = Status::Unavailable("CUDA driver missing cuInit");
+    init_status_ =
+        CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kInit, "CUDA driver missing cuInit");
     return init_status_;
   }
 
   gpu::CUresult err = loader_.cuInit(0);
   if (err != gpu::CUDA_SUCCESS) {
-    init_status_ = Status::Unavailable("cuInit failed: " + gpu::CudaErrorString(err, &loader_));
+    init_status_ = CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kInit,
+                              "cuInit failed: " + gpu::CudaErrorString(err, &loader_));
     return init_status_;
   }
 
@@ -612,7 +657,8 @@ Status CudaBackend::EnsureInitialized() const {
   int count = 0;
   err = loader_.cuDeviceGetCount(&count);
   if (err != gpu::CUDA_SUCCESS || count <= 0) {
-    init_status_ = Status::Unavailable("No CUDA devices found");
+    init_status_ =
+        CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery, "No CUDA devices found");
     return init_status_;
   }
 
@@ -701,8 +747,9 @@ Status CudaBackend::EnsureInitialized() const {
   DeviceSelectionOptions selection = LoadDeviceSelectionOptions("LATTICE_CUDA");
   DeviceSelectionResult selected = SelectDevices(identities, selection);
   if (selected.indices.empty()) {
-    init_status_ = Status::Unavailable(selected.diagnostics.empty() ? "No CUDA devices selected"
-                                                                    : selected.diagnostics);
+    init_status_ = CudaStatus(
+        StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+        selected.diagnostics.empty() ? "No CUDA devices selected" : selected.diagnostics);
     return init_status_;
   }
 
@@ -712,21 +759,15 @@ Status CudaBackend::EnsureInitialized() const {
     if (idx < 0 || idx >= static_cast<int>(candidates.size())) continue;
     DeviceContext dev = std::move(candidates[static_cast<size_t>(idx)]);
     if (dev.caps.quirks.disabled) {
-      if (const char* verbose = std::getenv("LATTICE_CUDA_VERBOSE")) {
-        if (verbose[0] != '\0') {
-          std::cerr << "* Skipping CUDA device '" << dev.desc.name
-                    << "': " << dev.caps.quirks.reason << "\n";
-        }
-      }
+      LogBackend({LogLevel::kWarn, BackendType::kCUDA, BackendErrorKind::kDiscovery,
+                  "skipping device: " + dev.caps.quirks.reason, "device_skip", dev.desc.index,
+                  dev.desc.name});
       continue;
     }
     if (!loader_.cuCtxCreate) continue;
     if (loader_.cuCtxCreate(&dev.context, 0, dev.device) != gpu::CUDA_SUCCESS) {
-      if (const char* verbose = std::getenv("LATTICE_CUDA_VERBOSE")) {
-        if (verbose[0] != '\0') {
-          std::cerr << "* CUDA device '" << dev.desc.name << "' context init failed\n";
-        }
-      }
+      LogBackend({LogLevel::kWarn, BackendType::kCUDA, BackendErrorKind::kContext,
+                  "context init failed", "context", dev.desc.index, dev.desc.name});
       continue;
     }
     if (loader_.cuCtxSetCurrent) {
@@ -735,11 +776,8 @@ Status CudaBackend::EnsureInitialized() const {
     if (loader_.cuStreamCreate) {
       if (loader_.cuStreamCreate(&dev.stream, 0) != gpu::CUDA_SUCCESS) {
         if (loader_.cuCtxDestroy) loader_.cuCtxDestroy(dev.context);
-        if (const char* verbose = std::getenv("LATTICE_CUDA_VERBOSE")) {
-          if (verbose[0] != '\0') {
-            std::cerr << "* CUDA device '" << dev.desc.name << "' stream init failed\n";
-          }
-        }
+        LogBackend({LogLevel::kWarn, BackendType::kCUDA, BackendErrorKind::kContext,
+                    "stream init failed", "stream", dev.desc.index, dev.desc.name});
         continue;
       }
     }
@@ -747,7 +785,8 @@ Status CudaBackend::EnsureInitialized() const {
   }
 
   if (devices_.empty()) {
-    init_status_ = Status::Unavailable("No CUDA devices initialized");
+    init_status_ = CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kContext,
+                              "No CUDA devices initialized");
     return init_status_;
   }
 
@@ -757,27 +796,22 @@ Status CudaBackend::EnsureInitialized() const {
     for (const auto& dev : devices_) {
       const DeviceMetadata meta = BuildDeviceMetadata(dev.desc, dev.caps);
       if (!meta_store.Write(meta, &meta_error)) {
-        if (const char* verbose = std::getenv("LATTICE_CUDA_VERBOSE")) {
-          if (verbose[0] != '\0') {
-            std::cerr << "* Failed to persist CUDA metadata: " << meta_error << "\n";
-          }
-        }
+        LogBackend({LogLevel::kWarn, BackendType::kCUDA, BackendErrorKind::kIo,
+                    "metadata persist failed: " + meta_error, "metadata", dev.desc.index,
+                    dev.desc.name});
         meta_error.clear();
       }
     }
   }
 
-  if (const char* verbose = std::getenv("LATTICE_CUDA_VERBOSE")) {
-    if (verbose[0] != '\0') {
-      for (size_t i = 0; i < devices_.size(); ++i) {
-        const auto& dev = devices_[i];
-        std::cerr << "* CUDA Device #" << (i + 1) << ": " << dev.desc.name;
-        if (dev.desc.major > 0) {
-          std::cerr << " (sm_" << dev.desc.major << dev.desc.minor << ")";
-        }
-        std::cerr << "\n";
-      }
+  for (size_t i = 0; i < devices_.size(); ++i) {
+    const auto& dev = devices_[i];
+    std::string info = dev.desc.name;
+    if (dev.desc.major > 0) {
+      info += " (sm_" + std::to_string(dev.desc.major) + std::to_string(dev.desc.minor) + ")";
     }
+    LogBackend({LogLevel::kInfo, BackendType::kCUDA, BackendErrorKind::kDiscovery, info,
+                "device_info", dev.desc.index, dev.desc.name});
   }
 
   init_status_ = Status::OK();
@@ -840,11 +874,9 @@ std::string CudaBackend::CacheKey(const DeviceContext& dev, const std::string& k
   return "cuda_" + Hex64(meta_hash) + "_" + Hex64(src_hash);
 }
 
-StatusOr<gpu::CUmodule> CudaBackend::BuildOrLoadModule(DeviceContext& dev,
-                                                       const std::string& source,
-                                                       const std::string& build_options,
-                                                       const std::string& cache_key,
-                                                       bool source_is_binary) const {
+StatusOr<gpu::CUmodule> CudaBackend::BuildOrLoadModule(
+    DeviceContext& dev, const std::string& source, const std::string& build_options,
+    const std::string& cache_key, bool source_is_binary, const std::string& kernel_name) const {
   auto it = dev.module_cache.find(cache_key);
   if (it != dev.module_cache.end()) {
     return it->second;
@@ -852,6 +884,19 @@ StatusOr<gpu::CUmodule> CudaBackend::BuildOrLoadModule(DeviceContext& dev,
 
   CacheStore& store = CudaCacheStore();
   ::lattice::runtime::CacheKey store_key{cache_key, dev.fingerprint};
+
+  KernelTrace trace;
+  trace.backend = BackendType::kCUDA;
+  trace.kernel_name = kernel_name;
+  trace.build_options = build_options;
+  trace.source = source;
+  trace.device_index = dev.desc.index;
+  trace.device_name = dev.desc.name;
+  std::string trace_path;
+  if (TraceKernelSource(trace, &trace_path)) {
+    LogBackend({LogLevel::kTrace, BackendType::kCUDA, BackendErrorKind::kBuild,
+                "kernel trace written", "build", dev.desc.index, dev.desc.name, 0, "", trace_path});
+  }
 
   auto load_module = [&](const std::string& image) -> StatusOr<gpu::CUmodule> {
     if (loader_.cuCtxSetCurrent) {
@@ -865,7 +910,8 @@ StatusOr<gpu::CUmodule> CudaBackend::BuildOrLoadModule(DeviceContext& dev,
       err = loader_.cuModuleLoadData(&module, image.data());
     }
     if (err != gpu::CUDA_SUCCESS) {
-      return Status::Internal("cuModuleLoadData failed: " + gpu::CudaErrorString(err, &loader_));
+      return CudaStatus(StatusCode::kInternal, BackendErrorKind::kCompile,
+                        "cuModuleLoadData failed: " + gpu::CudaErrorString(err, &loader_));
     }
     dev.module_cache.emplace(cache_key, module);
     return module;
@@ -885,13 +931,15 @@ StatusOr<gpu::CUmodule> CudaBackend::BuildOrLoadModule(DeviceContext& dev,
     image = source;
   } else {
     if (!loader_.NvrtcLoaded()) {
-      return Status::Unavailable("NVRTC not available for CUDA kernel compilation");
+      return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kBuild,
+                        "NVRTC not available for CUDA kernel compilation");
     }
     gpu::nvrtcProgram prog = nullptr;
     gpu::NvrtcResult rc =
         loader_.nvrtcCreateProgram(&prog, source.c_str(), "lattice.cu", 0, nullptr, nullptr);
     if (rc != 0) {
-      return Status::Internal("nvrtcCreateProgram failed: " + gpu::NvrtcErrorString(rc, &loader_));
+      return CudaStatus(StatusCode::kInternal, BackendErrorKind::kCompile,
+                        "nvrtcCreateProgram failed: " + gpu::NvrtcErrorString(rc, &loader_));
     }
     auto opts = SplitOptions(build_options);
     std::vector<const char*> opt_ptrs;
@@ -909,19 +957,22 @@ StatusOr<gpu::CUmodule> CudaBackend::BuildOrLoadModule(DeviceContext& dev,
         loader_.nvrtcGetProgramLog(prog, log.data());
       }
       loader_.nvrtcDestroyProgram(&prog);
-      return Status::Internal("NVRTC compile failed: " + log);
+      return CudaStatus(StatusCode::kInternal, BackendErrorKind::kBuild,
+                        "NVRTC compile failed: " + log);
     }
     size_t ptx_size = 0;
     rc = loader_.nvrtcGetPTXSize(prog, &ptx_size);
     if (rc != 0) {
       loader_.nvrtcDestroyProgram(&prog);
-      return Status::Internal("nvrtcGetPTXSize failed: " + gpu::NvrtcErrorString(rc, &loader_));
+      return CudaStatus(StatusCode::kInternal, BackendErrorKind::kBuild,
+                        "nvrtcGetPTXSize failed: " + gpu::NvrtcErrorString(rc, &loader_));
     }
     image.resize(ptx_size);
     rc = loader_.nvrtcGetPTX(prog, image.data());
     loader_.nvrtcDestroyProgram(&prog);
     if (rc != 0) {
-      return Status::Internal("nvrtcGetPTX failed: " + gpu::NvrtcErrorString(rc, &loader_));
+      return CudaStatus(StatusCode::kInternal, BackendErrorKind::kBuild,
+                        "nvrtcGetPTX failed: " + gpu::NvrtcErrorString(rc, &loader_));
     }
   }
 

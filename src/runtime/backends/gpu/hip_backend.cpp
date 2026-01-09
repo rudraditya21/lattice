@@ -12,6 +12,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "runtime/backends/backend_error.h"
+#include "runtime/backends/backend_log.h"
 #include "runtime/backends/cache_store.h"
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
@@ -52,6 +54,10 @@ std::string Hex64(uint64_t value) {
   std::ostringstream out;
   out << std::hex << std::setw(16) << std::setfill('0') << value;
   return out.str();
+}
+
+Status HipStatus(StatusCode code, BackendErrorKind kind, const std::string& message) {
+  return MakeBackendError(code, BackendType::kHIP, kind, message);
 }
 
 int CapabilityToInt(CapabilityStatus status) {
@@ -220,7 +226,10 @@ BackendCapabilities HipBackend::Capabilities() const {
 StatusOr<std::shared_ptr<Stream>> HipBackend::CreateStream() const {
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  if (devices_.empty()) return Status::Unavailable("No HIP devices available");
+  if (devices_.empty()) {
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                     "No HIP devices available");
+  }
   return std::make_shared<HipStream>(&loader_, devices_[0].stream);
 }
 
@@ -234,14 +243,18 @@ StatusOr<Allocation> HipBackend::Allocate(size_t bytes, size_t alignment) const 
   (void)alignment;
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  if (devices_.empty()) return Status::Unavailable("No HIP devices available");
+  if (devices_.empty()) {
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                     "No HIP devices available");
+  }
   if (loader_.hipCtxSetCurrent && devices_[0].context) {
     loader_.hipCtxSetCurrent(devices_[0].context);
   }
   void* ptr = nullptr;
   gpu::hipError_t err = loader_.hipMalloc(&ptr, bytes);
   if (err != gpu::hipSuccess) {
-    return Status::Internal("hipMalloc failed: " + gpu::HipErrorString(err, &loader_));
+    return HipStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                     "hipMalloc failed: " + gpu::HipErrorString(err, &loader_));
   }
   Allocation alloc;
   alloc.ptr = nullptr;
@@ -262,7 +275,8 @@ Status HipBackend::Deallocate(const Allocation& alloc) const {
   if (!status.ok()) return status;
   gpu::hipError_t err = loader_.hipFree(alloc.device_handle);
   if (err != gpu::hipSuccess) {
-    return Status::Internal("hipFree failed: " + gpu::HipErrorString(err, &loader_));
+    return HipStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                     "hipFree failed: " + gpu::HipErrorString(err, &loader_));
   }
   {
     std::lock_guard<std::mutex> lock(alloc_mu_);
@@ -318,7 +332,8 @@ StatusOr<HipBuffer> HipBackend::CreateBuffer(int device_index, size_t bytes) con
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid HIP device index");
+    return HipStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                     "Invalid HIP device index");
   }
   auto& dev = devices_[device_index];
   if (loader_.hipCtxSetCurrent && dev.context) {
@@ -327,7 +342,8 @@ StatusOr<HipBuffer> HipBackend::CreateBuffer(int device_index, size_t bytes) con
   void* ptr = nullptr;
   gpu::hipError_t err = loader_.hipMalloc(&ptr, bytes);
   if (err != gpu::hipSuccess) {
-    return Status::Internal("hipMalloc failed: " + gpu::HipErrorString(err, &loader_));
+    return HipStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                     "hipMalloc failed: " + gpu::HipErrorString(err, &loader_));
   }
   {
     std::lock_guard<std::mutex> lock(alloc_mu_);
@@ -342,7 +358,8 @@ Status HipBackend::ReleaseBuffer(HipBuffer* buffer) const {
   if (!status.ok()) return status;
   gpu::hipError_t err = loader_.hipFree(buffer->ptr);
   if (err != gpu::hipSuccess) {
-    return Status::Internal("hipFree failed: " + gpu::HipErrorString(err, &loader_));
+    return HipStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                     "hipFree failed: " + gpu::HipErrorString(err, &loader_));
   }
   {
     std::lock_guard<std::mutex> lock(alloc_mu_);
@@ -358,9 +375,13 @@ Status HipBackend::WriteBuffer(int device_index, const HipBuffer& buffer, const 
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid HIP device index");
+    return HipStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                     "Invalid HIP device index");
   }
-  if (bytes + offset > buffer.bytes) return Status::Invalid("Write exceeds buffer size");
+  if (bytes + offset > buffer.bytes) {
+    return HipStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                     "Write exceeds buffer size");
+  }
   auto& dev = devices_[device_index];
   if (loader_.hipCtxSetCurrent && dev.context) {
     loader_.hipCtxSetCurrent(dev.context);
@@ -368,7 +389,8 @@ Status HipBackend::WriteBuffer(int device_index, const HipBuffer& buffer, const 
   auto dst = reinterpret_cast<char*>(buffer.ptr) + static_cast<std::ptrdiff_t>(offset);
   gpu::hipError_t err = loader_.hipMemcpy(dst, data, bytes, gpu::hipMemcpyHostToDevice);
   if (err != gpu::hipSuccess) {
-    return Status::Internal("hipMemcpy HtoD failed: " + gpu::HipErrorString(err, &loader_));
+    return HipStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                     "hipMemcpy HtoD failed: " + gpu::HipErrorString(err, &loader_));
   }
   return Status::OK();
 }
@@ -378,9 +400,13 @@ Status HipBackend::ReadBuffer(int device_index, const HipBuffer& buffer, void* d
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid HIP device index");
+    return HipStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                     "Invalid HIP device index");
   }
-  if (bytes + offset > buffer.bytes) return Status::Invalid("Read exceeds buffer size");
+  if (bytes + offset > buffer.bytes) {
+    return HipStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                     "Read exceeds buffer size");
+  }
   auto& dev = devices_[device_index];
   if (loader_.hipCtxSetCurrent && dev.context) {
     loader_.hipCtxSetCurrent(dev.context);
@@ -388,7 +414,8 @@ Status HipBackend::ReadBuffer(int device_index, const HipBuffer& buffer, void* d
   auto src = reinterpret_cast<const char*>(buffer.ptr) + static_cast<std::ptrdiff_t>(offset);
   gpu::hipError_t err = loader_.hipMemcpy(data, src, bytes, gpu::hipMemcpyDeviceToHost);
   if (err != gpu::hipSuccess) {
-    return Status::Internal("hipMemcpy DtoH failed: " + gpu::HipErrorString(err, &loader_));
+    return HipStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                     "hipMemcpy DtoH failed: " + gpu::HipErrorString(err, &loader_));
   }
   return Status::OK();
 }
@@ -399,7 +426,9 @@ StatusOr<HipKernel> HipBackend::BuildKernelFromFile(const std::string& path,
   auto kernels_or = BuildKernelsFromFile(path, kernel_name, extra_build_options);
   if (!kernels_or.ok()) return kernels_or.status();
   auto kernels = kernels_or.value();
-  if (kernels.empty()) return Status::Unavailable("No HIP kernels built");
+  if (kernels.empty()) {
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kBuild, "No HIP kernels built");
+  }
   return kernels.front();
 }
 
@@ -408,13 +437,16 @@ StatusOr<std::vector<HipKernel>> HipBackend::BuildKernelsFromFile(
     const std::string& extra_build_options) const {
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  if (devices_.empty()) return Status::Unavailable("No HIP devices available");
+  if (devices_.empty()) {
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                     "No HIP devices available");
+  }
 
   std::filesystem::path source_path(path);
   std::string source;
   std::string error;
   if (!ReadFile(source_path, &source, &error)) {
-    return Status::Invalid(error);
+    return HipStatus(StatusCode::kInvalidArgument, BackendErrorKind::kIo, error);
   }
 
   bool source_is_binary = IsBinarySource(source_path);
@@ -425,7 +457,8 @@ StatusOr<std::vector<HipKernel>> HipBackend::BuildKernelsFromFile(
     auto& dev = devices_[i];
     std::string build_options = BuildOptions(dev, extra_build_options);
     std::string cache_key = CacheKey(dev, kernel_name, build_options, source);
-    auto module_or = BuildOrLoadModule(dev, source, build_options, cache_key, source_is_binary);
+    auto module_or =
+        BuildOrLoadModule(dev, source, build_options, cache_key, source_is_binary, kernel_name);
     if (!module_or.ok()) {
       last_error = module_or.status().message;
       continue;
@@ -451,7 +484,7 @@ StatusOr<std::vector<HipKernel>> HipBackend::BuildKernelsFromFile(
 
   if (out.empty()) {
     if (last_error.empty()) last_error = "No HIP kernels built";
-    return Status::Unavailable(last_error);
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kBuild, last_error);
   }
   return out;
 }
@@ -468,10 +501,12 @@ Status HipBackend::LaunchKernel(const HipKernel& kernel, const HipLaunchConfig& 
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (!loader_.hipModuleLaunchKernel) {
-    return Status::Unavailable("hipModuleLaunchKernel not available");
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kUnsupported,
+                     "hipModuleLaunchKernel not available");
   }
   if (kernel.device_index < 0 || kernel.device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid HIP device index");
+    return HipStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                     "Invalid HIP device index");
   }
   auto& dev = devices_[kernel.device_index];
   if (loader_.hipCtxSetCurrent && dev.context) {
@@ -501,12 +536,14 @@ Status HipBackend::LaunchKernel(const HipKernel& kernel, const HipLaunchConfig& 
       config.block[2], static_cast<unsigned int>(config.shared_bytes), dev.stream, params.data(),
       nullptr);
   if (err != gpu::hipSuccess) {
-    return Status::Internal("hipModuleLaunchKernel failed: " + gpu::HipErrorString(err, &loader_));
+    return HipStatus(StatusCode::kInternal, BackendErrorKind::kLaunch,
+                     "hipModuleLaunchKernel failed: " + gpu::HipErrorString(err, &loader_));
   }
   if (loader_.hipStreamSynchronize) {
     err = loader_.hipStreamSynchronize(dev.stream);
     if (err != gpu::hipSuccess) {
-      return Status::Internal("hipStreamSynchronize failed: " + gpu::HipErrorString(err, &loader_));
+      return HipStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                       "hipStreamSynchronize failed: " + gpu::HipErrorString(err, &loader_));
     }
   }
   return Status::OK();
@@ -517,14 +554,20 @@ Status HipBackend::SmokeTest() const {
   if (!status.ok()) return status;
 
   std::string kernel_dir = KernelDir();
-  if (kernel_dir.empty()) return Status::Unavailable("HIP kernel directory not found");
+  if (kernel_dir.empty()) {
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kIo,
+                     "HIP kernel directory not found");
+  }
 
   const std::string kernel_path =
       (std::filesystem::path(kernel_dir) / "lattice_smoke.hip").string();
   auto kernels_or = BuildKernelsFromFile(kernel_path, "vec_add");
   if (!kernels_or.ok()) return kernels_or.status();
   auto kernels = kernels_or.value();
-  if (kernels.empty()) return Status::Unavailable("No HIP devices available");
+  if (kernels.empty()) {
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                     "No HIP devices available");
+  }
 
   constexpr size_t kCount = 1024;
   std::vector<float> a(kCount, 1.25f);
@@ -567,7 +610,8 @@ Status HipBackend::SmokeTest() const {
 
     for (size_t i = 0; i < kCount; ++i) {
       if (out[i] != a[i] + b[i]) {
-        return Status::Internal("HIP smoke test failed: incorrect output");
+        return HipStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                         "HIP smoke test failed: incorrect output");
       }
     }
 
@@ -586,7 +630,7 @@ Status HipBackend::EnsureInitialized() const {
 
   std::string error;
   if (!loader_.Load(&error)) {
-    init_status_ = Status::Unavailable(error);
+    init_status_ = HipStatus(StatusCode::kUnavailable, BackendErrorKind::kInit, error);
     return init_status_;
   }
 
@@ -597,7 +641,8 @@ Status HipBackend::EnsureInitialized() const {
   int count = 0;
   gpu::hipError_t err = loader_.hipGetDeviceCount(&count);
   if (err != gpu::hipSuccess || count <= 0) {
-    init_status_ = Status::Unavailable("No HIP devices found");
+    init_status_ =
+        HipStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery, "No HIP devices found");
     return init_status_;
   }
 
@@ -687,8 +732,9 @@ Status HipBackend::EnsureInitialized() const {
   DeviceSelectionOptions selection = LoadDeviceSelectionOptions("LATTICE_HIP");
   DeviceSelectionResult selected = SelectDevices(identities, selection);
   if (selected.indices.empty()) {
-    init_status_ = Status::Unavailable(selected.diagnostics.empty() ? "No HIP devices selected"
-                                                                    : selected.diagnostics);
+    init_status_ =
+        HipStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                  selected.diagnostics.empty() ? "No HIP devices selected" : selected.diagnostics);
     return init_status_;
   }
 
@@ -699,21 +745,15 @@ Status HipBackend::EnsureInitialized() const {
     if (!candidate_valid[static_cast<size_t>(idx)]) continue;
     DeviceContext dev = std::move(candidates[static_cast<size_t>(idx)]);
     if (dev.caps.quirks.disabled) {
-      if (const char* verbose = std::getenv("LATTICE_HIP_VERBOSE")) {
-        if (verbose[0] != '\0') {
-          std::cerr << "* Skipping HIP device '" << dev.desc.name << "': " << dev.caps.quirks.reason
-                    << "\n";
-        }
-      }
+      LogBackend({LogLevel::kWarn, BackendType::kHIP, BackendErrorKind::kDiscovery,
+                  "skipping device: " + dev.caps.quirks.reason, "device_skip", dev.desc.index,
+                  dev.desc.name});
       continue;
     }
     if (loader_.hipCtxCreate) {
       if (loader_.hipCtxCreate(&dev.context, 0, dev.device) != gpu::hipSuccess) {
-        if (const char* verbose = std::getenv("LATTICE_HIP_VERBOSE")) {
-          if (verbose[0] != '\0') {
-            std::cerr << "* HIP device '" << dev.desc.name << "' context init failed\n";
-          }
-        }
+        LogBackend({LogLevel::kWarn, BackendType::kHIP, BackendErrorKind::kContext,
+                    "context init failed", "context", dev.desc.index, dev.desc.name});
         continue;
       }
       if (loader_.hipCtxSetCurrent) {
@@ -723,11 +763,8 @@ Status HipBackend::EnsureInitialized() const {
     if (loader_.hipStreamCreate) {
       if (loader_.hipStreamCreate(&dev.stream) != gpu::hipSuccess) {
         if (loader_.hipCtxDestroy && dev.context) loader_.hipCtxDestroy(dev.context);
-        if (const char* verbose = std::getenv("LATTICE_HIP_VERBOSE")) {
-          if (verbose[0] != '\0') {
-            std::cerr << "* HIP device '" << dev.desc.name << "' stream init failed\n";
-          }
-        }
+        LogBackend({LogLevel::kWarn, BackendType::kHIP, BackendErrorKind::kContext,
+                    "stream init failed", "stream", dev.desc.index, dev.desc.name});
         continue;
       }
     }
@@ -736,7 +773,8 @@ Status HipBackend::EnsureInitialized() const {
   }
 
   if (devices_.empty()) {
-    init_status_ = Status::Unavailable("No HIP devices initialized");
+    init_status_ = HipStatus(StatusCode::kUnavailable, BackendErrorKind::kContext,
+                             "No HIP devices initialized");
     return init_status_;
   }
 
@@ -746,23 +784,18 @@ Status HipBackend::EnsureInitialized() const {
     for (const auto& dev : devices_) {
       const DeviceMetadata meta = BuildDeviceMetadata(dev.desc, dev.caps);
       if (!meta_store.Write(meta, &meta_error)) {
-        if (const char* verbose = std::getenv("LATTICE_HIP_VERBOSE")) {
-          if (verbose[0] != '\0') {
-            std::cerr << "* Failed to persist HIP metadata: " << meta_error << "\n";
-          }
-        }
+        LogBackend({LogLevel::kWarn, BackendType::kHIP, BackendErrorKind::kIo,
+                    "metadata persist failed: " + meta_error, "metadata", dev.desc.index,
+                    dev.desc.name});
         meta_error.clear();
       }
     }
   }
 
-  if (const char* verbose = std::getenv("LATTICE_HIP_VERBOSE")) {
-    if (verbose[0] != '\0') {
-      for (size_t i = 0; i < devices_.size(); ++i) {
-        const auto& dev = devices_[i];
-        std::cerr << "* HIP Device #" << (i + 1) << ": " << dev.desc.name << "\n";
-      }
-    }
+  for (size_t i = 0; i < devices_.size(); ++i) {
+    const auto& dev = devices_[i];
+    LogBackend({LogLevel::kInfo, BackendType::kHIP, BackendErrorKind::kDiscovery, dev.desc.name,
+                "device_info", dev.desc.index, dev.desc.name});
   }
 
   init_status_ = Status::OK();
@@ -827,11 +860,9 @@ std::string HipBackend::CacheKey(const DeviceContext& dev, const std::string& ke
   return "hip_" + Hex64(meta_hash) + "_" + Hex64(src_hash);
 }
 
-StatusOr<gpu::hipModule_t> HipBackend::BuildOrLoadModule(DeviceContext& dev,
-                                                         const std::string& source,
-                                                         const std::string& build_options,
-                                                         const std::string& cache_key,
-                                                         bool source_is_binary) const {
+StatusOr<gpu::hipModule_t> HipBackend::BuildOrLoadModule(
+    DeviceContext& dev, const std::string& source, const std::string& build_options,
+    const std::string& cache_key, bool source_is_binary, const std::string& kernel_name) const {
   auto it = dev.module_cache.find(cache_key);
   if (it != dev.module_cache.end()) {
     return it->second;
@@ -840,9 +871,23 @@ StatusOr<gpu::hipModule_t> HipBackend::BuildOrLoadModule(DeviceContext& dev,
   CacheStore& store = HipCacheStore();
   ::lattice::runtime::CacheKey store_key{cache_key, dev.fingerprint};
 
+  KernelTrace trace;
+  trace.backend = BackendType::kHIP;
+  trace.kernel_name = kernel_name;
+  trace.build_options = build_options;
+  trace.source = source;
+  trace.device_index = dev.desc.index;
+  trace.device_name = dev.desc.name;
+  std::string trace_path;
+  if (TraceKernelSource(trace, &trace_path)) {
+    LogBackend({LogLevel::kTrace, BackendType::kHIP, BackendErrorKind::kBuild,
+                "kernel trace written", "build", dev.desc.index, dev.desc.name, 0, "", trace_path});
+  }
+
   auto load_module = [&](const std::string& image) -> StatusOr<gpu::hipModule_t> {
     if (!loader_.hipModuleLoadData) {
-      return Status::Unavailable("hipModuleLoadData not available");
+      return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kUnsupported,
+                       "hipModuleLoadData not available");
     }
     if (loader_.hipCtxSetCurrent && dev.context) {
       loader_.hipCtxSetCurrent(dev.context);
@@ -850,7 +895,8 @@ StatusOr<gpu::hipModule_t> HipBackend::BuildOrLoadModule(DeviceContext& dev,
     gpu::hipModule_t module = nullptr;
     gpu::hipError_t err = loader_.hipModuleLoadData(&module, image.data());
     if (err != gpu::hipSuccess) {
-      return Status::Internal("hipModuleLoadData failed: " + gpu::HipErrorString(err, &loader_));
+      return HipStatus(StatusCode::kInternal, BackendErrorKind::kCompile,
+                       "hipModuleLoadData failed: " + gpu::HipErrorString(err, &loader_));
     }
     dev.module_cache.emplace(cache_key, module);
     return module;
@@ -870,14 +916,15 @@ StatusOr<gpu::hipModule_t> HipBackend::BuildOrLoadModule(DeviceContext& dev,
     image = source;
   } else {
     if (!loader_.HiprtcLoaded()) {
-      return Status::Unavailable("HIPRTC not available for kernel compilation");
+      return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kBuild,
+                       "HIPRTC not available for kernel compilation");
     }
     gpu::hiprtcProgram prog = nullptr;
     gpu::HiprtcResult rc =
         loader_.hiprtcCreateProgram(&prog, source.c_str(), "lattice.hip", 0, nullptr, nullptr);
     if (rc != 0) {
-      return Status::Internal("hiprtcCreateProgram failed: " +
-                              gpu::HiprtcErrorString(rc, &loader_));
+      return HipStatus(StatusCode::kInternal, BackendErrorKind::kCompile,
+                       "hiprtcCreateProgram failed: " + gpu::HiprtcErrorString(rc, &loader_));
     }
     auto opts = SplitOptions(build_options);
     std::vector<const char*> opt_ptrs;
@@ -895,19 +942,22 @@ StatusOr<gpu::hipModule_t> HipBackend::BuildOrLoadModule(DeviceContext& dev,
         loader_.hiprtcGetProgramLog(prog, log.data());
       }
       loader_.hiprtcDestroyProgram(&prog);
-      return Status::Internal("HIPRTC compile failed: " + log);
+      return HipStatus(StatusCode::kInternal, BackendErrorKind::kBuild,
+                       "HIPRTC compile failed: " + log);
     }
     size_t code_size = 0;
     rc = loader_.hiprtcGetCodeSize(prog, &code_size);
     if (rc != 0) {
       loader_.hiprtcDestroyProgram(&prog);
-      return Status::Internal("hiprtcGetCodeSize failed: " + gpu::HiprtcErrorString(rc, &loader_));
+      return HipStatus(StatusCode::kInternal, BackendErrorKind::kBuild,
+                       "hiprtcGetCodeSize failed: " + gpu::HiprtcErrorString(rc, &loader_));
     }
     image.resize(code_size);
     rc = loader_.hiprtcGetCode(prog, image.data());
     loader_.hiprtcDestroyProgram(&prog);
     if (rc != 0) {
-      return Status::Internal("hiprtcGetCode failed: " + gpu::HiprtcErrorString(rc, &loader_));
+      return HipStatus(StatusCode::kInternal, BackendErrorKind::kBuild,
+                       "hiprtcGetCode failed: " + gpu::HiprtcErrorString(rc, &loader_));
     }
   }
 

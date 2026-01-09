@@ -16,6 +16,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "runtime/backends/backend_error.h"
+#include "runtime/backends/backend_log.h"
 #include "runtime/backends/cache_store.h"
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
@@ -87,19 +89,15 @@ std::string NormalizePathArg(const std::filesystem::path& path) {
   return "\"" + raw + "\"";
 }
 
-bool IsTrueEnv(const char* name) {
-  const char* value = std::getenv(name);
-  if (!value) return false;
-  std::string v(value);
-  for (char& c : v) c = static_cast<char>(std::tolower(c));
-  return v == "1" || v == "true" || v == "yes" || v == "on";
-}
-
 std::string DeviceTypeString(cl_device_type type) {
   if (type & CL_DEVICE_TYPE_GPU) return "GPU";
   if (type & CL_DEVICE_TYPE_CPU) return "CPU";
   if (type & CL_DEVICE_TYPE_ACCELERATOR) return "ACCELERATOR";
   return "UNKNOWN";
+}
+
+Status OpenclStatus(StatusCode code, BackendErrorKind kind, const std::string& message) {
+  return MakeBackendError(code, BackendType::kOpenCL, kind, message);
 }
 
 DeviceMetadata BuildDeviceMetadata(const OpenCLDeviceDesc& desc, const DeviceCapabilities& caps) {
@@ -235,7 +233,10 @@ BackendCapabilities OpenCLBackend::Capabilities() const {
 StatusOr<std::shared_ptr<Stream>> OpenCLBackend::CreateStream() const {
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  if (devices_.empty()) return Status::Unavailable("No OpenCL devices available");
+  if (devices_.empty()) {
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                        "No OpenCL devices available");
+  }
   return std::make_shared<OpenCLStream>(&loader_, devices_[0].queue);
 }
 
@@ -249,11 +250,15 @@ StatusOr<Allocation> OpenCLBackend::Allocate(size_t bytes, size_t alignment) con
   (void)alignment;
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  if (devices_.empty()) return Status::Unavailable("No OpenCL devices available");
+  if (devices_.empty()) {
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                        "No OpenCL devices available");
+  }
   cl_int err = CL_SUCCESS;
   cl_mem buf = loader_.clCreateBuffer(devices_[0].context, CL_MEM_READ_WRITE, bytes, nullptr, &err);
   if (err != CL_SUCCESS) {
-    return Status::Internal("clCreateBuffer failed: " + gpu::OpenCLErrorString(err));
+    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                        "clCreateBuffer failed: " + gpu::OpenCLErrorString(err));
   }
   Allocation alloc;
   alloc.ptr = nullptr;
@@ -275,7 +280,8 @@ Status OpenCLBackend::Deallocate(const Allocation& alloc) const {
   cl_mem buf = reinterpret_cast<cl_mem>(alloc.device_handle);
   cl_int err = loader_.clReleaseMemObject(buf);
   if (err != CL_SUCCESS) {
-    return Status::Internal("clReleaseMemObject failed: " + gpu::OpenCLErrorString(err));
+    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                        "clReleaseMemObject failed: " + gpu::OpenCLErrorString(err));
   }
   {
     std::lock_guard<std::mutex> lock(alloc_mu_);
@@ -332,12 +338,14 @@ StatusOr<OpenCLBuffer> OpenCLBackend::CreateBuffer(int device_index, size_t byte
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid device index");
+    return OpenclStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                        "Invalid device index");
   }
   cl_int err = CL_SUCCESS;
   cl_mem buf = loader_.clCreateBuffer(devices_[device_index].context, flags, bytes, nullptr, &err);
   if (err != CL_SUCCESS) {
-    return Status::Internal("clCreateBuffer failed: " + gpu::OpenCLErrorString(err));
+    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                        "clCreateBuffer failed: " + gpu::OpenCLErrorString(err));
   }
   {
     std::lock_guard<std::mutex> lock(alloc_mu_);
@@ -350,7 +358,8 @@ Status OpenCLBackend::ReleaseBuffer(OpenCLBuffer* buffer) const {
   if (!buffer || !buffer->mem) return Status::OK();
   cl_int err = loader_.clReleaseMemObject(buffer->mem);
   if (err != CL_SUCCESS) {
-    return Status::Internal("clReleaseMemObject failed: " + gpu::OpenCLErrorString(err));
+    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                        "clReleaseMemObject failed: " + gpu::OpenCLErrorString(err));
   }
   {
     std::lock_guard<std::mutex> lock(alloc_mu_);
@@ -366,13 +375,18 @@ Status OpenCLBackend::WriteBuffer(int device_index, const OpenCLBuffer& buffer, 
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid device index");
+    return OpenclStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                        "Invalid device index");
   }
-  if (!buffer.mem) return Status::Invalid("Invalid buffer handle");
+  if (!buffer.mem) {
+    return OpenclStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                        "Invalid buffer handle");
+  }
   cl_int err = loader_.clEnqueueWriteBuffer(devices_[device_index].queue, buffer.mem, CL_TRUE,
                                             offset, bytes, data, 0, nullptr, nullptr);
   if (err != CL_SUCCESS) {
-    return Status::Internal("clEnqueueWriteBuffer failed: " + gpu::OpenCLErrorString(err));
+    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                        "clEnqueueWriteBuffer failed: " + gpu::OpenCLErrorString(err));
   }
   return Status::OK();
 }
@@ -382,13 +396,18 @@ Status OpenCLBackend::ReadBuffer(int device_index, const OpenCLBuffer& buffer, v
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid device index");
+    return OpenclStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                        "Invalid device index");
   }
-  if (!buffer.mem) return Status::Invalid("Invalid buffer handle");
+  if (!buffer.mem) {
+    return OpenclStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                        "Invalid buffer handle");
+  }
   cl_int err = loader_.clEnqueueReadBuffer(devices_[device_index].queue, buffer.mem, CL_TRUE,
                                            offset, bytes, data, 0, nullptr, nullptr);
   if (err != CL_SUCCESS) {
-    return Status::Internal("clEnqueueReadBuffer failed: " + gpu::OpenCLErrorString(err));
+    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                        "clEnqueueReadBuffer failed: " + gpu::OpenCLErrorString(err));
   }
   return Status::OK();
 }
@@ -399,7 +418,9 @@ StatusOr<OpenCLKernel> OpenCLBackend::BuildKernelFromFile(
   auto kernels_or = BuildKernelsFromFile(path, kernel_name, extra_build_options);
   if (!kernels_or.ok()) return kernels_or.status();
   auto kernels = kernels_or.value();
-  if (kernels.empty()) return Status::Unavailable("No kernels built");
+  if (kernels.empty()) {
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kBuild, "No kernels built");
+  }
   return kernels.front();
 }
 
@@ -408,7 +429,10 @@ StatusOr<std::vector<OpenCLKernel>> OpenCLBackend::BuildKernelsFromFile(
     const std::string& extra_build_options) const {
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  if (devices_.empty()) return Status::Unavailable("No OpenCL devices available");
+  if (devices_.empty()) {
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                        "No OpenCL devices available");
+  }
 
   std::filesystem::path src_path(path);
   if (!std::filesystem::exists(src_path)) {
@@ -418,13 +442,14 @@ StatusOr<std::vector<OpenCLKernel>> OpenCLBackend::BuildKernelsFromFile(
     }
   }
   if (!std::filesystem::exists(src_path)) {
-    return Status::Invalid("Kernel source not found: " + src_path.string());
+    return OpenclStatus(StatusCode::kInvalidArgument, BackendErrorKind::kIo,
+                        "Kernel source not found: " + src_path.string());
   }
 
   std::string source;
   std::string error;
   if (!ReadFile(src_path, &source, &error)) {
-    return Status::Unavailable(error);
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kIo, error);
   }
 
   std::vector<OpenCLKernel> out;
@@ -434,12 +459,11 @@ StatusOr<std::vector<OpenCLKernel>> OpenCLBackend::BuildKernelsFromFile(
     const std::string build_options = BuildOptions(dev, extra_build_options);
     const std::string cache_key = CacheKey(dev, kernel_name, build_options, source);
 
-    auto program_or = BuildOrLoadProgram(dev, source, build_options, cache_key);
+    auto program_or = BuildOrLoadProgram(dev, source, build_options, cache_key, kernel_name);
     if (!program_or.ok()) {
       last_error = program_or.status().message;
-      if (IsTrueEnv("LATTICE_OPENCL_VERBOSE")) {
-        std::cerr << "* Device #" << (i + 1) << ": build failed: " << last_error << "\n";
-      }
+      LogBackend({LogLevel::kWarn, BackendType::kOpenCL, BackendErrorKind::kBuild,
+                  "build failed: " + last_error, "build", dev.desc.index, dev.desc.name});
       continue;
     }
     cl_program program = program_or.value();
@@ -450,9 +474,8 @@ StatusOr<std::vector<OpenCLKernel>> OpenCLBackend::BuildKernelsFromFile(
       dev.program_cache.erase(cache_key);
       loader_.clReleaseProgram(program);
       last_error = "clCreateKernel failed: " + gpu::OpenCLErrorString(err);
-      if (IsTrueEnv("LATTICE_OPENCL_VERBOSE")) {
-        std::cerr << "* Device #" << (i + 1) << ": " << last_error << "\n";
-      }
+      LogBackend({LogLevel::kWarn, BackendType::kOpenCL, BackendErrorKind::kBuild, last_error,
+                  "build", dev.desc.index, dev.desc.name});
       continue;
     }
 
@@ -466,7 +489,7 @@ StatusOr<std::vector<OpenCLKernel>> OpenCLBackend::BuildKernelsFromFile(
 
   if (out.empty()) {
     if (last_error.empty()) last_error = "No OpenCL kernels built";
-    return Status::Unavailable(last_error);
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kBuild, last_error);
   }
   return out;
 }
@@ -484,9 +507,13 @@ Status OpenCLBackend::LaunchKernel(const OpenCLKernel& kernel, const OpenCLLaunc
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (kernel.device_index < 0 || kernel.device_index >= static_cast<int>(devices_.size())) {
-    return Status::Invalid("Invalid device index for kernel");
+    return OpenclStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                        "Invalid device index for kernel");
   }
-  if (!kernel.kernel) return Status::Invalid("Invalid kernel handle");
+  if (!kernel.kernel) {
+    return OpenclStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
+                        "Invalid kernel handle");
+  }
 
   cl_int err = CL_SUCCESS;
   for (cl_uint i = 0; i < args.size(); ++i) {
@@ -498,7 +525,8 @@ Status OpenCLBackend::LaunchKernel(const OpenCLKernel& kernel, const OpenCLLaunc
       err = loader_.clSetKernelArg(kernel.kernel, i, arg.size, arg.value);
     }
     if (err != CL_SUCCESS) {
-      return Status::Internal("clSetKernelArg failed: " + gpu::OpenCLErrorString(err));
+      return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kLaunch,
+                          "clSetKernelArg failed: " + gpu::OpenCLErrorString(err));
     }
   }
 
@@ -507,11 +535,13 @@ Status OpenCLBackend::LaunchKernel(const OpenCLKernel& kernel, const OpenCLLaunc
                                        config.dims, nullptr, config.global, local, 0, nullptr,
                                        nullptr);
   if (err != CL_SUCCESS) {
-    return Status::Internal("clEnqueueNDRangeKernel failed: " + gpu::OpenCLErrorString(err));
+    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kLaunch,
+                        "clEnqueueNDRangeKernel failed: " + gpu::OpenCLErrorString(err));
   }
   err = loader_.clFinish(devices_[kernel.device_index].queue);
   if (err != CL_SUCCESS) {
-    return Status::Internal("clFinish failed: " + gpu::OpenCLErrorString(err));
+    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                        "clFinish failed: " + gpu::OpenCLErrorString(err));
   }
   return Status::OK();
 }
@@ -522,13 +552,17 @@ Status OpenCLBackend::SmokeTest() const {
 
   const std::string kernel_dir = KernelDir();
   if (kernel_dir.empty()) {
-    return Status::Unavailable("OpenCL kernel directory not found");
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kIo,
+                        "OpenCL kernel directory not found");
   }
 
   auto kernels_or = BuildKernelsFromFile("lattice_smoke.cl", "vec_add", "");
   if (!kernels_or.ok()) return kernels_or.status();
   auto kernels = kernels_or.value();
-  if (kernels.empty()) return Status::Unavailable("No OpenCL devices available");
+  if (kernels.empty()) {
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                        "No OpenCL devices available");
+  }
 
   const size_t n = 1024;
   std::vector<float> a(n, 1.0f);
@@ -593,7 +627,8 @@ Status OpenCLBackend::SmokeTest() const {
     const float expected = 3.0f;
     for (size_t i = 0; i < n; ++i) {
       if (std::fabs(out[i] - expected) > 1e-3f) {
-        return Status::Internal("OpenCL smoke test failed: incorrect output");
+        return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                            "OpenCL smoke test failed: incorrect output");
       }
     }
 
@@ -616,14 +651,15 @@ Status OpenCLBackend::EnsureInitialized() const {
 
   std::string error;
   if (!loader_.Load(&error)) {
-    init_status_ = Status::Unavailable(error);
+    init_status_ = OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kInit, error);
     return init_status_;
   }
 
   cl_uint num_platforms = 0;
   cl_int err = loader_.clGetPlatformIDs(0, nullptr, &num_platforms);
   if (err != CL_SUCCESS || num_platforms == 0) {
-    init_status_ = Status::Unavailable("No OpenCL platforms found");
+    init_status_ = OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                                "No OpenCL platforms found");
     return init_status_;
   }
 
@@ -631,7 +667,8 @@ Status OpenCLBackend::EnsureInitialized() const {
   std::vector<cl_platform_id> platforms(num_platforms);
   err = loader_.clGetPlatformIDs(num_platforms, platforms.data(), nullptr);
   if (err != CL_SUCCESS) {
-    init_status_ = Status::Unavailable("clGetPlatformIDs failed: " + gpu::OpenCLErrorString(err));
+    init_status_ = OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                                "clGetPlatformIDs failed: " + gpu::OpenCLErrorString(err));
     return init_status_;
   }
 
@@ -736,8 +773,9 @@ Status OpenCLBackend::EnsureInitialized() const {
   DeviceSelectionOptions selection = LoadDeviceSelectionOptions("LATTICE_OPENCL");
   DeviceSelectionResult selected = SelectDevices(identities, selection);
   if (selected.indices.empty()) {
-    init_status_ = Status::Unavailable(selected.diagnostics.empty() ? "No OpenCL devices selected"
-                                                                    : selected.diagnostics);
+    init_status_ = OpenclStatus(
+        StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+        selected.diagnostics.empty() ? "No OpenCL devices selected" : selected.diagnostics);
     return init_status_;
   }
 
@@ -745,27 +783,26 @@ Status OpenCLBackend::EnsureInitialized() const {
     if (idx < 0 || idx >= static_cast<int>(candidates.size())) continue;
     DeviceContext ctx = std::move(candidates[static_cast<size_t>(idx)]);
     if (ctx.caps.quirks.disabled) {
-      if (IsTrueEnv("LATTICE_OPENCL_VERBOSE")) {
-        std::cerr << "* Skipping OpenCL device '" << ctx.desc.name
-                  << "': " << ctx.caps.quirks.reason << "\n";
-      }
+      LogBackend({LogLevel::kWarn, BackendType::kOpenCL, BackendErrorKind::kDiscovery,
+                  "skipping device: " + ctx.caps.quirks.reason, "device_skip", ctx.desc.index,
+                  ctx.desc.name});
       continue;
     }
     cl_int create_err = CL_SUCCESS;
     ctx.context = loader_.clCreateContext(nullptr, 1, &ctx.device, nullptr, nullptr, &create_err);
     if (create_err != CL_SUCCESS || !ctx.context) {
-      if (IsTrueEnv("LATTICE_OPENCL_VERBOSE")) {
-        std::cerr << "* OpenCL device '" << ctx.desc.name << "' context init failed\n";
-      }
+      LogBackend({LogLevel::kWarn, BackendType::kOpenCL, BackendErrorKind::kContext,
+                  "context init failed", "context", ctx.desc.index, ctx.desc.name, create_err,
+                  gpu::OpenCLErrorString(create_err)});
       continue;
     }
     ctx.queue = loader_.clCreateCommandQueue(ctx.context, ctx.device, 0, &create_err);
     if (create_err != CL_SUCCESS || !ctx.queue) {
       loader_.clReleaseContext(ctx.context);
       ctx.context = nullptr;
-      if (IsTrueEnv("LATTICE_OPENCL_VERBOSE")) {
-        std::cerr << "* OpenCL device '" << ctx.desc.name << "' queue init failed\n";
-      }
+      LogBackend({LogLevel::kWarn, BackendType::kOpenCL, BackendErrorKind::kContext,
+                  "queue init failed", "queue", ctx.desc.index, ctx.desc.name, create_err,
+                  gpu::OpenCLErrorString(create_err)});
       continue;
     }
     devices_.push_back(std::move(ctx));
@@ -773,10 +810,11 @@ Status OpenCLBackend::EnsureInitialized() const {
 
   if (devices_.empty()) {
     if (!selected.indices.empty()) {
-      init_status_ =
-          Status::Unavailable("No OpenCL devices initialized (all selected devices failed)");
+      init_status_ = OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kContext,
+                                  "No OpenCL devices initialized (all selected devices failed)");
     } else {
-      init_status_ = Status::Unavailable("No OpenCL devices found");
+      init_status_ = OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                                  "No OpenCL devices found");
     }
     return init_status_;
   }
@@ -786,20 +824,21 @@ Status OpenCLBackend::EnsureInitialized() const {
     std::string meta_error;
     for (const auto& dev : devices_) {
       const DeviceMetadata meta = BuildDeviceMetadata(dev.desc, dev.caps);
-      if (!meta_store.Write(meta, &meta_error) && IsTrueEnv("LATTICE_OPENCL_VERBOSE")) {
-        std::cerr << "* Failed to persist OpenCL metadata: " << meta_error << "\n";
+      if (!meta_store.Write(meta, &meta_error)) {
+        LogBackend({LogLevel::kWarn, BackendType::kOpenCL, BackendErrorKind::kIo,
+                    "metadata persist failed: " + meta_error, "metadata", dev.desc.index,
+                    dev.desc.name});
         meta_error.clear();
       }
     }
   }
 
-  if (IsTrueEnv("LATTICE_OPENCL_VERBOSE")) {
-    for (size_t i = 0; i < devices_.size(); ++i) {
-      const auto& dev = devices_[i].desc;
-      std::cerr << "* OpenCL Device #" << (i + 1) << ": " << dev.name << " (";
-      std::cerr << DeviceTypeString(dev.type) << ") vendor=" << dev.vendor;
-      std::cerr << " driver=" << dev.driver_version << "\n";
-    }
+  for (size_t i = 0; i < devices_.size(); ++i) {
+    const auto& dev = devices_[i].desc;
+    std::string info = dev.name + " (" + DeviceTypeString(dev.type) + ") vendor=" + dev.vendor +
+                       " driver=" + dev.driver_version;
+    LogBackend({LogLevel::kInfo, BackendType::kOpenCL, BackendErrorKind::kDiscovery, info,
+                "device_info", dev.index, dev.name});
   }
 
   init_status_ = Status::OK();
@@ -883,9 +922,8 @@ std::string OpenCLBackend::BuildOptions(const DeviceContext& dev, const std::str
     options += " -D LATTICE_HAS_FP16";
   }
 
-  if (IsTrueEnv("LATTICE_OPENCL_VERBOSE")) {
-    std::cerr << "* Device #" << (dev.desc.index + 1) << ": build_options '" << options << "'\n";
-  }
+  LogBackend({LogLevel::kDebug, BackendType::kOpenCL, BackendErrorKind::kBuild,
+              "build_options " + options, "build_options", dev.desc.index, dev.desc.name});
 
   return options;
 }
@@ -905,13 +943,27 @@ std::string OpenCLBackend::CacheKey(const DeviceContext& dev, const std::string&
 StatusOr<cl_program> OpenCLBackend::BuildOrLoadProgram(DeviceContext& dev,
                                                        const std::string& source,
                                                        const std::string& build_options,
-                                                       const std::string& cache_key) const {
+                                                       const std::string& cache_key,
+                                                       const std::string& kernel_name) const {
   auto it = dev.program_cache.find(cache_key);
   if (it != dev.program_cache.end()) {
     return it->second;
   }
   CacheStore& store = OpenclCacheStore();
   ::lattice::runtime::CacheKey store_key{cache_key, dev.fingerprint};
+
+  KernelTrace trace;
+  trace.backend = BackendType::kOpenCL;
+  trace.kernel_name = kernel_name;
+  trace.build_options = build_options;
+  trace.source = source;
+  trace.device_index = dev.desc.index;
+  trace.device_name = dev.desc.name;
+  std::string trace_path;
+  if (TraceKernelSource(trace, &trace_path)) {
+    LogBackend({LogLevel::kTrace, BackendType::kOpenCL, BackendErrorKind::kBuild,
+                "kernel trace written", "build", dev.desc.index, dev.desc.name, 0, "", trace_path});
+  }
   std::string binary;
   std::string error;
   if (store.ReadBinary(store_key, &binary, &error)) {
@@ -935,7 +987,8 @@ StatusOr<cl_program> OpenCLBackend::BuildOrLoadProgram(DeviceContext& dev,
   cl_int err = CL_SUCCESS;
   cl_program program = loader_.clCreateProgramWithSource(dev.context, 1, &src, nullptr, &err);
   if (err != CL_SUCCESS || !program) {
-    return Status::Internal("clCreateProgramWithSource failed: " + gpu::OpenCLErrorString(err));
+    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kCompile,
+                        "clCreateProgramWithSource failed: " + gpu::OpenCLErrorString(err));
   }
 
   err = loader_.clBuildProgram(program, 1, &dev.device, build_options.c_str(), nullptr, nullptr);
@@ -949,7 +1002,8 @@ StatusOr<cl_program> OpenCLBackend::BuildOrLoadProgram(DeviceContext& dev,
       if (!log.empty() && log.back() == '\0') log.pop_back();
     }
     loader_.clReleaseProgram(program);
-    return Status::Internal("OpenCL build failed: " + log);
+    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kBuild,
+                        "OpenCL build failed: " + log);
   }
 
   size_t bin_size = 0;

@@ -1,5 +1,6 @@
 #include "test_util.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
 
@@ -87,6 +88,14 @@ const rt::Value& Unwrap(const std::optional<rt::Value>& v, const std::string& na
   ExpectTrue(v.has_value(), name + "_present", ctx);
   static rt::Value empty{};
   return v.has_value() ? v.value() : empty;
+}
+
+std::filesystem::path MakeTempDir(const std::string& prefix) {
+  const auto base = std::filesystem::temp_directory_path();
+  const auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+  std::filesystem::path path = base / (prefix + std::to_string(now));
+  std::filesystem::create_directories(path);
+  return path;
 }
 
 }  // namespace test

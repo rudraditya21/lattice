@@ -115,8 +115,8 @@ class HipBackend final : public Backend {
                        const std::string& build_options, const std::string& source) const;
   StatusOr<gpu::hipModule_t> BuildOrLoadModule(DeviceContext& dev, const std::string& source,
                                                const std::string& build_options,
-                                               const std::string& cache_key,
-                                               bool source_is_binary) const;
+                                               const std::string& cache_key, bool source_is_binary,
+                                               const std::string& kernel_name) const;
 
   mutable std::vector<DeviceContext> devices_;
   mutable std::unordered_map<gpu::hipDeviceptr_t, size_t> allocations_;

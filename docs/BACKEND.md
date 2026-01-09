@@ -28,6 +28,13 @@
   - `_DEVICE_INDICES=<list>` selects indices (e.g. `0,2-4`).
   - `_DEVICE_MASK=<bitmask>` selects indices by bitmask order (e.g. `1010`).
   - `_DEVICE_ORDER=<list>` reorders selected indices (e.g. `2,0`).
+- Structured logging is available via:
+  - `LATTICE_LOG_LEVEL=error|warn|info|debug|trace` (enables structured logs).
+  - `LATTICE_LOG_FORMAT=text|json` (default `text`).
+  - `LATTICE_LOG=1` enables info-level logs with default format.
+- Kernel source tracing is available via:
+  - `LATTICE_TRACE_KERNELS=1` to emit kernel sources/build options into a trace directory.
+  - `LATTICE_TRACE_DIR=<path>` to override the trace directory (defaults to `LATTICE_CACHE_DIR/trace`).
 
 ### OpenCL
 - `LATTICE_OPENCL_BUILD_OPTIONS=<opts>` appends OpenCL compiler options.

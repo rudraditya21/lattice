@@ -19,6 +19,8 @@ void RunTensorTests(TestContext* ctx);
 void RunErrorLocationTests(TestContext* ctx);
 void RunBackendTests(TestContext* ctx);
 void RunBackendEdgeTests(TestContext* ctx);
+void RunBackendErrorTests(TestContext* ctx);
+void RunBackendLogTests(TestContext* ctx);
 void RunAbiTests(TestContext* ctx);
 void RunDeviceSelectorTests(TestContext* ctx);
 void RunDeviceQuirksTests(TestContext* ctx);
@@ -44,6 +46,8 @@ int main() {
   test::RunErrorLocationTests(&ctx);
   test::RunBackendTests(&ctx);
   test::RunBackendEdgeTests(&ctx);
+  test::RunBackendErrorTests(&ctx);
+  test::RunBackendLogTests(&ctx);
   test::RunAbiTests(&ctx);
   test::RunDeviceSelectorTests(&ctx);
   test::RunDeviceQuirksTests(&ctx);

@@ -2,6 +2,7 @@
 #define LATTICE_TESTS_TEST_UTIL_H_
 
 #include <cmath>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -51,6 +52,7 @@ void TypeCheckStmt(const std::string& stmt);
 // Helper to unwrap optional values in tests with a presence check.
 const rt::Value& Unwrap(const std::optional<rt::Value>& v, const std::string& name,
                         TestContext* ctx);
+std::filesystem::path MakeTempDir(const std::string& prefix);
 
 }  // namespace test
 
