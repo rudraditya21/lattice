@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "runtime/backends/cache_store.h"
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
 #include "runtime/backends/hip_abi.h"
@@ -53,11 +54,15 @@ std::string Hex64(uint64_t value) {
   return out.str();
 }
 
-std::filesystem::path DefaultCacheDir() {
-  if (const char* env = std::getenv("LATTICE_CACHE_DIR")) {
-    return std::filesystem::path(env);
+int CapabilityToInt(CapabilityStatus status) {
+  switch (status) {
+    case CapabilityStatus::kYes:
+      return 1;
+    case CapabilityStatus::kNo:
+      return 0;
+    default:
+      return -1;
   }
-  return std::filesystem::current_path() / ".lattice_cache";
 }
 
 bool ReadFile(const std::filesystem::path& path, std::string* out, std::string* error) {
@@ -71,25 +76,6 @@ bool ReadFile(const std::filesystem::path& path, std::string* out, std::string* 
   std::ostringstream ss;
   ss << in.rdbuf();
   *out = ss.str();
-  return true;
-}
-
-bool WriteFile(const std::filesystem::path& path, const void* data, size_t size,
-               std::string* error) {
-  std::ofstream out(path, std::ios::binary);
-  if (!out) {
-    if (error) {
-      *error = "Failed to open file for write: " + path.string();
-    }
-    return false;
-  }
-  out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
-  if (!out) {
-    if (error) {
-      *error = "Failed to write file: " + path.string();
-    }
-    return false;
-  }
   return true;
 }
 
@@ -120,6 +106,30 @@ std::vector<std::string> SplitOptions(const std::string& options) {
   }
   if (!current.empty()) out.push_back(current);
   return out;
+}
+
+DeviceMetadata BuildDeviceMetadata(const HipDeviceDesc& desc, const DeviceCapabilities& caps) {
+  DeviceMetadata meta;
+  meta.backend = "hip";
+  meta.index = desc.index;
+  meta.name = desc.name;
+  meta.vendor = desc.vendor;
+  meta.driver_version = desc.driver_version;
+  meta.runtime_version = desc.runtime_version;
+  meta.total_mem = desc.total_mem;
+  meta.multiprocessor_count = desc.multiprocessor_count;
+  meta.clock_khz = desc.clock_khz;
+  meta.is_gpu = caps.is_gpu;
+  meta.is_cpu = caps.is_cpu;
+  meta.is_accel = false;
+  meta.fp16 = CapabilityToInt(caps.fp16);
+  meta.fp64 = CapabilityToInt(caps.fp64);
+  return meta;
+}
+
+CacheStore& HipCacheStore() {
+  static CacheStore store("hip");
+  return store;
 }
 
 class HipEvent final : public Event {
@@ -161,6 +171,7 @@ struct HipBackend::DeviceContext {
   gpu::hipStream_t stream = nullptr;
   HipDeviceDesc desc;
   DeviceCapabilities caps;
+  std::string fingerprint;
   std::unordered_map<std::string, gpu::hipModule_t> module_cache;
 };
 
@@ -659,6 +670,9 @@ Status HipBackend::EnsureInitialized() const {
     if (dev.caps.quirks.flags & kDisableFp16) dev.caps.fp16 = CapabilityStatus::kNo;
     if (dev.caps.quirks.flags & kDisableFp64) dev.caps.fp64 = CapabilityStatus::kNo;
 
+    DeviceMetadata meta = BuildDeviceMetadata(dev.desc, dev.caps);
+    dev.fingerprint = DeviceFingerprint(meta);
+
     DeviceIdentity identity;
     identity.index = i;
     identity.name = dev.desc.name;
@@ -724,6 +738,22 @@ Status HipBackend::EnsureInitialized() const {
   if (devices_.empty()) {
     init_status_ = Status::Unavailable("No HIP devices initialized");
     return init_status_;
+  }
+
+  {
+    DeviceMetadataStore meta_store;
+    std::string meta_error;
+    for (const auto& dev : devices_) {
+      const DeviceMetadata meta = BuildDeviceMetadata(dev.desc, dev.caps);
+      if (!meta_store.Write(meta, &meta_error)) {
+        if (const char* verbose = std::getenv("LATTICE_HIP_VERBOSE")) {
+          if (verbose[0] != '\0') {
+            std::cerr << "* Failed to persist HIP metadata: " << meta_error << "\n";
+          }
+        }
+        meta_error.clear();
+      }
+    }
   }
 
   if (const char* verbose = std::getenv("LATTICE_HIP_VERBOSE")) {
@@ -807,10 +837,8 @@ StatusOr<gpu::hipModule_t> HipBackend::BuildOrLoadModule(DeviceContext& dev,
     return it->second;
   }
 
-  std::filesystem::path cache_dir = DefaultCacheDir();
-  std::error_code ec;
-  std::filesystem::create_directories(cache_dir, ec);
-  std::filesystem::path cache_path = cache_dir / (cache_key + ".bin");
+  CacheStore& store = HipCacheStore();
+  ::lattice::runtime::CacheKey store_key{cache_key, dev.fingerprint};
 
   auto load_module = [&](const std::string& image) -> StatusOr<gpu::hipModule_t> {
     if (!loader_.hipModuleLoadData) {
@@ -828,10 +856,10 @@ StatusOr<gpu::hipModule_t> HipBackend::BuildOrLoadModule(DeviceContext& dev,
     return module;
   };
 
-  if (std::filesystem::exists(cache_path)) {
+  {
     std::string cached;
     std::string error;
-    if (ReadFile(cache_path, &cached, &error)) {
+    if (store.ReadBinary(store_key, &cached, &error)) {
       auto module_or = load_module(cached);
       if (module_or.ok()) return module_or;
     }
@@ -884,7 +912,7 @@ StatusOr<gpu::hipModule_t> HipBackend::BuildOrLoadModule(DeviceContext& dev,
   }
 
   std::string error;
-  WriteFile(cache_path, image.data(), image.size(), &error);
+  store.WriteBinary(store_key, image.data(), image.size(), &error);
 
   return load_module(image);
 }

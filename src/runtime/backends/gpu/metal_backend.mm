@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "runtime/backends/cache_store.h"
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
 #include "runtime/backends/metal_abi.h"
@@ -39,6 +40,17 @@ std::string Hex64(uint64_t value) {
   std::ostringstream out;
   out << std::hex << std::setw(16) << std::setfill('0') << value;
   return out.str();
+}
+
+int CapabilityToInt(CapabilityStatus status) {
+  switch (status) {
+    case CapabilityStatus::kYes:
+      return 1;
+    case CapabilityStatus::kNo:
+      return 0;
+    default:
+      return -1;
+  }
 }
 
 bool ReadFile(const std::filesystem::path& path, std::string* out, std::string* error) {
@@ -80,6 +92,22 @@ bool QueryBoolSelector(id obj, SEL sel, bool* out) {
   return true;
 }
 
+DeviceMetadata BuildDeviceMetadata(const MetalDeviceDesc& desc, const DeviceCapabilities& caps) {
+  DeviceMetadata meta;
+  meta.backend = "metal";
+  meta.index = desc.index;
+  meta.name = desc.name;
+  meta.vendor = desc.vendor;
+  meta.driver_version = desc.driver_version;
+  meta.runtime_version = desc.runtime_version;
+  meta.is_gpu = caps.is_gpu;
+  meta.is_cpu = caps.is_cpu;
+  meta.is_accel = false;
+  meta.fp16 = CapabilityToInt(caps.fp16);
+  meta.fp64 = CapabilityToInt(caps.fp64);
+  return meta;
+}
+
 }  // namespace
 
 struct MetalBackend::DeviceContext {
@@ -87,6 +115,7 @@ struct MetalBackend::DeviceContext {
   id<MTLCommandQueue> queue = nil;
   MetalDeviceDesc desc;
   DeviceCapabilities caps;
+  std::string fingerprint;
   std::unordered_map<std::string, id<MTLComputePipelineState>> pipeline_cache;
 };
 
@@ -532,6 +561,10 @@ Status MetalBackend::EnsureInitialized() const {
       ctx.caps.is_software = (ctx.caps.quirks.flags & kSoftwareEmulation) != 0;
       if (ctx.caps.quirks.flags & kDisableFp16) ctx.caps.fp16 = CapabilityStatus::kNo;
       if (ctx.caps.quirks.flags & kDisableFp64) ctx.caps.fp64 = CapabilityStatus::kNo;
+
+      DeviceMetadata meta = BuildDeviceMetadata(ctx.desc, ctx.caps);
+      ctx.fingerprint = DeviceFingerprint(meta);
+
       if (ctx.caps.quirks.disabled) {
         if (const char* verbose = std::getenv("LATTICE_METAL_VERBOSE")) {
           if (verbose[0] != '\0') {
@@ -557,6 +590,22 @@ Status MetalBackend::EnsureInitialized() const {
   if (devices_.empty()) {
     init_status_ = Status::Unavailable("No Metal devices initialized");
     return init_status_;
+  }
+
+  {
+    DeviceMetadataStore meta_store;
+    std::string meta_error;
+    for (const auto& dev : devices_) {
+      const DeviceMetadata meta = BuildDeviceMetadata(dev.desc, dev.caps);
+      if (!meta_store.Write(meta, &meta_error)) {
+        if (const char* verbose = std::getenv("LATTICE_METAL_VERBOSE")) {
+          if (verbose[0] != '\0') {
+            std::cerr << "* Failed to persist Metal metadata: " << meta_error << "\n";
+          }
+        }
+        meta_error.clear();
+      }
+    }
   }
 
   if (const char* verbose = std::getenv("LATTICE_METAL_VERBOSE")) {

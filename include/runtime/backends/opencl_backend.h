@@ -124,7 +124,6 @@ class OpenCLBackend final : public Backend {
   std::string DeviceInfoString(cl_device_id device, cl_device_info param) const;
   std::string PlatformInfoString(cl_platform_id platform, cl_platform_info param) const;
   std::string BuildOptions(const DeviceContext& dev, const std::string& extra) const;
-  int DeviceIndex(const DeviceContext& dev) const;
   std::string CacheKey(const DeviceContext& dev, const std::string& kernel_name,
                        const std::string& build_options, const std::string& source) const;
   StatusOr<cl_program> BuildOrLoadProgram(DeviceContext& dev, const std::string& source,

@@ -9,7 +9,13 @@
 - `LATTICE_BACKEND=auto|cpu|opencl|cuda|hip|metal` selects a preferred backend; if unavailable, Lattice falls back to CPU. `auto` probes CUDA → HIP → Metal → OpenCL → CPU.
 - `LATTICE_KERNEL_DIR=<path>` overrides the kernel search directory (defaults to `./OpenCL`, `./CUDA`, `./HIP`, or `./Metal` depending on backend).
 - `LATTICE_CACHE_DIR=<path>` overrides the kernel cache directory (defaults to `./.lattice_cache`).
+- `LATTICE_CACHE_DISABLE=1` disables the persistent kernel cache (in-memory caches remain).
+- `LATTICE_CACHE_MAX_BYTES=<bytes|K|M|G>` caps total cache size (default 512M).
+- `LATTICE_CACHE_MAX_ENTRIES=<count>` caps number of cached binaries (default 4096).
+- `LATTICE_CACHE_MAX_AGE_DAYS=<days>` evicts entries older than the age threshold (default 30).
+- `LATTICE_CACHE_UPDATE_ATIME=0` disables access-time updates on cache hits.
 - Kernel cache is on by default (per-device, per-build-options). Metal uses an in-memory pipeline cache per run.
+- Device metadata is persisted under `LATTICE_CACHE_DIR/devices` as key/value text files keyed by a device fingerprint.
 - `LATTICE_GPU_SMOKE_TEST=1` runs the vector-add smoke test for the selected GPU backend during `backend_tests`.
 - All detected devices for the active backend are initialized and kept active.
 - `LATTICE_DEVICE_BLACKLIST=<pattern[,pattern...]>` skips devices whose name/vendor/driver contains any pattern (case-insensitive).

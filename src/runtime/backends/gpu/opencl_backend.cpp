@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "runtime/backends/cache_store.h"
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
 #include "runtime/backends/gpu/opencl_loader.h"
@@ -55,11 +56,15 @@ std::string Hex64(uint64_t value) {
   return out.str();
 }
 
-std::filesystem::path DefaultCacheDir() {
-  if (const char* env = std::getenv("LATTICE_CACHE_DIR")) {
-    return std::filesystem::path(env);
+int CapabilityToInt(CapabilityStatus status) {
+  switch (status) {
+    case CapabilityStatus::kYes:
+      return 1;
+    case CapabilityStatus::kNo:
+      return 0;
+    default:
+      return -1;
   }
-  return std::filesystem::current_path() / ".lattice_cache";
 }
 
 bool ReadFile(const std::filesystem::path& path, std::string* out, std::string* error) {
@@ -73,25 +78,6 @@ bool ReadFile(const std::filesystem::path& path, std::string* out, std::string* 
   std::ostringstream ss;
   ss << in.rdbuf();
   *out = ss.str();
-  return true;
-}
-
-bool WriteFile(const std::filesystem::path& path, const void* data, size_t size,
-               std::string* error) {
-  std::ofstream out(path, std::ios::binary);
-  if (!out) {
-    if (error) {
-      *error = "Failed to open file for write: " + path.string();
-    }
-    return false;
-  }
-  out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
-  if (!out) {
-    if (error) {
-      *error = "Failed to write file: " + path.string();
-    }
-    return false;
-  }
   return true;
 }
 
@@ -114,6 +100,31 @@ std::string DeviceTypeString(cl_device_type type) {
   if (type & CL_DEVICE_TYPE_CPU) return "CPU";
   if (type & CL_DEVICE_TYPE_ACCELERATOR) return "ACCELERATOR";
   return "UNKNOWN";
+}
+
+DeviceMetadata BuildDeviceMetadata(const OpenCLDeviceDesc& desc, const DeviceCapabilities& caps) {
+  DeviceMetadata meta;
+  meta.backend = "opencl";
+  meta.index = desc.index;
+  meta.name = desc.name;
+  meta.vendor = desc.vendor;
+  meta.driver_version = desc.driver_version;
+  meta.runtime_version = desc.runtime_version;
+  meta.device_version = desc.device_version;
+  meta.platform_name = desc.platform_name;
+  meta.platform_vendor = desc.platform_vendor;
+  meta.platform_version = desc.platform_version;
+  meta.is_cpu = caps.is_cpu;
+  meta.is_gpu = caps.is_gpu;
+  meta.is_accel = (desc.type & CL_DEVICE_TYPE_ACCELERATOR) != 0;
+  meta.fp16 = CapabilityToInt(caps.fp16);
+  meta.fp64 = CapabilityToInt(caps.fp64);
+  return meta;
+}
+
+CacheStore& OpenclCacheStore() {
+  static CacheStore store("opencl");
+  return store;
 }
 
 std::string OpenclCStd(const std::string& version) {
@@ -178,6 +189,7 @@ struct OpenCLBackend::DeviceContext {
   cl_command_queue queue = nullptr;
   OpenCLDeviceDesc desc;
   DeviceCapabilities caps;
+  std::string fingerprint;
   std::unordered_map<std::string, cl_program> program_cache;
 };
 
@@ -706,6 +718,9 @@ Status OpenCLBackend::EnsureInitialized() const {
         ctx.caps.fp64 = CapabilityStatus::kNo;
       }
 
+      DeviceMetadata meta = BuildDeviceMetadata(ctx.desc, ctx.caps);
+      ctx.fingerprint = DeviceFingerprint(meta);
+
       DeviceIdentity identity;
       identity.index = device_index;
       identity.name = ctx.desc.name;
@@ -764,6 +779,18 @@ Status OpenCLBackend::EnsureInitialized() const {
       init_status_ = Status::Unavailable("No OpenCL devices found");
     }
     return init_status_;
+  }
+
+  {
+    DeviceMetadataStore meta_store;
+    std::string meta_error;
+    for (const auto& dev : devices_) {
+      const DeviceMetadata meta = BuildDeviceMetadata(dev.desc, dev.caps);
+      if (!meta_store.Write(meta, &meta_error) && IsTrueEnv("LATTICE_OPENCL_VERBOSE")) {
+        std::cerr << "* Failed to persist OpenCL metadata: " << meta_error << "\n";
+        meta_error.clear();
+      }
+    }
   }
 
   if (IsTrueEnv("LATTICE_OPENCL_VERBOSE")) {
@@ -863,13 +890,6 @@ std::string OpenCLBackend::BuildOptions(const DeviceContext& dev, const std::str
   return options;
 }
 
-int OpenCLBackend::DeviceIndex(const DeviceContext& dev) const {
-  for (size_t i = 0; i < devices_.size(); ++i) {
-    if (devices_[i].device == dev.device) return static_cast<int>(i);
-  }
-  return 0;
-}
-
 std::string OpenCLBackend::CacheKey(const DeviceContext& dev, const std::string& kernel_name,
                                     const std::string& build_options,
                                     const std::string& source) const {
@@ -890,29 +910,24 @@ StatusOr<cl_program> OpenCLBackend::BuildOrLoadProgram(DeviceContext& dev,
   if (it != dev.program_cache.end()) {
     return it->second;
   }
-  auto cache_dir = DefaultCacheDir();
-  std::error_code ec;
-  std::filesystem::create_directories(cache_dir, ec);
-
-  const std::filesystem::path cache_path = cache_dir / (cache_key + ".bin");
-  if (std::filesystem::exists(cache_path)) {
-    std::string binary;
-    std::string error;
-    if (ReadFile(cache_path, &binary, &error)) {
-      const unsigned char* bin_ptr = reinterpret_cast<const unsigned char*>(binary.data());
-      size_t bin_size = binary.size();
-      cl_int status = CL_SUCCESS;
-      cl_program program = loader_.clCreateProgramWithBinary(dev.context, 1, &dev.device, &bin_size,
-                                                             &bin_ptr, nullptr, &status);
-      if (status == CL_SUCCESS && program) {
-        cl_int err = loader_.clBuildProgram(program, 1, &dev.device, build_options.c_str(), nullptr,
-                                            nullptr);
-        if (err == CL_SUCCESS) {
-          dev.program_cache[cache_key] = program;
-          return program;
-        }
-        loader_.clReleaseProgram(program);
+  CacheStore& store = OpenclCacheStore();
+  ::lattice::runtime::CacheKey store_key{cache_key, dev.fingerprint};
+  std::string binary;
+  std::string error;
+  if (store.ReadBinary(store_key, &binary, &error)) {
+    const unsigned char* bin_ptr = reinterpret_cast<const unsigned char*>(binary.data());
+    size_t bin_size = binary.size();
+    cl_int status = CL_SUCCESS;
+    cl_program program = loader_.clCreateProgramWithBinary(dev.context, 1, &dev.device, &bin_size,
+                                                           &bin_ptr, nullptr, &status);
+    if (status == CL_SUCCESS && program) {
+      cl_int err =
+          loader_.clBuildProgram(program, 1, &dev.device, build_options.c_str(), nullptr, nullptr);
+      if (err == CL_SUCCESS) {
+        dev.program_cache[cache_key] = program;
+        return program;
       }
+      loader_.clReleaseProgram(program);
     }
   }
 
@@ -946,8 +961,7 @@ StatusOr<cl_program> OpenCLBackend::BuildOrLoadProgram(DeviceContext& dev,
     err = loader_.clGetProgramInfo(program, CL_PROGRAM_BINARIES, sizeof(unsigned char*), &bin_ptr,
                                    nullptr);
     if (err == CL_SUCCESS) {
-      std::string error;
-      WriteFile(cache_path, bin.data(), bin.size(), &error);
+      store.WriteBinary(store_key, bin.data(), bin.size(), &error);
     }
   }
 
