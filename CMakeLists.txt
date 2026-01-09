@@ -82,6 +82,7 @@ add_executable(lattice_tests
     tests/runtime/cache_store_tests.cpp
     tests/runtime/destructuring_tests.cpp
     tests/runtime/error_location_tests.cpp
+    tests/runtime/integration_tests.cpp
     tests/runtime/type_checker_tests.cpp
     tests/builtin/builtin_tests.cpp
     tests/builtin/print_tests.cpp

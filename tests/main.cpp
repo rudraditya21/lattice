@@ -23,6 +23,7 @@ void RunAbiTests(TestContext* ctx);
 void RunDeviceSelectorTests(TestContext* ctx);
 void RunDeviceQuirksTests(TestContext* ctx);
 void RunCacheStoreTests(TestContext* ctx);
+void RunIntegrationTests(TestContext* ctx);
 }  // namespace test
 
 int main() {
@@ -47,6 +48,7 @@ int main() {
   test::RunDeviceSelectorTests(&ctx);
   test::RunDeviceQuirksTests(&ctx);
   test::RunCacheStoreTests(&ctx);
+  test::RunIntegrationTests(&ctx);
 
   std::cout << "[RESULT] passed=" << ctx.passed << " failed=" << ctx.failed << "\n";
   return ctx.failed == 0 ? 0 : 1;
