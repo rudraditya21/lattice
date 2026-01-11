@@ -36,6 +36,7 @@ struct KernelTrace {
 
 std::string FormatLogLine(const LogRecord& record, LogFormat format);
 void LogBackend(const LogRecord& record);
+bool BackendVerboseEnabled(BackendType backend);
 bool TraceKernelSource(const KernelTrace& trace, std::string* out_path);
 
 }  // namespace lattice::runtime

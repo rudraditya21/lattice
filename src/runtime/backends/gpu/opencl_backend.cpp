@@ -292,11 +292,11 @@ std::string OpenCLBackend::Name() const {
 BackendCapabilities OpenCLBackend::Capabilities() const {
   BackendCapabilities caps;
   caps.supports_dense = true;
-  caps.supports_sparse = false;
-  caps.supports_ragged = false;
-  caps.supports_fft = false;
-  caps.supports_blas = false;
-  caps.supports_conv = false;
+  caps.supports_sparse = true;
+  caps.supports_ragged = true;
+  caps.supports_fft = true;
+  caps.supports_blas = true;
+  caps.supports_conv = true;
   caps.supports_rng = false;
   caps.supports_events = true;
   caps.supported_dtypes = {DType::kF16, DType::kBF16, DType::kF32,

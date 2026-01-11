@@ -1,0 +1,38 @@
+#include "lattice_kernel_common.h"
+
+kernel void lattice_qr(const device scalar_t* a [[buffer(0)]], device scalar_t* q [[buffer(1)]],
+                       device scalar_t* r [[buffer(2)]], device int* status [[buffer(3)]],
+                       constant lattice_qr_params_t& params [[buffer(4)]],
+                       uint tid [[thread_position_in_grid]]) {
+  if (tid != 0) return;
+  if (status) status[0] = 0;
+  ulong m = params.m;
+  ulong n = params.n;
+  for (ulong i = 0; i < m * n; ++i) q[i] = a[i];
+  for (ulong i = 0; i < n * n; ++i) r[i] = (scalar_t)0;
+  for (ulong j = 0; j < n; ++j) {
+    for (ulong k = 0; k < j; ++k) {
+      scalar_t dot = (scalar_t)0;
+      for (ulong i = 0; i < m; ++i) {
+        dot += q[i * n + j] * q[i * n + k];
+      }
+      r[k * n + j] = dot;
+      for (ulong i = 0; i < m; ++i) {
+        q[i * n + j] -= dot * q[i * n + k];
+      }
+    }
+    scalar_t norm = (scalar_t)0;
+    for (ulong i = 0; i < m; ++i) {
+      norm += q[i * n + j] * q[i * n + j];
+    }
+    norm = lattice_sqrt(norm);
+    if (norm == (scalar_t)0) {
+      if (status) status[0] = 1;
+      return;
+    }
+    r[j * n + j] = norm;
+    for (ulong i = 0; i < m; ++i) {
+      q[i * n + j] /= norm;
+    }
+  }
+}

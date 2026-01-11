@@ -7,10 +7,10 @@
 namespace lattice::runtime::opencl {
 
 constexpr uint32_t kAbiVersionMajor = 1;
-constexpr uint32_t kAbiVersionMinor = 0;
+constexpr uint32_t kAbiVersionMinor = 1;
 constexpr uint32_t kAbiVersion = (kAbiVersionMajor << 16) | kAbiVersionMinor;
 constexpr uint32_t kAbiVersionMinMajor = 1;
-constexpr uint32_t kAbiVersionMinMinor = 0;
+constexpr uint32_t kAbiVersionMinMinor = 1;
 constexpr uint32_t kAbiVersionMin = (kAbiVersionMinMajor << 16) | kAbiVersionMinMinor;
 
 constexpr bool IsAbiCompatible(uint32_t version) {
@@ -37,11 +37,19 @@ enum class DTypeCode : uint32_t {
   kU32 = 4,
 };
 
+constexpr uint32_t kMaxTensorDims = 8;
+
 // Fixed ABI: kernels receive input buffers first, then a params struct by value.
 struct ElemwiseParams {
   uint64_t count = 0;
   uint32_t op = 0;
   uint32_t dtype = 0;
+  uint32_t ndim = 0;
+  uint32_t flags = 0;
+  uint64_t shape[kMaxTensorDims] = {};
+  uint64_t out_strides[kMaxTensorDims] = {};
+  uint64_t lhs_strides[kMaxTensorDims] = {};
+  uint64_t rhs_strides[kMaxTensorDims] = {};
 };
 
 struct ReduceParams {
@@ -62,10 +70,79 @@ struct MatmulParams {
   uint32_t flags = 0;
 };
 
-static_assert(sizeof(ElemwiseParams) == 16, "ElemwiseParams size mismatch");
+struct TransposeParams {
+  uint64_t rows = 0;
+  uint64_t cols = 0;
+};
+
+struct Conv2dParams {
+  uint64_t in_h = 0;
+  uint64_t in_w = 0;
+  uint64_t k_h = 0;
+  uint64_t k_w = 0;
+  uint64_t out_h = 0;
+  uint64_t out_w = 0;
+};
+
+struct Pool2dParams {
+  uint64_t in_h = 0;
+  uint64_t in_w = 0;
+  uint64_t k_h = 0;
+  uint64_t k_w = 0;
+  uint64_t out_h = 0;
+  uint64_t out_w = 0;
+};
+
+struct FftParams {
+  uint64_t n = 0;
+};
+
+struct SolveParams {
+  uint64_t n = 0;
+  uint64_t rhs_cols = 0;
+};
+
+struct LuParams {
+  uint64_t n = 0;
+};
+
+struct QrParams {
+  uint64_t m = 0;
+  uint64_t n = 0;
+};
+
+struct SvdParams {
+  uint64_t m = 0;
+  uint64_t n = 0;
+};
+
+struct QuantileParams {
+  uint64_t count = 0;
+  float q = 0.0f;
+  uint32_t pad = 0;
+};
+
+struct CorrelationParams {
+  uint64_t count = 0;
+};
+
+struct RegressionParams {
+  uint64_t count = 0;
+};
+
+static_assert(sizeof(ElemwiseParams) == 280, "ElemwiseParams size mismatch");
 static_assert(offsetof(ElemwiseParams, count) == 0, "ElemwiseParams.count offset mismatch");
 static_assert(offsetof(ElemwiseParams, op) == 8, "ElemwiseParams.op offset mismatch");
 static_assert(offsetof(ElemwiseParams, dtype) == 12, "ElemwiseParams.dtype offset mismatch");
+static_assert(offsetof(ElemwiseParams, ndim) == 16, "ElemwiseParams.ndim offset mismatch");
+static_assert(offsetof(ElemwiseParams, flags) == 20, "ElemwiseParams.flags offset mismatch");
+static_assert(offsetof(ElemwiseParams, shape) == 24, "ElemwiseParams.shape offset mismatch");
+static_assert(offsetof(ElemwiseParams, out_strides) == 24 + 8 * kMaxTensorDims,
+              "ElemwiseParams.out_strides offset mismatch");
+static_assert(offsetof(ElemwiseParams, lhs_strides) == 24 + 16 * kMaxTensorDims,
+              "ElemwiseParams.lhs_strides offset mismatch");
+static_assert(offsetof(ElemwiseParams, rhs_strides) == 24 + 24 * kMaxTensorDims,
+              "ElemwiseParams.rhs_strides offset mismatch");
 
 static_assert(sizeof(ReduceParams) == 24, "ReduceParams size mismatch");
 static_assert(offsetof(ReduceParams, count) == 0, "ReduceParams.count offset mismatch");
@@ -82,6 +159,18 @@ static_assert(offsetof(MatmulParams, ldb) == 32, "MatmulParams.ldb offset mismat
 static_assert(offsetof(MatmulParams, ldc) == 40, "MatmulParams.ldc offset mismatch");
 static_assert(offsetof(MatmulParams, dtype) == 48, "MatmulParams.dtype offset mismatch");
 static_assert(offsetof(MatmulParams, flags) == 52, "MatmulParams.flags offset mismatch");
+
+static_assert(sizeof(TransposeParams) == 16, "TransposeParams size mismatch");
+static_assert(sizeof(Conv2dParams) == 48, "Conv2dParams size mismatch");
+static_assert(sizeof(Pool2dParams) == 48, "Pool2dParams size mismatch");
+static_assert(sizeof(FftParams) == 8, "FftParams size mismatch");
+static_assert(sizeof(SolveParams) == 16, "SolveParams size mismatch");
+static_assert(sizeof(LuParams) == 8, "LuParams size mismatch");
+static_assert(sizeof(QrParams) == 16, "QrParams size mismatch");
+static_assert(sizeof(SvdParams) == 16, "SvdParams size mismatch");
+static_assert(sizeof(QuantileParams) == 16, "QuantileParams size mismatch");
+static_assert(sizeof(CorrelationParams) == 8, "CorrelationParams size mismatch");
+static_assert(sizeof(RegressionParams) == 8, "RegressionParams size mismatch");
 
 }  // namespace lattice::runtime::opencl
 

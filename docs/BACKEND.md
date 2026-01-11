@@ -81,7 +81,21 @@
 
 ### Kernel Argument Order & Alignment
 - Order is fixed across backends: all input/output buffers first, then a single params struct passed by value (or by `constant` reference in Metal).
-- Params structs are 8-byte aligned and have fixed sizes: `ElemwiseParams`=16 bytes, `ReduceParams`=24 bytes, `MatmulParams`=56 bytes.
+- Params structs are 8-byte aligned and have fixed sizes:
+  - `ElemwiseParams`=280 bytes (includes broadcast metadata with `kMaxTensorDims=8`).
+  - `ReduceParams`=24 bytes.
+  - `MatmulParams`=56 bytes.
+  - `TransposeParams`=16 bytes.
+  - `Conv2dParams`=48 bytes.
+  - `Pool2dParams`=48 bytes.
+  - `FftParams`=8 bytes.
+  - `SolveParams`=16 bytes.
+  - `LuParams`=8 bytes.
+  - `QrParams`=16 bytes.
+  - `SvdParams`=16 bytes.
+  - `QuantileParams`=16 bytes.
+  - `CorrelationParams`=8 bytes.
+  - `RegressionParams`=8 bytes.
 - OpenCL: `__kernel void op(__global T* in0, ..., lattice_*_params_t params)`.
 - CUDA/HIP: `extern "C" __global__ void op(const T* in0, ..., lattice_*_params_t params)`.
 - Metal: `kernel void op(const device T* in0 [[buffer(0)]], ..., constant lattice_*_params_t& params [[buffer(N)]])`.

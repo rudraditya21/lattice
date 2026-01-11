@@ -1,14 +1,14 @@
 #include "runtime/backends/metal_backend.h"
 
+#import <CoreFoundation/CoreFoundation.h>
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
-#import <CoreFoundation/CoreFoundation.h>
 #import <objc/message.h>
 
 #include <algorithm>
 #include <cctype>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -175,18 +175,22 @@ MetalBackend::~MetalBackend() {
   devices_.clear();
 }
 
-BackendType MetalBackend::Type() const { return BackendType::kMetal; }
+BackendType MetalBackend::Type() const {
+  return BackendType::kMetal;
+}
 
-std::string MetalBackend::Name() const { return "Metal"; }
+std::string MetalBackend::Name() const {
+  return "Metal";
+}
 
 BackendCapabilities MetalBackend::Capabilities() const {
   BackendCapabilities caps;
   caps.supports_dense = true;
-  caps.supports_sparse = false;
-  caps.supports_ragged = false;
-  caps.supports_fft = false;
-  caps.supports_blas = false;
-  caps.supports_conv = false;
+  caps.supports_sparse = true;
+  caps.supports_ragged = true;
+  caps.supports_fft = true;
+  caps.supports_blas = true;
+  caps.supports_conv = true;
   caps.supports_rng = true;
   caps.supports_events = true;
   caps.supported_dtypes = {DType::kF32, DType::kF64, DType::kI32, DType::kU32};
@@ -293,7 +297,9 @@ Status MetalBackend::DeallocatePinned(const Allocation& alloc) const {
   return pool->Release(reinterpret_cast<uintptr_t>(alloc.ptr));
 }
 
-int MetalBackend::NumThreads() const { return 1; }
+int MetalBackend::NumThreads() const {
+  return 1;
+}
 
 size_t MetalBackend::OutstandingAllocs() const {
   size_t total = 0;
@@ -321,9 +327,13 @@ BackendMemoryStats MetalBackend::MemoryStats() const {
   return stats;
 }
 
-void MetalBackend::SetDefaultPriority(int priority) { default_priority_ = priority; }
+void MetalBackend::SetDefaultPriority(int priority) {
+  default_priority_ = priority;
+}
 
-void MetalBackend::SetDeterministic(bool deterministic) { deterministic_ = deterministic; }
+void MetalBackend::SetDeterministic(bool deterministic) {
+  deterministic_ = deterministic;
+}
 
 int MetalBackend::DeviceCount() const {
   Status status = EnsureInitialized();
@@ -423,10 +433,9 @@ Status MetalBackend::ReadBuffer(int device_index, const MetalBuffer& buffer, voi
   return Status::OK();
 }
 
-StatusOr<MetalKernel> MetalBackend::BuildKernelFromFile(const std::string& path,
-                                                        const std::string& kernel_name,
-                                                        const std::string& extra_build_options)
-    const {
+StatusOr<MetalKernel> MetalBackend::BuildKernelFromFile(
+    const std::string& path, const std::string& kernel_name,
+    const std::string& extra_build_options) const {
   auto kernels_or = BuildKernelsFromFile(path, kernel_name, extra_build_options);
   if (!kernels_or.ok()) return kernels_or.status();
   auto kernels = kernels_or.value();
@@ -481,12 +490,11 @@ StatusOr<std::vector<MetalKernel>> MetalBackend::BuildKernelsFromFile(
 
       MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
       const uint32_t device_index = static_cast<uint32_t>(dev.desc.index);
-      NSMutableDictionary<NSString*, NSObject*>* macros =
-          [@{
-            @"LATTICE_ABI_VERSION" : [NSString stringWithFormat:@"%u", metal::kAbiVersion],
-            @"LATTICE_ABI_VERSION_MIN" : [NSString stringWithFormat:@"%u", metal::kAbiVersionMin],
-            @"LATTICE_DEVICE_INDEX" : [NSString stringWithFormat:@"%u", device_index],
-          } mutableCopy];
+      NSMutableDictionary<NSString*, NSObject*>* macros = [@{
+        @"LATTICE_ABI_VERSION" : [NSString stringWithFormat:@"%u", metal::kAbiVersion],
+        @"LATTICE_ABI_VERSION_MIN" : [NSString stringWithFormat:@"%u", metal::kAbiVersionMin],
+        @"LATTICE_DEVICE_INDEX" : [NSString stringWithFormat:@"%u", device_index],
+      } mutableCopy];
       if (dev.caps.fp16 == CapabilityStatus::kYes) {
         macros[@"LATTICE_HAS_FP16"] = @"1";
       }
@@ -495,9 +503,10 @@ StatusOr<std::vector<MetalKernel>> MetalBackend::BuildKernelsFromFile(
       }
       options.preprocessorMacros = macros;
       NSError* ns_error = nil;
-      id<MTLLibrary> library = [dev.device newLibraryWithSource:[NSString stringWithUTF8String:source.c_str()]
-                                                        options:options
-                                                          error:&ns_error];
+      id<MTLLibrary> library =
+          [dev.device newLibraryWithSource:[NSString stringWithUTF8String:source.c_str()]
+                                   options:options
+                                     error:&ns_error];
       if (!library) {
         last_error = ns_error ? ns_error.localizedDescription.UTF8String
                               : "Metal library compilation failed";
@@ -505,7 +514,8 @@ StatusOr<std::vector<MetalKernel>> MetalBackend::BuildKernelsFromFile(
                     "build", dev.desc.index, dev.desc.name});
         continue;
       }
-      id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:kernel_name.c_str()]];
+      id<MTLFunction> function =
+          [library newFunctionWithName:[NSString stringWithUTF8String:kernel_name.c_str()]];
       if (!function) {
         last_error = "Metal function not found";
         LogBackend({LogLevel::kWarn, BackendType::kMetal, BackendErrorKind::kBuild, last_error,
@@ -514,8 +524,8 @@ StatusOr<std::vector<MetalKernel>> MetalBackend::BuildKernelsFromFile(
       }
       pipeline = [dev.device newComputePipelineStateWithFunction:function error:&ns_error];
       if (!pipeline) {
-        last_error = ns_error ? ns_error.localizedDescription.UTF8String
-                              : "Metal pipeline creation failed";
+        last_error =
+            ns_error ? ns_error.localizedDescription.UTF8String : "Metal pipeline creation failed";
         LogBackend({LogLevel::kWarn, BackendType::kMetal, BackendErrorKind::kBuild, last_error,
                     "build", dev.desc.index, dev.desc.name});
         continue;
@@ -603,7 +613,8 @@ Status MetalBackend::SmokeTest() const {
                        "Metal kernel directory not found");
   }
 
-  const std::string kernel_path = (std::filesystem::path(kernel_dir) / "lattice_smoke.metal").string();
+  const std::string kernel_path =
+      (std::filesystem::path(kernel_dir) / "lattice_smoke.metal").string();
   auto kernels_or = BuildKernelsFromFile(kernel_path, "vec_add");
   if (!kernels_or.ok()) return kernels_or.status();
   auto kernels = kernels_or.value();
@@ -676,7 +687,7 @@ Status MetalBackend::EnsureInitialized() const {
     if (!metal_devices || [metal_devices count] == 0) {
       id<MTLDevice> device = MTLCreateSystemDefaultDevice();
       if (device) {
-        metal_devices = @[device];
+        metal_devices = @[ device ];
       }
     }
 
@@ -704,9 +715,9 @@ Status MetalBackend::EnsureInitialized() const {
     DeviceSelectionOptions selection = LoadDeviceSelectionOptions("LATTICE_METAL");
     DeviceSelectionResult selected = SelectDevices(identities, selection);
     if (selected.indices.empty()) {
-      init_status_ = MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
-                                 selected.diagnostics.empty() ? "No Metal devices selected"
-                                                              : selected.diagnostics);
+      init_status_ = MetalStatus(
+          StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+          selected.diagnostics.empty() ? "No Metal devices selected" : selected.diagnostics);
       return init_status_;
     }
 
@@ -764,9 +775,8 @@ Status MetalBackend::EnsureInitialized() const {
   }
 
   if (devices_.empty()) {
-    init_status_ =
-        MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kContext,
-                    "No Metal devices initialized");
+    init_status_ = MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kContext,
+                               "No Metal devices initialized");
     return init_status_;
   }
 
@@ -851,7 +861,8 @@ MemoryPool* MetalBackend::PinnedPool(int device_index) const {
   auto alloc_fn = [this, idx](size_t bytes, size_t alignment) -> StatusOr<PoolBlock> {
     (void)alignment;
     auto& device = devices_[idx];
-    MTLResourceOptions options = MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined;
+    MTLResourceOptions options =
+        MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined;
     id<MTLBuffer> buffer = [device.device newBufferWithLength:bytes options:options];
     if (!buffer) {
       return MetalStatus(StatusCode::kInternal, BackendErrorKind::kMemory,

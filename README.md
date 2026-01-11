@@ -111,5 +111,5 @@ Tests exercise parsing and evaluation (arithmetic, identifiers, constants, built
 ## Formatting
 Use clang-format with the provided configuration:
 ```bash
-find include src \( -name '*.h' -o -name '*.cpp' \) -print0 | xargs -0 clang-format -i
+find include src CUDA HIP OpenCL Metal \( -name '*.h' -o -name '*.hpp' -o -name '*.hh' -o -name '*.hxx' -o -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.mm' -o -name '*.cu' -o -name '*.hip' -o -name '*.cl' -o -name '*.metal' \) -print0 | xargs -0 clang-format -i
 ```

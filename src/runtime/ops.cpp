@@ -14,6 +14,8 @@
 #include <vector>
 
 #include "runtime/decimal.h"
+#include "runtime/tensor_gpu.h"
+#include "runtime/tensor_utils.h"
 #include "util/error.h"
 
 namespace lattice::runtime {
@@ -45,9 +47,6 @@ bool RequireBool(const Value& v, int line, int column) {
 DType PromoteTensorElem(DType a, DType b, int line, int column) {
   return PromoteType(a, b, line, column);
 }
-
-// Forward declarations for helpers.
-Value ToDenseTensor(const Value& v, int line, int column);
 
 // Philox2x32-10 and Threefry2x32 implementations for deterministic RNG.
 uint64_t MulHi32(uint32_t a, uint32_t b) {
@@ -147,78 +146,6 @@ std::vector<double> Tensor1DToVector(const Value& v, int line, int column) {
   return out;
 }
 
-Value ToDenseTensor(const Value& v, int line, int column) {
-  if (v.type != DType::kTensor) return v;
-  if (v.tensor.kind == TensorKind::kDense) return v;
-  if (v.tensor.kind == TensorKind::kSparseCSR) {
-    Value out = Value::Tensor(v.tensor.shape, v.tensor.elem_type, 0.0);
-    for (size_t row = 0; row + 1 < v.tensor.indptr.size(); ++row) {
-      int64_t start = v.tensor.indptr[row];
-      int64_t end = v.tensor.indptr[row + 1];
-      const int64_t row_i = static_cast<int64_t>(row);
-      for (int64_t idx = start; idx < end; ++idx) {
-        int64_t col = v.tensor.indices[idx];
-        int64_t offset = row_i * v.tensor.shape[1] + col;
-        out.tensor.Data()[offset] = v.tensor.sparse_values[idx];
-      }
-    }
-    return out;
-  }
-  if (v.tensor.kind == TensorKind::kSparseCOO) {
-    Value out = Value::Tensor(v.tensor.shape, v.tensor.elem_type, 0.0);
-    for (size_t i = 0; i < v.tensor.rows.size(); ++i) {
-      int64_t row = v.tensor.rows[i];
-      int64_t col = v.tensor.cols[i];
-      int64_t offset = row * v.tensor.shape[1] + col;
-      out.tensor.Data()[offset] = v.tensor.sparse_values[i];
-    }
-    return out;
-  }
-  throw util::Error("Ragged tensor must be densified explicitly via to_dense", line, column);
-}
-
-Value DenseToCSR(const Value& dense) {
-  int64_t rows = dense.tensor.shape[0];
-  int64_t cols = dense.tensor.shape[1];
-  std::vector<int64_t> indptr(rows + 1, 0);
-  std::vector<int64_t> indices;
-  std::vector<double> vals;
-  const double* data = dense.tensor.Data();
-  for (int64_t r = 0; r < rows; ++r) {
-    for (int64_t c = 0; c < cols; ++c) {
-      double val = data[r * cols + c];
-      if (val != 0.0) {
-        indices.push_back(c);
-        vals.push_back(val);
-      }
-    }
-    indptr[static_cast<size_t>(r + 1)] = static_cast<int64_t>(indices.size());
-  }
-  return Value::TensorSparseCSR({rows, cols}, std::move(indptr), std::move(indices),
-                                std::move(vals), dense.tensor.elem_type);
-}
-
-Value DenseToCOO(const Value& dense) {
-  int64_t rows = dense.tensor.shape[0];
-  int64_t cols = dense.tensor.shape[1];
-  std::vector<int64_t> r;
-  std::vector<int64_t> c;
-  std::vector<double> vals;
-  const double* data = dense.tensor.Data();
-  for (int64_t i = 0; i < rows; ++i) {
-    for (int64_t j = 0; j < cols; ++j) {
-      double val = data[i * cols + j];
-      if (val != 0.0) {
-        r.push_back(i);
-        c.push_back(j);
-        vals.push_back(val);
-      }
-    }
-  }
-  return Value::TensorSparseCOO({rows, cols}, std::move(r), std::move(c), std::move(vals),
-                                dense.tensor.elem_type);
-}
-
 void EnsureFiniteOrThrow(const Value& v, int line, int column) {
   auto finite = [](double d) { return std::isfinite(d); };
   switch (v.type) {
@@ -259,57 +186,6 @@ bool IsNumericTypeName(const std::string& name) {
       "i8",  "i16", "i32", "i64",      "u8",        "u16",        "u32",     "u64",
       "f16", "f32", "f64", "bfloat16", "complex64", "complex128", "decimal", "rational"};
   return kNumeric.find(name) != kNumeric.end();
-}
-std::string ShapeToString(const std::vector<int64_t>& shape) {
-  std::ostringstream oss;
-  oss << "[";
-  for (size_t i = 0; i < shape.size(); ++i) {
-    if (i > 0) oss << "x";
-    oss << shape[i];
-  }
-  oss << "]";
-  return oss.str();
-}
-
-std::optional<std::vector<int64_t>> BroadcastShape(const std::vector<int64_t>& a,
-                                                   const std::vector<int64_t>& b) {
-  const size_t out_rank = std::max(a.size(), b.size());
-  std::vector<int64_t> result(out_rank, 1);
-  for (size_t i = 0; i < out_rank; ++i) {
-    const bool a_has_dim = a.size() > i;
-    const bool b_has_dim = b.size() > i;
-    const int64_t a_dim = a_has_dim ? a[a.size() - 1 - i] : 1;
-    const int64_t b_dim = b_has_dim ? b[b.size() - 1 - i] : 1;
-    if (a_dim == b_dim || a_dim == 1 || b_dim == 1) {
-      result[out_rank - 1 - i] = std::max(a_dim, b_dim);
-    } else {
-      return std::nullopt;
-    }
-  }
-  return result;
-}
-
-std::vector<int64_t> BroadcastStrides(const std::vector<int64_t>& shape,
-                                      const std::vector<int64_t>& strides, size_t out_rank) {
-  std::vector<int64_t> out(out_rank, 0);
-  const size_t offset = out_rank - shape.size();
-  for (size_t i = 0; i < shape.size(); ++i) {
-    out[offset + i] = (shape[i] == 1) ? 0 : strides[i];
-  }
-  return out;
-}
-
-int64_t OffsetFromFlatIndex(int64_t flat, const std::vector<int64_t>& out_strides,
-                            const std::vector<int64_t>& broadcast_strides) {
-  int64_t offset = 0;
-  int64_t idx = flat;
-  for (size_t dim = 0; dim < out_strides.size(); ++dim) {
-    const int64_t stride = out_strides[dim];
-    const int64_t coord = stride == 0 ? 0 : idx / stride;
-    idx -= coord * stride;
-    offset += coord * broadcast_strides[dim];
-  }
-  return offset;
 }
 std::string DTypeToString(DType t) {
   switch (t) {
@@ -1001,6 +877,16 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
     }
   }
   if (lhs.type == DType::kTensor || rhs.type == DType::kTensor) {
+    if (expr.op == parser::BinaryOp::kAdd || expr.op == parser::BinaryOp::kSub ||
+        expr.op == parser::BinaryOp::kMul || expr.op == parser::BinaryOp::kDiv) {
+      std::string gpu_error;
+      auto gpu_value = TryGpuElemwise(lhs, rhs, expr.op, expr.line, expr.column, &gpu_error);
+      if (gpu_value.has_value()) {
+        Value out = std::move(*gpu_value);
+        EnsureFiniteOrThrow(out, expr.line, expr.column);
+        return out;
+      }
+    }
     // Handle ragged special-case.
     if ((lhs.type == DType::kTensor && lhs.tensor.kind == TensorKind::kRagged) ||
         (rhs.type == DType::kTensor && rhs.tensor.kind == TensorKind::kRagged)) {
@@ -2026,6 +1912,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     if (v.type != DType::kTensor) {
       return Value::F64(v.f64);
     }
+    if (v.tensor.kind != TensorKind::kRagged) {
+      std::string gpu_error;
+      auto gpu_value = TryGpuReduce(v, ReduceKind::kSum, call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
+    }
     auto finish_as_elem = [&](double total) {
       return CastTo(v.tensor.elem_type, Value::F64(total), call_line, call_col);
     };
@@ -2053,6 +1944,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     const Value& v = args[0];
     if (v.type != DType::kTensor) {
       return Value::F64(v.f64);
+    }
+    if (v.tensor.kind != TensorKind::kRagged) {
+      std::string gpu_error;
+      auto gpu_value = TryGpuReduce(v, ReduceKind::kMean, call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
     }
     auto finish_as_elem = [&](double mean) {
       return CastTo(v.tensor.elem_type, Value::F64(mean), call_line, call_col);
@@ -2084,6 +1980,12 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     const Value& v = args[0];
     if (v.type != DType::kTensor) {
       return Value::F64(0.0);
+    }
+    if (v.tensor.kind != TensorKind::kRagged) {
+      std::string gpu_error;
+      auto gpu_value = TryGpuReduce(v, name == "var" ? ReduceKind::kVar : ReduceKind::kStd,
+                                    call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
     }
     auto finish_as_elem = [&](double x) {
       return CastTo(v.tensor.elem_type, Value::F64(x), call_line, call_col);
@@ -2162,6 +2064,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     if (dense.tensor.shape.size() != 2) {
       throw util::Error("transpose supports only 2D tensors", call_line, call_col);
     }
+    {
+      std::string gpu_error;
+      auto gpu_value = TryGpuTranspose(dense, call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
+    }
     int64_t rows = dense.tensor.shape[0];
     int64_t cols = dense.tensor.shape[1];
     Value out = Value::Tensor(std::vector<int64_t>{cols, rows}, dense.tensor.elem_type, 0.0);
@@ -2190,6 +2097,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     int64_t n = rhs.tensor.shape[1];
     if (k != k2) {
       throw util::Error("matmul shape mismatch", call_line, call_col);
+    }
+    {
+      std::string gpu_error;
+      auto gpu_value = TryGpuMatmul(lhs, rhs, call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
     }
     DType elem = PromoteTensorElem(lhs.tensor.elem_type, rhs.tensor.elem_type, call_line, call_col);
     Value out = Value::Tensor(std::vector<int64_t>{m, n}, elem, 0.0);
@@ -2220,6 +2132,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     int64_t kw = kernel.tensor.shape[1];
     if (kh > h || kw > w) {
       throw util::Error("conv2d kernel larger than input", call_line, call_col);
+    }
+    {
+      std::string gpu_error;
+      auto gpu_value = TryGpuConv2d(input, kernel, call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
     }
     int64_t oh = h - kh + 1;
     int64_t ow = w - kw + 1;
@@ -2255,6 +2172,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     int64_t w = input.tensor.shape[1];
     int64_t oh = h / kh;
     int64_t ow = w / kw;
+    {
+      std::string gpu_error;
+      auto gpu_value = TryGpuMaxPool2d(input, kh, kw, call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
+    }
     Value out = Value::Tensor({oh, ow}, input.tensor.elem_type, 0.0);
     for (int64_t i = 0; i < oh; ++i) {
       for (int64_t j = 0; j < ow; ++j) {
@@ -2274,6 +2196,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     Value input = ToDenseTensor(args[0], call_line, call_col);
     if (input.type != DType::kTensor || input.tensor.shape.size() != 1) {
       throw util::Error("fft1d expects a 1D tensor", call_line, call_col);
+    }
+    {
+      std::string gpu_error;
+      auto gpu_value = TryGpuFft1d(input, call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
     }
     int64_t n = input.tensor.shape[0];
     std::vector<double> real(static_cast<size_t>(n), 0.0);
@@ -2323,6 +2250,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
       }
     } else {
       throw util::Error("solve rhs must be 1D or 2D tensor", call_line, call_col);
+    }
+    {
+      std::string gpu_error;
+      auto gpu_value = TryGpuSolve(A, B, call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
     }
     DType elem = PromoteTensorElem(A.tensor.elem_type, B.tensor.elem_type, call_line, call_col);
     std::vector<std::vector<double>> a(n, std::vector<double>(n));
@@ -2408,6 +2340,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
         A.tensor.shape[0] != A.tensor.shape[1]) {
       throw util::Error("lu expects a square 2D tensor", call_line, call_col);
     }
+    {
+      std::string gpu_error;
+      auto gpu_value = TryGpuLu(A, call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
+    }
     int64_t n = A.tensor.shape[0];
     std::vector<double> L(static_cast<size_t>(n * n), 0.0);
     std::vector<double> U(static_cast<size_t>(n * n), 0.0);
@@ -2439,6 +2376,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     Value A = ToDenseTensor(args[0], call_line, call_col);
     if (A.type != DType::kTensor || A.tensor.shape.size() != 2) {
       throw util::Error("qr expects a 2D tensor", call_line, call_col);
+    }
+    {
+      std::string gpu_error;
+      auto gpu_value = TryGpuQr(A, call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
     }
     int64_t m = A.tensor.shape[0];
     int64_t n = A.tensor.shape[1];
@@ -2489,6 +2431,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     int64_t n = A.tensor.shape[1];
     if (m != 2 || n != 2) {
       throw util::Error("svd currently supports 2x2 matrices only", call_line, call_col);
+    }
+    {
+      std::string gpu_error;
+      auto gpu_value = TryGpuSvd(A, call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
     }
     double a = A.tensor.Data()[0], b = A.tensor.Data()[1], c = A.tensor.Data()[2],
            d = A.tensor.Data()[3];
@@ -2783,6 +2730,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     double q = ScalarF64(args[1], call_line, call_col);
     if (data.empty()) throw util::Error("quantile of empty data", call_line, call_col);
     if (q < 0.0 || q > 1.0) throw util::Error("quantile q must be in [0,1]", call_line, call_col);
+    {
+      std::string gpu_error;
+      auto gpu_value = TryGpuQuantile(args[0], q, call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
+    }
     std::sort(data.begin(), data.end());
     double pos = q * (static_cast<double>(data.size() - 1));
     size_t idx = static_cast<size_t>(pos);
@@ -2797,6 +2749,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     auto y = Tensor1DToVector(args[1], call_line, call_col);
     if (x.size() != y.size() || x.empty()) {
       throw util::Error("correlation requires equal non-empty vectors", call_line, call_col);
+    }
+    {
+      std::string gpu_error;
+      auto gpu_value = TryGpuCorrelation(args[0], args[1], call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
     }
     double sumx = 0, sumy = 0, sumxx = 0, sumyy = 0, sumxy = 0;
     for (size_t i = 0; i < x.size(); ++i) {
@@ -2818,6 +2775,11 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
     auto y = Tensor1DToVector(args[1], call_line, call_col);
     if (x.size() != y.size() || x.empty()) {
       throw util::Error("regression requires equal non-empty vectors", call_line, call_col);
+    }
+    {
+      std::string gpu_error;
+      auto gpu_value = TryGpuRegression(args[0], args[1], call_line, call_col, &gpu_error);
+      if (gpu_value.has_value()) return gpu_value.value();
     }
     double sumx = 0, sumy = 0, sumxx = 0, sumxy = 0;
     for (size_t i = 0; i < x.size(); ++i) {

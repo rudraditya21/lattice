@@ -5,13 +5,14 @@
 #include <stdint.h>
 
 #ifndef LATTICE_ABI_VERSION
-#define LATTICE_ABI_VERSION 0x00010000
+#define LATTICE_ABI_VERSION 0x00010001
 #endif
 #ifndef LATTICE_ABI_VERSION_MIN
-#define LATTICE_ABI_VERSION_MIN 0x00010000
+#define LATTICE_ABI_VERSION_MIN 0x00010001
 #endif
 
 #define LATTICE_ABI_MAJOR(version) ((version) >> 16)
+#define LATTICE_MAX_TENSOR_DIMS 8
 
 #if defined(__cplusplus)
 #define LATTICE_ABI_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
@@ -45,6 +46,12 @@ typedef struct lattice_elemwise_params {
   unsigned long long count;
   unsigned int op;
   unsigned int dtype;
+  unsigned int ndim;
+  unsigned int flags;
+  unsigned long long shape[LATTICE_MAX_TENSOR_DIMS];
+  unsigned long long out_strides[LATTICE_MAX_TENSOR_DIMS];
+  unsigned long long lhs_strides[LATTICE_MAX_TENSOR_DIMS];
+  unsigned long long rhs_strides[LATTICE_MAX_TENSOR_DIMS];
 } lattice_elemwise_params_t;
 
 typedef struct lattice_reduce_params {
@@ -65,18 +72,91 @@ typedef struct lattice_matmul_params {
   unsigned int flags;
 } lattice_matmul_params_t;
 
-LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_MAJOR(LATTICE_ABI_VERSION) == 1,
-                          lattice_abi_major_mismatch);
+typedef struct lattice_transpose_params {
+  unsigned long long rows;
+  unsigned long long cols;
+} lattice_transpose_params_t;
+
+typedef struct lattice_conv2d_params {
+  unsigned long long in_h;
+  unsigned long long in_w;
+  unsigned long long k_h;
+  unsigned long long k_w;
+  unsigned long long out_h;
+  unsigned long long out_w;
+} lattice_conv2d_params_t;
+
+typedef struct lattice_pool2d_params {
+  unsigned long long in_h;
+  unsigned long long in_w;
+  unsigned long long k_h;
+  unsigned long long k_w;
+  unsigned long long out_h;
+  unsigned long long out_w;
+} lattice_pool2d_params_t;
+
+typedef struct lattice_fft_params {
+  unsigned long long n;
+} lattice_fft_params_t;
+
+typedef struct lattice_solve_params {
+  unsigned long long n;
+  unsigned long long rhs_cols;
+} lattice_solve_params_t;
+
+typedef struct lattice_lu_params {
+  unsigned long long n;
+} lattice_lu_params_t;
+
+typedef struct lattice_qr_params {
+  unsigned long long m;
+  unsigned long long n;
+} lattice_qr_params_t;
+
+typedef struct lattice_svd_params {
+  unsigned long long m;
+  unsigned long long n;
+} lattice_svd_params_t;
+
+typedef struct lattice_quantile_params {
+  unsigned long long count;
+  float q;
+  unsigned int pad;
+} lattice_quantile_params_t;
+
+typedef struct lattice_correlation_params {
+  unsigned long long count;
+} lattice_correlation_params_t;
+
+typedef struct lattice_regression_params {
+  unsigned long long count;
+} lattice_regression_params_t;
+
+LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_MAJOR(LATTICE_ABI_VERSION) == 1, lattice_abi_major_mismatch);
 LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_VERSION >= LATTICE_ABI_VERSION_MIN,
                           lattice_abi_version_too_old);
-LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_elemwise_params_t) == 16,
-                          lattice_elemwise_params_size);
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_elemwise_params_t) == 280, lattice_elemwise_params_size);
 LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_elemwise_params_t, count) == 0,
                           lattice_elemwise_params_count_off);
 LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_elemwise_params_t, op) == 8,
                           lattice_elemwise_params_op_off);
 LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_elemwise_params_t, dtype) == 12,
                           lattice_elemwise_params_dtype_off);
+LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_elemwise_params_t, ndim) == 16,
+                          lattice_elemwise_params_ndim_off);
+LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_elemwise_params_t, flags) == 20,
+                          lattice_elemwise_params_flags_off);
+LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_elemwise_params_t, shape) == 24,
+                          lattice_elemwise_params_shape_off);
+LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_elemwise_params_t, out_strides) ==
+                              24 + 8 * LATTICE_MAX_TENSOR_DIMS,
+                          lattice_elemwise_params_out_strides_off);
+LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_elemwise_params_t, lhs_strides) ==
+                              24 + 16 * LATTICE_MAX_TENSOR_DIMS,
+                          lattice_elemwise_params_lhs_strides_off);
+LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_elemwise_params_t, rhs_strides) ==
+                              24 + 24 * LATTICE_MAX_TENSOR_DIMS,
+                          lattice_elemwise_params_rhs_strides_off);
 LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_reduce_params_t) == 24, lattice_reduce_params_size);
 LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_reduce_params_t, count) == 0,
                           lattice_reduce_params_count_off);
@@ -103,5 +183,17 @@ LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_matmul_params_t, dtype) == 
                           lattice_matmul_params_dtype_off);
 LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_matmul_params_t, flags) == 52,
                           lattice_matmul_params_flags_off);
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_transpose_params_t) == 16, lattice_transpose_params_size);
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_conv2d_params_t) == 48, lattice_conv2d_params_size);
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_pool2d_params_t) == 48, lattice_pool2d_params_size);
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_fft_params_t) == 8, lattice_fft_params_size);
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_solve_params_t) == 16, lattice_solve_params_size);
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_lu_params_t) == 8, lattice_lu_params_size);
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_qr_params_t) == 16, lattice_qr_params_size);
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_svd_params_t) == 16, lattice_svd_params_size);
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_quantile_params_t) == 16, lattice_quantile_params_size);
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_correlation_params_t) == 8,
+                          lattice_correlation_params_size);
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_regression_params_t) == 8, lattice_regression_params_size);
 
 #endif  // LATTICE_HIP_ABI_H

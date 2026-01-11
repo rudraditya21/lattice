@@ -252,11 +252,11 @@ std::string HipBackend::Name() const {
 BackendCapabilities HipBackend::Capabilities() const {
   BackendCapabilities caps;
   caps.supports_dense = true;
-  caps.supports_sparse = false;
-  caps.supports_ragged = false;
-  caps.supports_fft = false;
-  caps.supports_blas = false;
-  caps.supports_conv = false;
+  caps.supports_sparse = true;
+  caps.supports_ragged = true;
+  caps.supports_fft = true;
+  caps.supports_blas = true;
+  caps.supports_conv = true;
   caps.supports_rng = true;
   caps.supports_events = true;
   caps.supported_dtypes = {DType::kF32, DType::kF64, DType::kI32, DType::kU32};

@@ -11,6 +11,8 @@ set(LATTICE_SOURCES
     src/parser/parser.cpp
     src/repl/repl.cpp
     src/runtime/ops.cpp
+    src/runtime/tensor_gpu.cpp
+    src/runtime/tensor_utils.cpp
     src/runtime/backends/cpu/backend.cpp
     src/runtime/backends/gpu/dynloader.cpp
     src/runtime/backends/gpu/opencl_loader.cpp

@@ -70,7 +70,7 @@ LogConfig LoadLogConfig() {
   return config;
 }
 
-bool BackendVerboseEnabled(BackendType backend) {
+bool BackendVerboseEnabledImpl(BackendType backend) {
   const char* env = nullptr;
   switch (backend) {
     case BackendType::kOpenCL:
@@ -96,7 +96,7 @@ bool ShouldLog(const LogConfig& config, const LogRecord& record) {
   if (config.enabled) {
     return static_cast<int>(record.level) <= static_cast<int>(config.level);
   }
-  return BackendVerboseEnabled(record.backend);
+  return BackendVerboseEnabledImpl(record.backend);
 }
 
 std::string JsonEscape(const std::string& input) {
@@ -191,6 +191,10 @@ std::mutex g_log_mu;
 std::atomic<uint64_t> g_trace_counter{0};
 
 }  // namespace
+
+bool BackendVerboseEnabled(BackendType backend) {
+  return BackendVerboseEnabledImpl(backend);
+}
 
 std::string FormatLogLine(const LogRecord& record, LogFormat format) {
   if (format == LogFormat::kJson) {
