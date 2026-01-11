@@ -8,6 +8,7 @@
 #include <cstring>
 #include <deque>
 #include <future>
+#include <iostream>
 #include <mutex>
 #include <new>
 #include <queue>
@@ -15,6 +16,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#include "runtime/backends/backend_log.h"
 
 #ifdef __linux__
 #include <numaif.h>
@@ -58,6 +61,36 @@ bool BackendAvailable(const Backend* backend) {
   if (!backend) return false;
   auto stream_or = backend->CreateStream();
   return stream_or.ok();
+}
+
+const Backend* SelectBestAvailableBackend() {
+  const Backend* candidates[] = {
+      GetCudaBackend(),   GetHipBackend(),
+#if defined(__APPLE__)
+      GetMetalBackend(),
+#endif
+      GetOpenCLBackend(), GetCpuBackend(),
+  };
+  for (const auto* candidate : candidates) {
+    if (BackendAvailable(candidate)) return candidate;
+  }
+  return GetCpuBackend();
+}
+
+std::string BackendNameForEnv(BackendType type) {
+  switch (type) {
+    case BackendType::kCPU:
+      return "cpu";
+    case BackendType::kOpenCL:
+      return "opencl";
+    case BackendType::kCUDA:
+      return "cuda";
+    case BackendType::kHIP:
+      return "hip";
+    case BackendType::kMetal:
+      return "metal";
+  }
+  return "cpu";
 }
 
 class ThreadPool {
@@ -477,30 +510,31 @@ const Backend* GetDefaultBackend() {
     } else if (name == "hip") {
       requested = BackendType::kHIP;
     } else if (name == "metal" || name == "mtl") {
-#if defined(__APPLE__)
       requested = BackendType::kMetal;
-#else
-      requested = BackendType::kCPU;
-#endif
     } else if (name == "cpu") {
       requested = BackendType::kCPU;
     } else if (name == "auto") {
-      const Backend* candidates[] = {
-          GetCudaBackend(),   GetHipBackend(),
-#if defined(__APPLE__)
-          GetMetalBackend(),
-#endif
-          GetOpenCLBackend(), GetCpuBackend(),
-      };
-      for (const auto* candidate : candidates) {
-        if (BackendAvailable(candidate)) return candidate;
-      }
-      return GetCpuBackend();
+      return SelectBestAvailableBackend();
+    } else {
+      const Backend* fallback = SelectBestAvailableBackend();
+      std::string message = "Unknown backend '" + name + "', falling back to '" +
+                            BackendNameForEnv(fallback->Type()) + "'";
+      std::cerr << message << "\n";
+      LogBackend({LogLevel::kWarn, BackendType::kCPU, BackendErrorKind::kInvalidArgument, message,
+                  "backend_select"});
+      return fallback;
     }
     const Backend* backend = GetBackendByType(requested);
     if (BackendAvailable(backend)) {
       return backend;
     }
+    const Backend* fallback = SelectBestAvailableBackend();
+    std::string message = "Requested backend '" + name + "' is unavailable; falling back to '" +
+                          BackendNameForEnv(fallback->Type()) + "'";
+    std::cerr << message << "\n";
+    LogBackend({LogLevel::kWarn, BackendType::kCPU, BackendErrorKind::kDiscovery, message,
+                "backend_select"});
+    return fallback;
   }
   return GetCpuBackend();
 }

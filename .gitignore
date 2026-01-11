@@ -34,3 +34,6 @@ compile_commands.json
 *.swp
 *.swo
 *~
+
+# Lattice
+.lattice_cache
