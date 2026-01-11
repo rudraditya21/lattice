@@ -20,6 +20,7 @@ set(LATTICE_SOURCES
     src/runtime/backends/cache_store.cpp
     src/runtime/backends/backend_error.cpp
     src/runtime/backends/backend_log.cpp
+    src/runtime/backends/memory_pool.cpp
     src/runtime/backends/gpu/cuda_loader.cpp
     src/runtime/backends/gpu/cuda_backend.cpp
     src/runtime/backends/gpu/hip_loader.cpp
@@ -84,6 +85,7 @@ add_executable(lattice_tests
     tests/runtime/device_selector_tests.cpp
     tests/runtime/device_quirks_tests.cpp
     tests/runtime/cache_store_tests.cpp
+    tests/runtime/memory_pool_tests.cpp
     tests/runtime/destructuring_tests.cpp
     tests/runtime/error_location_tests.cpp
     tests/runtime/integration_tests.cpp

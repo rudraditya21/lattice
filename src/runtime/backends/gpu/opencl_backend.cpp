@@ -5,11 +5,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -22,6 +24,7 @@
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
 #include "runtime/backends/gpu/opencl_loader.h"
+#include "runtime/backends/memory_pool.h"
 #include "runtime/backends/opencl_abi.h"
 
 namespace lattice::runtime {
@@ -139,6 +142,57 @@ std::string OpenclCStd(const std::string& version) {
   return "";
 }
 
+MemoryPoolConfig OpenclDevicePoolConfig() {
+  static MemoryPoolConfig config = [] {
+    MemoryPoolConfig base = DefaultDevicePoolConfig();
+    base = LoadMemoryPoolConfig("LATTICE_DEVICE_POOL", base);
+    base = LoadMemoryPoolConfig("LATTICE_OPENCL_DEVICE_POOL", base);
+    return base;
+  }();
+  return config;
+}
+
+MemoryPoolConfig OpenclPinnedPoolConfig() {
+  static MemoryPoolConfig config = [] {
+    MemoryPoolConfig base = DefaultPinnedPoolConfig();
+    base = LoadMemoryPoolConfig("LATTICE_PINNED_POOL", base);
+    base = LoadMemoryPoolConfig("LATTICE_OPENCL_PINNED_POOL", base);
+    return base;
+  }();
+  return config;
+}
+
+Status FillBufferZero(const OpenCLLoader* loader, cl_command_queue queue, cl_mem mem,
+                      size_t bytes) {
+  if (!loader || !queue || !mem || bytes == 0) return Status::OK();
+  if (loader->clEnqueueFillBuffer) {
+    const cl_uint zero = 0;
+    cl_int err =
+        loader->clEnqueueFillBuffer(queue, mem, &zero, sizeof(zero), 0, bytes, 0, nullptr, nullptr);
+    if (err != CL_SUCCESS) {
+      return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                          "clEnqueueFillBuffer failed: " + gpu::OpenCLErrorString(err));
+    }
+    loader->clFinish(queue);
+    return Status::OK();
+  }
+  const size_t chunk = 4096;
+  std::vector<unsigned char> zeros(chunk, 0);
+  size_t offset = 0;
+  while (offset < bytes) {
+    size_t to_write = std::min(chunk, bytes - offset);
+    cl_int err = loader->clEnqueueWriteBuffer(queue, mem, CL_FALSE, offset, to_write, zeros.data(),
+                                              0, nullptr, nullptr);
+    if (err != CL_SUCCESS) {
+      return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                          "clEnqueueWriteBuffer failed: " + gpu::OpenCLErrorString(err));
+    }
+    offset += to_write;
+  }
+  loader->clFinish(queue);
+  return Status::OK();
+}
+
 class OpenCLEvent final : public Event {
  public:
   void Record() override {
@@ -189,6 +243,8 @@ struct OpenCLBackend::DeviceContext {
   DeviceCapabilities caps;
   std::string fingerprint;
   std::unordered_map<std::string, cl_program> program_cache;
+  std::unordered_map<cl_mem_flags, std::unique_ptr<MemoryPool>> device_pools;
+  std::unique_ptr<MemoryPool> pinned_pool;
 };
 
 OpenCLBackend::OpenCLBackend() = default;
@@ -196,6 +252,24 @@ OpenCLBackend::OpenCLBackend() = default;
 OpenCLBackend::~OpenCLBackend() {
   if (loader_.Loaded()) {
     for (auto& dev : devices_) {
+      for (auto& entry : dev.device_pools) {
+        if (entry.second) {
+          if (entry.second->Outstanding() > 0) {
+            LogBackend({LogLevel::kWarn, BackendType::kOpenCL, BackendErrorKind::kMemory,
+                        "device pool has outstanding allocations", "device_pool_leak",
+                        dev.desc.index, dev.desc.name});
+          }
+          entry.second->Trim();
+        }
+      }
+      if (dev.pinned_pool) {
+        if (dev.pinned_pool->Outstanding() > 0) {
+          LogBackend({LogLevel::kWarn, BackendType::kOpenCL, BackendErrorKind::kMemory,
+                      "pinned pool has outstanding allocations", "pinned_pool_leak", dev.desc.index,
+                      dev.desc.name});
+        }
+        dev.pinned_pool->Trim();
+      }
       for (auto& entry : dev.program_cache) {
         if (entry.second) loader_.clReleaseProgram(entry.second);
       }
@@ -247,29 +321,32 @@ StatusOr<std::shared_ptr<Event>> OpenCLBackend::CreateEvent() const {
 }
 
 StatusOr<Allocation> OpenCLBackend::Allocate(size_t bytes, size_t alignment) const {
-  (void)alignment;
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (devices_.empty()) {
     return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
                         "No OpenCL devices available");
   }
-  cl_int err = CL_SUCCESS;
-  cl_mem buf = loader_.clCreateBuffer(devices_[0].context, CL_MEM_READ_WRITE, bytes, nullptr, &err);
-  if (err != CL_SUCCESS) {
-    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
-                        "clCreateBuffer failed: " + gpu::OpenCLErrorString(err));
+  if (bytes == 0) {
+    Allocation empty;
+    empty.kind = AllocationKind::kDevice;
+    return empty;
   }
+  auto* pool = DevicePool(0, CL_MEM_READ_WRITE);
+  if (!pool) {
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                        "Device pool unavailable");
+  }
+  auto block_or = pool->Acquire(bytes, alignment);
+  if (!block_or.ok()) return block_or.status();
+  auto block = block_or.value();
   Allocation alloc;
   alloc.ptr = nullptr;
-  alloc.device_handle = reinterpret_cast<void*>(buf);
+  alloc.device_handle = reinterpret_cast<void*>(block.handle);
   alloc.bytes = bytes;
   alloc.alignment = alignment;
-  alloc.from_pool = false;
-  {
-    std::lock_guard<std::mutex> lock(alloc_mu_);
-    allocations_[buf] = bytes;
-  }
+  alloc.from_pool = block.from_pool;
+  alloc.kind = AllocationKind::kDevice;
   return alloc;
 }
 
@@ -277,17 +354,54 @@ Status OpenCLBackend::Deallocate(const Allocation& alloc) const {
   if (!alloc.device_handle) return Status::OK();
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  cl_mem buf = reinterpret_cast<cl_mem>(alloc.device_handle);
-  cl_int err = loader_.clReleaseMemObject(buf);
-  if (err != CL_SUCCESS) {
-    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
-                        "clReleaseMemObject failed: " + gpu::OpenCLErrorString(err));
+  auto* pool = DevicePool(0, CL_MEM_READ_WRITE);
+  if (!pool) {
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                        "Device pool unavailable");
   }
-  {
-    std::lock_guard<std::mutex> lock(alloc_mu_);
-    allocations_.erase(buf);
+  return pool->Release(reinterpret_cast<uintptr_t>(alloc.device_handle));
+}
+
+StatusOr<Allocation> OpenCLBackend::AllocatePinned(size_t bytes, size_t alignment) const {
+  Status status = EnsureInitialized();
+  if (!status.ok()) return status;
+  if (devices_.empty()) {
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                        "No OpenCL devices available");
   }
-  return Status::OK();
+  if (bytes == 0) {
+    Allocation empty;
+    empty.kind = AllocationKind::kPinnedHost;
+    return empty;
+  }
+  auto* pool = PinnedPool(0);
+  if (!pool) {
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                        "Pinned pool unavailable");
+  }
+  auto block_or = pool->Acquire(bytes, alignment);
+  if (!block_or.ok()) return block_or.status();
+  auto block = block_or.value();
+  Allocation alloc;
+  alloc.ptr = block.host_ptr;
+  alloc.device_handle = reinterpret_cast<void*>(block.handle);
+  alloc.bytes = bytes;
+  alloc.alignment = alignment;
+  alloc.from_pool = block.from_pool;
+  alloc.kind = AllocationKind::kPinnedHost;
+  return alloc;
+}
+
+Status OpenCLBackend::DeallocatePinned(const Allocation& alloc) const {
+  if (!alloc.ptr) return Status::OK();
+  Status status = EnsureInitialized();
+  if (!status.ok()) return status;
+  auto* pool = PinnedPool(0);
+  if (!pool) {
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                        "Pinned pool unavailable");
+  }
+  return pool->Release(reinterpret_cast<uintptr_t>(alloc.ptr));
 }
 
 int OpenCLBackend::NumThreads() const {
@@ -295,8 +409,33 @@ int OpenCLBackend::NumThreads() const {
 }
 
 size_t OpenCLBackend::OutstandingAllocs() const {
-  std::lock_guard<std::mutex> lock(alloc_mu_);
-  return allocations_.size();
+  size_t total = 0;
+  for (int i = 0; i < static_cast<int>(devices_.size()); ++i) {
+    auto& dev = devices_[i];
+    for (const auto& entry : dev.device_pools) {
+      total += entry.second ? entry.second->Outstanding() : 0;
+    }
+    if (dev.pinned_pool) total += dev.pinned_pool->Outstanding();
+  }
+  return total;
+}
+
+BackendMemoryStats OpenCLBackend::MemoryStats() const {
+  BackendMemoryStats stats;
+  Status status = EnsureInitialized();
+  if (!status.ok()) return stats;
+  for (int i = 0; i < static_cast<int>(devices_.size()); ++i) {
+    auto& dev = devices_[i];
+    for (const auto& entry : dev.device_pools) {
+      if (entry.second) {
+        AccumulateMemoryPoolStats(&stats.device, entry.second->Stats());
+      }
+    }
+    if (dev.pinned_pool) {
+      AccumulateMemoryPoolStats(&stats.pinned, dev.pinned_pool->Stats());
+    }
+  }
+  return stats;
 }
 
 void OpenCLBackend::SetDefaultPriority(int priority) {
@@ -341,32 +480,33 @@ StatusOr<OpenCLBuffer> OpenCLBackend::CreateBuffer(int device_index, size_t byte
     return OpenclStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
                         "Invalid device index");
   }
-  cl_int err = CL_SUCCESS;
-  cl_mem buf = loader_.clCreateBuffer(devices_[device_index].context, flags, bytes, nullptr, &err);
-  if (err != CL_SUCCESS) {
-    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
-                        "clCreateBuffer failed: " + gpu::OpenCLErrorString(err));
+  if (bytes == 0) {
+    return OpenCLBuffer{nullptr, 0, flags, device_index};
   }
-  {
-    std::lock_guard<std::mutex> lock(alloc_mu_);
-    allocations_[buf] = bytes;
+  auto* pool = DevicePool(device_index, flags);
+  if (!pool) {
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                        "Device pool unavailable");
   }
-  return OpenCLBuffer{buf, bytes};
+  auto block_or = pool->Acquire(bytes, 64);
+  if (!block_or.ok()) return block_or.status();
+  auto block = block_or.value();
+  return OpenCLBuffer{reinterpret_cast<cl_mem>(block.handle), bytes, flags, device_index};
 }
 
 Status OpenCLBackend::ReleaseBuffer(OpenCLBuffer* buffer) const {
   if (!buffer || !buffer->mem) return Status::OK();
-  cl_int err = loader_.clReleaseMemObject(buffer->mem);
-  if (err != CL_SUCCESS) {
-    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
-                        "clReleaseMemObject failed: " + gpu::OpenCLErrorString(err));
+  auto* pool = DevicePool(buffer->device_index, buffer->flags);
+  if (!pool) {
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                        "Device pool unavailable");
   }
-  {
-    std::lock_guard<std::mutex> lock(alloc_mu_);
-    allocations_.erase(buffer->mem);
-  }
+  Status status = pool->Release(reinterpret_cast<uintptr_t>(buffer->mem));
+  if (!status.ok()) return status;
   buffer->mem = nullptr;
   buffer->bytes = 0;
+  buffer->flags = CL_MEM_READ_WRITE;
+  buffer->device_index = -1;
   return Status::OK();
 }
 
@@ -843,6 +983,124 @@ Status OpenCLBackend::EnsureInitialized() const {
 
   init_status_ = Status::OK();
   return init_status_;
+}
+
+MemoryPool* OpenCLBackend::DevicePool(int device_index, cl_mem_flags flags) const {
+  if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) return nullptr;
+  std::lock_guard<std::mutex> lock(mu_);
+  auto& dev = devices_[device_index];
+  auto it = dev.device_pools.find(flags);
+  if (it != dev.device_pools.end()) return it->second.get();
+
+  MemoryPoolConfig config = OpenclDevicePoolConfig();
+  const int idx = device_index;
+  auto alloc_fn = [this, idx, flags](size_t bytes, size_t alignment) -> StatusOr<PoolBlock> {
+    (void)alignment;
+    cl_int err = CL_SUCCESS;
+    cl_mem buf = loader_.clCreateBuffer(devices_[idx].context, flags, bytes, nullptr, &err);
+    if (err != CL_SUCCESS) {
+      return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                          "clCreateBuffer failed: " + gpu::OpenCLErrorString(err));
+    }
+    PoolBlock block;
+    block.key = reinterpret_cast<uintptr_t>(buf);
+    block.handle = reinterpret_cast<uintptr_t>(buf);
+    block.bytes = bytes;
+    block.alignment = alignment;
+    return block;
+  };
+  auto free_fn = [this](const PoolBlock& block) -> Status {
+    cl_mem buf = reinterpret_cast<cl_mem>(block.handle);
+    cl_int err = loader_.clReleaseMemObject(buf);
+    if (err != CL_SUCCESS) {
+      return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                          "clReleaseMemObject failed: " + gpu::OpenCLErrorString(err));
+    }
+    return Status::OK();
+  };
+  auto scrub_fn = [this, idx](const PoolBlock& block) -> Status {
+    cl_mem buf = reinterpret_cast<cl_mem>(block.handle);
+    return FillBufferZero(&loader_, devices_[idx].queue, buf, block.bytes);
+  };
+
+  std::ostringstream label;
+  label << "opencl_device_pool_" << devices_[idx].desc.index << "_flags_" << flags;
+  auto pool = std::make_unique<MemoryPool>(label.str(), config, alloc_fn, free_fn, scrub_fn);
+  MemoryPool* out = pool.get();
+  dev.device_pools.emplace(flags, std::move(pool));
+  return out;
+}
+
+MemoryPool* OpenCLBackend::PinnedPool(int device_index) const {
+  if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) return nullptr;
+  std::lock_guard<std::mutex> lock(mu_);
+  auto& dev = devices_[device_index];
+  if (dev.pinned_pool) return dev.pinned_pool.get();
+
+  MemoryPoolConfig config = OpenclPinnedPoolConfig();
+  const int idx = device_index;
+  auto alloc_fn = [this, idx](size_t bytes, size_t alignment) -> StatusOr<PoolBlock> {
+    (void)alignment;
+    if (!loader_.clEnqueueMapBuffer || !loader_.clEnqueueUnmapMemObject) {
+      return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                          "OpenCL map/unmap not available");
+    }
+    cl_int err = CL_SUCCESS;
+    cl_mem buf = loader_.clCreateBuffer(
+        devices_[idx].context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, bytes, nullptr, &err);
+    if (err != CL_SUCCESS) {
+      return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                          "clCreateBuffer(host) failed: " + gpu::OpenCLErrorString(err));
+    }
+    void* host =
+        loader_.clEnqueueMapBuffer(devices_[idx].queue, buf, CL_TRUE, CL_MAP_READ | CL_MAP_WRITE, 0,
+                                   bytes, 0, nullptr, nullptr, &err);
+    if (err != CL_SUCCESS || !host) {
+      loader_.clReleaseMemObject(buf);
+      return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                          "clEnqueueMapBuffer failed: " + gpu::OpenCLErrorString(err));
+    }
+    PoolBlock block;
+    block.key = reinterpret_cast<uintptr_t>(host);
+    block.handle = reinterpret_cast<uintptr_t>(buf);
+    block.host_ptr = host;
+    block.bytes = bytes;
+    block.alignment = alignment;
+    return block;
+  };
+  auto free_fn = [this, idx](const PoolBlock& block) -> Status {
+    if (!loader_.clEnqueueUnmapMemObject) {
+      return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                          "OpenCL unmap not available");
+    }
+    cl_mem buf = reinterpret_cast<cl_mem>(block.handle);
+    if (block.host_ptr) {
+      cl_int unmap_err = loader_.clEnqueueUnmapMemObject(devices_[idx].queue, buf, block.host_ptr,
+                                                         0, nullptr, nullptr);
+      if (unmap_err != CL_SUCCESS) {
+        return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                            "clEnqueueUnmapMemObject failed: " + gpu::OpenCLErrorString(unmap_err));
+      }
+      loader_.clFinish(devices_[idx].queue);
+    }
+    cl_int err = loader_.clReleaseMemObject(buf);
+    if (err != CL_SUCCESS) {
+      return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                          "clReleaseMemObject failed: " + gpu::OpenCLErrorString(err));
+    }
+    return Status::OK();
+  };
+  auto scrub_fn = [](const PoolBlock& block) -> Status {
+    if (block.host_ptr && block.bytes > 0) {
+      std::memset(block.host_ptr, 0, block.bytes);
+    }
+    return Status::OK();
+  };
+
+  std::ostringstream label;
+  label << "opencl_pinned_pool_" << dev.desc.index;
+  dev.pinned_pool = std::make_unique<MemoryPool>(label.str(), config, alloc_fn, free_fn, scrub_fn);
+  return dev.pinned_pool.get();
 }
 
 std::string OpenCLBackend::KernelDir() const {

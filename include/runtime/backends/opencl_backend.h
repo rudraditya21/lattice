@@ -14,6 +14,8 @@
 
 namespace lattice::runtime {
 
+class MemoryPool;
+
 struct OpenCLDeviceDesc {
   int index = -1;
   std::string name;
@@ -36,6 +38,8 @@ struct OpenCLDeviceDesc {
 struct OpenCLBuffer {
   cl_mem mem = nullptr;
   size_t bytes = 0;
+  cl_mem_flags flags = CL_MEM_READ_WRITE;
+  int device_index = -1;
 };
 
 struct OpenCLKernel {
@@ -87,8 +91,11 @@ class OpenCLBackend final : public Backend {
   StatusOr<std::shared_ptr<Event>> CreateEvent() const override;
   StatusOr<Allocation> Allocate(size_t bytes, size_t alignment = 64) const override;
   Status Deallocate(const Allocation& alloc) const override;
+  StatusOr<Allocation> AllocatePinned(size_t bytes, size_t alignment = 64) const override;
+  Status DeallocatePinned(const Allocation& alloc) const override;
   int NumThreads() const override;
   size_t OutstandingAllocs() const override;
+  BackendMemoryStats MemoryStats() const override;
   void SetDefaultPriority(int priority) override;
   void SetDeterministic(bool deterministic) override;
 
@@ -130,10 +137,10 @@ class OpenCLBackend final : public Backend {
                                           const std::string& build_options,
                                           const std::string& cache_key,
                                           const std::string& kernel_name) const;
+  MemoryPool* DevicePool(int device_index, cl_mem_flags flags) const;
+  MemoryPool* PinnedPool(int device_index) const;
 
   mutable std::vector<DeviceContext> devices_;
-  mutable std::unordered_map<cl_mem, size_t> allocations_;
-  mutable std::mutex alloc_mu_;
   mutable gpu::OpenCLLoader loader_;
   mutable bool initialized_ = false;
   mutable Status init_status_ = Status::OK();

@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -12,6 +13,8 @@
 #include "runtime/backends/device_caps.h"
 
 namespace lattice::runtime {
+
+class MemoryPool;
 
 struct MetalDeviceDesc {
   int index = -1;
@@ -26,6 +29,7 @@ struct MetalDeviceDesc {
 struct MetalBuffer {
   void* handle = nullptr;
   size_t bytes = 0;
+  int device_index = -1;
 };
 
 struct MetalKernel {
@@ -75,8 +79,11 @@ class MetalBackend final : public Backend {
   StatusOr<std::shared_ptr<Event>> CreateEvent() const override;
   StatusOr<Allocation> Allocate(size_t bytes, size_t alignment = 64) const override;
   Status Deallocate(const Allocation& alloc) const override;
+  StatusOr<Allocation> AllocatePinned(size_t bytes, size_t alignment = 64) const override;
+  Status DeallocatePinned(const Allocation& alloc) const override;
   int NumThreads() const override;
   size_t OutstandingAllocs() const override;
+  BackendMemoryStats MemoryStats() const override;
   void SetDefaultPriority(int priority) override;
   void SetDeterministic(bool deterministic) override;
 
@@ -109,10 +116,10 @@ class MetalBackend final : public Backend {
   std::string KernelDir() const;
   std::string CacheKey(const DeviceContext& dev, const std::string& kernel_name,
                        const std::string& build_options, const std::string& source) const;
+  MemoryPool* DevicePool(int device_index) const;
+  MemoryPool* PinnedPool(int device_index) const;
 
   mutable std::vector<DeviceContext> devices_;
-  mutable std::unordered_map<void*, size_t> allocations_;
-  mutable std::mutex alloc_mu_;
   mutable bool initialized_ = false;
   mutable Status init_status_ = Status::OK();
   mutable std::mutex mu_;

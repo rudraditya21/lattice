@@ -3,10 +3,13 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -18,6 +21,7 @@
 #include "runtime/backends/cuda_abi.h"
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
+#include "runtime/backends/memory_pool.h"
 
 namespace lattice::runtime {
 
@@ -142,6 +146,28 @@ CacheStore& CudaCacheStore() {
   return store;
 }
 
+constexpr unsigned int kCuMemHostAllocPortable = 0x01;
+
+MemoryPoolConfig CudaDevicePoolConfig() {
+  static MemoryPoolConfig config = [] {
+    MemoryPoolConfig base = DefaultDevicePoolConfig();
+    base = LoadMemoryPoolConfig("LATTICE_DEVICE_POOL", base);
+    base = LoadMemoryPoolConfig("LATTICE_CUDA_DEVICE_POOL", base);
+    return base;
+  }();
+  return config;
+}
+
+MemoryPoolConfig CudaPinnedPoolConfig() {
+  static MemoryPoolConfig config = [] {
+    MemoryPoolConfig base = DefaultPinnedPoolConfig();
+    base = LoadMemoryPoolConfig("LATTICE_PINNED_POOL", base);
+    base = LoadMemoryPoolConfig("LATTICE_CUDA_PINNED_POOL", base);
+    return base;
+  }();
+  return config;
+}
+
 class CudaEvent final : public Event {
  public:
   void Record() override { ready_ = true; }
@@ -183,6 +209,7 @@ struct CudaBackend::DeviceContext {
   DeviceCapabilities caps;
   std::string fingerprint;
   std::unordered_map<std::string, gpu::CUmodule> module_cache;
+  std::unique_ptr<MemoryPool> device_pool;
 };
 
 CudaBackend::CudaBackend() = default;
@@ -193,6 +220,14 @@ CudaBackend::~CudaBackend() {
     if (loader_.cuCtxSetCurrent && dev.context) {
       loader_.cuCtxSetCurrent(dev.context);
     }
+    if (dev.device_pool) {
+      if (dev.device_pool->Outstanding() > 0) {
+        LogBackend({LogLevel::kWarn, BackendType::kCUDA, BackendErrorKind::kMemory,
+                    "device pool has outstanding allocations", "device_pool_leak", dev.desc.index,
+                    dev.desc.name});
+      }
+      dev.device_pool->Trim();
+    }
     if (loader_.cuStreamDestroy && dev.stream) {
       loader_.cuStreamDestroy(dev.stream);
       dev.stream = nullptr;
@@ -201,6 +236,13 @@ CudaBackend::~CudaBackend() {
       loader_.cuCtxDestroy(dev.context);
       dev.context = nullptr;
     }
+  }
+  if (pinned_pool_) {
+    if (pinned_pool_->Outstanding() > 0) {
+      LogBackend({LogLevel::kWarn, BackendType::kCUDA, BackendErrorKind::kMemory,
+                  "pinned pool has outstanding allocations", "pinned_pool_leak", -1, "cuda"});
+    }
+    pinned_pool_->Trim();
   }
   loader_.Unload();
 }
@@ -244,32 +286,32 @@ StatusOr<std::shared_ptr<Event>> CudaBackend::CreateEvent() const {
 }
 
 StatusOr<Allocation> CudaBackend::Allocate(size_t bytes, size_t alignment) const {
-  (void)alignment;
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (devices_.empty()) {
     return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
                       "No CUDA devices available");
   }
-  gpu::CUdeviceptr ptr = 0;
-  if (loader_.cuCtxSetCurrent) {
-    loader_.cuCtxSetCurrent(devices_[0].context);
+  if (bytes == 0) {
+    Allocation empty;
+    empty.kind = AllocationKind::kDevice;
+    return empty;
   }
-  gpu::CUresult err = loader_.cuMemAlloc(&ptr, bytes);
-  if (err != gpu::CUDA_SUCCESS) {
-    return CudaStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
-                      "cuMemAlloc failed: " + gpu::CudaErrorString(err, &loader_));
+  auto* pool = DevicePool(0);
+  if (!pool) {
+    return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                      "Device pool unavailable");
   }
+  auto block_or = pool->Acquire(bytes, alignment);
+  if (!block_or.ok()) return block_or.status();
+  auto block = block_or.value();
   Allocation alloc;
   alloc.ptr = nullptr;
-  alloc.device_handle = reinterpret_cast<void*>(static_cast<uintptr_t>(ptr));
+  alloc.device_handle = reinterpret_cast<void*>(block.handle);
   alloc.bytes = bytes;
   alloc.alignment = alignment;
-  alloc.from_pool = false;
-  {
-    std::lock_guard<std::mutex> lock(alloc_mu_);
-    allocations_[ptr] = bytes;
-  }
+  alloc.from_pool = block.from_pool;
+  alloc.kind = AllocationKind::kDevice;
   return alloc;
 }
 
@@ -277,17 +319,50 @@ Status CudaBackend::Deallocate(const Allocation& alloc) const {
   if (!alloc.device_handle) return Status::OK();
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  auto ptr = static_cast<gpu::CUdeviceptr>(reinterpret_cast<uintptr_t>(alloc.device_handle));
-  gpu::CUresult err = loader_.cuMemFree(ptr);
-  if (err != gpu::CUDA_SUCCESS) {
-    return CudaStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
-                      "cuMemFree failed: " + gpu::CudaErrorString(err, &loader_));
+  auto* pool = DevicePool(0);
+  if (!pool) {
+    return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                      "Device pool unavailable");
   }
-  {
-    std::lock_guard<std::mutex> lock(alloc_mu_);
-    allocations_.erase(ptr);
+  return pool->Release(reinterpret_cast<uintptr_t>(alloc.device_handle));
+}
+
+StatusOr<Allocation> CudaBackend::AllocatePinned(size_t bytes, size_t alignment) const {
+  Status status = EnsureInitialized();
+  if (!status.ok()) return status;
+  if (bytes == 0) {
+    Allocation empty;
+    empty.kind = AllocationKind::kPinnedHost;
+    return empty;
   }
-  return Status::OK();
+  auto* pool = PinnedPool();
+  if (!pool) {
+    return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                      "Pinned pool unavailable");
+  }
+  auto block_or = pool->Acquire(bytes, alignment);
+  if (!block_or.ok()) return block_or.status();
+  auto block = block_or.value();
+  Allocation alloc;
+  alloc.ptr = block.host_ptr;
+  alloc.device_handle = reinterpret_cast<void*>(block.handle);
+  alloc.bytes = bytes;
+  alloc.alignment = alignment;
+  alloc.from_pool = block.from_pool;
+  alloc.kind = AllocationKind::kPinnedHost;
+  return alloc;
+}
+
+Status CudaBackend::DeallocatePinned(const Allocation& alloc) const {
+  if (!alloc.ptr) return Status::OK();
+  Status status = EnsureInitialized();
+  if (!status.ok()) return status;
+  auto* pool = PinnedPool();
+  if (!pool) {
+    return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                      "Pinned pool unavailable");
+  }
+  return pool->Release(reinterpret_cast<uintptr_t>(alloc.ptr));
 }
 
 int CudaBackend::NumThreads() const {
@@ -295,8 +370,29 @@ int CudaBackend::NumThreads() const {
 }
 
 size_t CudaBackend::OutstandingAllocs() const {
-  std::lock_guard<std::mutex> lock(alloc_mu_);
-  return allocations_.size();
+  size_t total = 0;
+  for (int i = 0; i < static_cast<int>(devices_.size()); ++i) {
+    auto& dev = devices_[i];
+    if (dev.device_pool) total += dev.device_pool->Outstanding();
+  }
+  if (pinned_pool_) total += pinned_pool_->Outstanding();
+  return total;
+}
+
+BackendMemoryStats CudaBackend::MemoryStats() const {
+  BackendMemoryStats stats;
+  Status status = EnsureInitialized();
+  if (!status.ok()) return stats;
+  for (int i = 0; i < static_cast<int>(devices_.size()); ++i) {
+    auto& dev = devices_[i];
+    if (dev.device_pool) {
+      AccumulateMemoryPoolStats(&stats.device, dev.device_pool->Stats());
+    }
+  }
+  if (pinned_pool_) {
+    AccumulateMemoryPoolStats(&stats.pinned, pinned_pool_->Stats());
+  }
+  return stats;
 }
 
 void CudaBackend::SetDefaultPriority(int priority) {
@@ -340,38 +436,34 @@ StatusOr<CudaBuffer> CudaBackend::CreateBuffer(int device_index, size_t bytes) c
     return CudaStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
                       "Invalid CUDA device index");
   }
-  auto& dev = devices_[device_index];
-  if (loader_.cuCtxSetCurrent) {
-    loader_.cuCtxSetCurrent(dev.context);
+  if (bytes == 0) {
+    return CudaBuffer{0, 0, device_index};
   }
-  gpu::CUdeviceptr ptr = 0;
-  gpu::CUresult err = loader_.cuMemAlloc(&ptr, bytes);
-  if (err != gpu::CUDA_SUCCESS) {
-    return CudaStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
-                      "cuMemAlloc failed: " + gpu::CudaErrorString(err, &loader_));
+  auto* pool = DevicePool(device_index);
+  if (!pool) {
+    return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                      "Device pool unavailable");
   }
-  {
-    std::lock_guard<std::mutex> lock(alloc_mu_);
-    allocations_[ptr] = bytes;
-  }
-  return CudaBuffer{ptr, bytes};
+  auto block_or = pool->Acquire(bytes, 64);
+  if (!block_or.ok()) return block_or.status();
+  auto block = block_or.value();
+  return CudaBuffer{static_cast<gpu::CUdeviceptr>(block.handle), bytes, device_index};
 }
 
 Status CudaBackend::ReleaseBuffer(CudaBuffer* buffer) const {
   if (!buffer || !buffer->ptr) return Status::OK();
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  gpu::CUresult err = loader_.cuMemFree(buffer->ptr);
-  if (err != gpu::CUDA_SUCCESS) {
-    return CudaStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
-                      "cuMemFree failed: " + gpu::CudaErrorString(err, &loader_));
+  auto* pool = DevicePool(buffer->device_index);
+  if (!pool) {
+    return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                      "Device pool unavailable");
   }
-  {
-    std::lock_guard<std::mutex> lock(alloc_mu_);
-    allocations_.erase(buffer->ptr);
-  }
+  Status release = pool->Release(static_cast<uintptr_t>(buffer->ptr));
+  if (!release.ok()) return release;
   buffer->ptr = 0;
   buffer->bytes = 0;
+  buffer->device_index = -1;
   return Status::OK();
 }
 
@@ -816,6 +908,121 @@ Status CudaBackend::EnsureInitialized() const {
 
   init_status_ = Status::OK();
   return init_status_;
+}
+
+MemoryPool* CudaBackend::DevicePool(int device_index) const {
+  if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) return nullptr;
+  std::lock_guard<std::mutex> lock(mu_);
+  auto& dev = devices_[device_index];
+  if (dev.device_pool) return dev.device_pool.get();
+
+  MemoryPoolConfig config = CudaDevicePoolConfig();
+  const int idx = device_index;
+  auto alloc_fn = [this, idx](size_t bytes, size_t alignment) -> StatusOr<PoolBlock> {
+    (void)alignment;
+    if (loader_.cuCtxSetCurrent) {
+      loader_.cuCtxSetCurrent(devices_[idx].context);
+    }
+    gpu::CUdeviceptr ptr = 0;
+    gpu::CUresult err = loader_.cuMemAlloc(&ptr, bytes);
+    if (err != gpu::CUDA_SUCCESS) {
+      return CudaStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                        "cuMemAlloc failed: " + gpu::CudaErrorString(err, &loader_));
+    }
+    PoolBlock block;
+    block.key = static_cast<uintptr_t>(ptr);
+    block.handle = static_cast<uintptr_t>(ptr);
+    block.bytes = bytes;
+    block.alignment = alignment;
+    return block;
+  };
+  auto free_fn = [this, idx](const PoolBlock& block) -> Status {
+    if (loader_.cuCtxSetCurrent) {
+      loader_.cuCtxSetCurrent(devices_[idx].context);
+    }
+    auto ptr = static_cast<gpu::CUdeviceptr>(block.handle);
+    gpu::CUresult err = loader_.cuMemFree(ptr);
+    if (err != gpu::CUDA_SUCCESS) {
+      return CudaStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                        "cuMemFree failed: " + gpu::CudaErrorString(err, &loader_));
+    }
+    return Status::OK();
+  };
+  auto scrub_fn = [this, idx](const PoolBlock& block) -> Status {
+    if (!loader_.cuMemsetD8) {
+      return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                        "cuMemsetD8 unavailable");
+    }
+    if (loader_.cuCtxSetCurrent) {
+      loader_.cuCtxSetCurrent(devices_[idx].context);
+    }
+    auto ptr = static_cast<gpu::CUdeviceptr>(block.handle);
+    gpu::CUresult err = loader_.cuMemsetD8(ptr, 0, block.bytes);
+    if (err != gpu::CUDA_SUCCESS) {
+      return CudaStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                        "cuMemsetD8 failed: " + gpu::CudaErrorString(err, &loader_));
+    }
+    if (loader_.cuStreamSynchronize && devices_[idx].stream) {
+      loader_.cuStreamSynchronize(devices_[idx].stream);
+    }
+    return Status::OK();
+  };
+
+  std::ostringstream label;
+  label << "cuda_device_pool_" << dev.desc.index;
+  dev.device_pool = std::make_unique<MemoryPool>(label.str(), config, alloc_fn, free_fn, scrub_fn);
+  return dev.device_pool.get();
+}
+
+MemoryPool* CudaBackend::PinnedPool() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (pinned_pool_) return pinned_pool_.get();
+
+  MemoryPoolConfig config = CudaPinnedPoolConfig();
+  auto alloc_fn = [this](size_t bytes, size_t alignment) -> StatusOr<PoolBlock> {
+    (void)alignment;
+    if (!loader_.cuMemHostAlloc) {
+      return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                        "cuMemHostAlloc unavailable");
+    }
+    void* host = nullptr;
+    unsigned int flags = kCuMemHostAllocPortable;
+    gpu::CUresult err = loader_.cuMemHostAlloc(&host, bytes, flags);
+    if (err != gpu::CUDA_SUCCESS || !host) {
+      return CudaStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                        "cuMemHostAlloc failed: " + gpu::CudaErrorString(err, &loader_));
+    }
+    PoolBlock block;
+    block.key = reinterpret_cast<uintptr_t>(host);
+    block.handle = reinterpret_cast<uintptr_t>(host);
+    block.host_ptr = host;
+    block.bytes = bytes;
+    block.alignment = alignment;
+    return block;
+  };
+  auto free_fn = [this](const PoolBlock& block) -> Status {
+    if (!loader_.cuMemFreeHost) {
+      return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                        "cuMemFreeHost unavailable");
+    }
+    void* host = reinterpret_cast<void*>(block.handle);
+    gpu::CUresult err = loader_.cuMemFreeHost(host);
+    if (err != gpu::CUDA_SUCCESS) {
+      return CudaStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                        "cuMemFreeHost failed: " + gpu::CudaErrorString(err, &loader_));
+    }
+    return Status::OK();
+  };
+  auto scrub_fn = [](const PoolBlock& block) -> Status {
+    if (block.host_ptr && block.bytes > 0) {
+      std::memset(block.host_ptr, 0, block.bytes);
+    }
+    return Status::OK();
+  };
+
+  pinned_pool_ =
+      std::make_unique<MemoryPool>("cuda_pinned_pool", config, alloc_fn, free_fn, scrub_fn);
+  return pinned_pool_.get();
 }
 
 std::string CudaBackend::KernelDir() const {

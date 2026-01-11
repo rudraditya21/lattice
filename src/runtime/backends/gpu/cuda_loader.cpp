@@ -104,6 +104,11 @@ bool CudaLoader::Load(std::string* error) {
   if (!LoadOptional(driver, "cuMemFree_v2", &cuMemFree)) {
     ok &= LoadSymbol(driver, "cuMemFree", &cuMemFree, error);
   }
+  LoadOptional(driver, "cuMemHostAlloc", &cuMemHostAlloc);
+  LoadOptional(driver, "cuMemFreeHost", &cuMemFreeHost);
+  if (!LoadOptional(driver, "cuMemsetD8_v2", &cuMemsetD8)) {
+    LoadOptional(driver, "cuMemsetD8", &cuMemsetD8);
+  }
   ok &= LoadSymbol(driver, "cuMemcpyHtoD", &cuMemcpyHtoD, error);
   ok &= LoadSymbol(driver, "cuMemcpyDtoH", &cuMemcpyDtoH, error);
   LoadOptional(driver, "cuModuleLoadDataEx", &cuModuleLoadDataEx);

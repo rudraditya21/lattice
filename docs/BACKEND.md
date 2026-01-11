@@ -28,6 +28,24 @@
   - `_DEVICE_INDICES=<list>` selects indices (e.g. `0,2-4`).
   - `_DEVICE_MASK=<bitmask>` selects indices by bitmask order (e.g. `1010`).
   - `_DEVICE_ORDER=<list>` reorders selected indices (e.g. `2,0`).
+- Memory pool controls (device + pinned pools):
+  - `LATTICE_DEVICE_POOL_DISABLE=1` disables device memory pooling (default enabled).
+  - `LATTICE_DEVICE_POOL_MAX_BYTES=<bytes|K|M|G>` caps cached device bytes (default 256M).
+  - `LATTICE_DEVICE_POOL_MAX_ENTRIES=<count>` caps cached device blocks (default 4096).
+  - `LATTICE_DEVICE_POOL_MAX_ENTRY_BYTES=<bytes|K|M|G>` skips pooling for larger buffers (default 64M).
+  - `LATTICE_DEVICE_POOL_BUCKET_BYTES=<bytes|K|M|G>` rounds device buffers to bucket size (default 256B).
+  - `LATTICE_DEVICE_POOL_SCRUB=1` zeros device buffers on release.
+  - `LATTICE_DEVICE_POOL_SCRUB_ON_ALLOC=1` zeros pooled device buffers on reuse.
+  - `LATTICE_PINNED_POOL_DISABLE=1` disables pinned host pooling (default enabled).
+  - `LATTICE_PINNED_POOL_MAX_BYTES=<bytes|K|M|G>` caps cached pinned bytes (default 128M).
+  - `LATTICE_PINNED_POOL_MAX_ENTRIES=<count>` caps cached pinned blocks (default 2048).
+  - `LATTICE_PINNED_POOL_MAX_ENTRY_BYTES=<bytes|K|M|G>` skips pooling for larger pinned buffers (default 32M).
+  - `LATTICE_PINNED_POOL_BUCKET_BYTES=<bytes|K|M|G>` rounds pinned buffers to bucket size (default 256B).
+  - `LATTICE_PINNED_POOL_SCRUB=1` zeros pinned buffers on release (default enabled).
+  - `LATTICE_PINNED_POOL_SCRUB_ON_ALLOC=1` zeros pooled pinned buffers on reuse.
+  - Per-backend overrides: `LATTICE_OPENCL_DEVICE_POOL_*`, `LATTICE_CUDA_DEVICE_POOL_*`,
+    `LATTICE_HIP_DEVICE_POOL_*`, `LATTICE_METAL_DEVICE_POOL_*` and `LATTICE_OPENCL_PINNED_POOL_*`,
+    `LATTICE_CUDA_PINNED_POOL_*`, `LATTICE_HIP_PINNED_POOL_*`, `LATTICE_METAL_PINNED_POOL_*`.
 - Structured logging is available via:
   - `LATTICE_LOG_LEVEL=error|warn|info|debug|trace` (enables structured logs).
   - `LATTICE_LOG_FORMAT=text|json` (default `text`).

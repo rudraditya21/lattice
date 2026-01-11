@@ -1,5 +1,6 @@
 #include "runtime/backend.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <condition_variable>
@@ -42,6 +43,7 @@ struct AllocInfo {
 std::mutex g_alloc_mu;
 std::unordered_map<void*, AllocInfo> g_allocs;
 std::unordered_map<size_t, std::vector<void*>> g_pool;
+MemoryPoolStats g_pool_stats;
 
 std::string NormalizeBackendName(const char* name) {
   std::string out;
@@ -280,16 +282,30 @@ StatusOr<Allocation> CpuBackend::Allocate(size_t bytes, size_t alignment) const 
   alloc.bytes = bytes;
   alloc.alignment = alignment;
   alloc.numa_node = preferred_numa_node_;
+  alloc.kind = AllocationKind::kHost;
   const bool use_pool = bytes > 0 && bytes <= kPoolMaxSize && alignment <= kDefaultAlignment;
   void* pooled = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_alloc_mu);
+    g_pool_stats.total_alloc_calls++;
     if (use_pool) {
       auto it = g_pool.find(bytes);
       if (it != g_pool.end() && !it->second.empty()) {
         pooled = it->second.back();
         it->second.pop_back();
+        g_pool_stats.pool_hits++;
+        if (g_pool_stats.cached_blocks > 0) {
+          g_pool_stats.cached_blocks--;
+        }
+        if (g_pool_stats.cached_bytes >= bytes) {
+          g_pool_stats.cached_bytes -= bytes;
+        } else {
+          g_pool_stats.cached_bytes = 0;
+        }
       }
+    }
+    if (use_pool && !pooled) {
+      g_pool_stats.pool_misses++;
     }
   }
 
@@ -323,6 +339,12 @@ StatusOr<Allocation> CpuBackend::Allocate(size_t bytes, size_t alignment) const 
   {
     std::lock_guard<std::mutex> lock(g_alloc_mu);
     g_allocs[user_ptr] = {bytes, alignment, pre, post, user_ptr, raw, alloc.from_pool};
+    g_pool_stats.in_use_bytes += bytes;
+    g_pool_stats.in_use_blocks++;
+    g_pool_stats.peak_in_use_bytes =
+        std::max(g_pool_stats.peak_in_use_bytes, g_pool_stats.in_use_bytes);
+    g_pool_stats.peak_in_use_blocks =
+        std::max(g_pool_stats.peak_in_use_blocks, g_pool_stats.in_use_blocks);
   }
 #ifdef __linux__
   if (preferred_numa_node_ >= 0) {
@@ -342,12 +364,21 @@ Status CpuBackend::Deallocate(const Allocation& alloc) const {
   AllocInfo info;
   {
     std::lock_guard<std::mutex> lock(g_alloc_mu);
+    g_pool_stats.total_free_calls++;
     auto it = g_allocs.find(alloc.ptr);
     if (it == g_allocs.end()) {
       return Status::Invalid("unknown allocation");
     }
     info = it->second;
     g_allocs.erase(it);
+    if (g_pool_stats.in_use_bytes >= info.bytes) {
+      g_pool_stats.in_use_bytes -= info.bytes;
+    } else {
+      g_pool_stats.in_use_bytes = 0;
+    }
+    if (g_pool_stats.in_use_blocks > 0) {
+      g_pool_stats.in_use_blocks--;
+    }
   }
   if (*info.pre_guard != kCanary || *info.post_guard != kCanary) {
     return Status::Internal("memory canary corrupted");
@@ -355,11 +386,14 @@ Status CpuBackend::Deallocate(const Allocation& alloc) const {
 #if !defined(_MSC_VER)
   if (info.bytes > 0) {
     std::memset(info.user_ptr, 0, info.bytes);  // scrub before free (best-effort)
+    g_pool_stats.scrubbed_bytes += info.bytes;
   }
 #endif
   if (info.from_pool && info.bytes <= kPoolMaxSize && info.alignment <= kDefaultAlignment) {
     std::lock_guard<std::mutex> lock(g_alloc_mu);
     g_pool[info.bytes].push_back(info.raw_ptr);
+    g_pool_stats.cached_bytes += info.bytes;
+    g_pool_stats.cached_blocks++;
   } else {
 #if defined(_MSC_VER)
     _aligned_free(info.raw_ptr);
@@ -370,6 +404,18 @@ Status CpuBackend::Deallocate(const Allocation& alloc) const {
   return Status::OK();
 }
 
+StatusOr<Allocation> CpuBackend::AllocatePinned(size_t bytes, size_t alignment) const {
+  auto alloc_or = Allocate(bytes, alignment);
+  if (!alloc_or.ok()) return alloc_or;
+  auto alloc = alloc_or.value();
+  alloc.kind = AllocationKind::kPinnedHost;
+  return alloc;
+}
+
+Status CpuBackend::DeallocatePinned(const Allocation& alloc) const {
+  return Deallocate(alloc);
+}
+
 int CpuBackend::NumThreads() const {
   return static_cast<int>(std::thread::hardware_concurrency());
 }
@@ -377,6 +423,13 @@ int CpuBackend::NumThreads() const {
 size_t CpuBackend::OutstandingAllocs() const {
   std::lock_guard<std::mutex> lock(g_alloc_mu);
   return g_allocs.size();
+}
+
+BackendMemoryStats CpuBackend::MemoryStats() const {
+  BackendMemoryStats stats;
+  std::lock_guard<std::mutex> lock(g_alloc_mu);
+  stats.device = g_pool_stats;
+  return stats;
 }
 
 void CpuBackend::SetDefaultPriority(int priority) {

@@ -61,6 +61,8 @@ struct BackendCapabilities {
   std::vector<DType> supported_dtypes;
 };
 
+enum class AllocationKind { kHost, kDevice, kPinnedHost };
+
 struct Allocation {
   void* ptr = nullptr;
   void* device_handle = nullptr;
@@ -68,6 +70,27 @@ struct Allocation {
   size_t alignment = 64;  // default cacheline alignment
   bool from_pool = false;
   int numa_node = -1;
+  AllocationKind kind = AllocationKind::kDevice;
+};
+
+struct MemoryPoolStats {
+  size_t in_use_bytes = 0;
+  size_t in_use_blocks = 0;
+  size_t cached_bytes = 0;
+  size_t cached_blocks = 0;
+  size_t total_alloc_calls = 0;
+  size_t total_free_calls = 0;
+  size_t pool_hits = 0;
+  size_t pool_misses = 0;
+  size_t evictions = 0;
+  size_t scrubbed_bytes = 0;
+  size_t peak_in_use_bytes = 0;
+  size_t peak_in_use_blocks = 0;
+};
+
+struct BackendMemoryStats {
+  MemoryPoolStats device;
+  MemoryPoolStats pinned;
 };
 
 class Event {
@@ -121,8 +144,11 @@ class Backend {
   virtual StatusOr<std::shared_ptr<Event>> CreateEvent() const = 0;
   virtual StatusOr<Allocation> Allocate(size_t bytes, size_t alignment = 64) const = 0;
   virtual Status Deallocate(const Allocation& alloc) const = 0;
+  virtual StatusOr<Allocation> AllocatePinned(size_t bytes, size_t alignment = 64) const = 0;
+  virtual Status DeallocatePinned(const Allocation& alloc) const = 0;
   virtual int NumThreads() const = 0;
   virtual size_t OutstandingAllocs() const = 0;
+  virtual BackendMemoryStats MemoryStats() const = 0;
   virtual void SetDefaultPriority(int priority) = 0;
   virtual void SetDeterministic(bool deterministic) = 0;
 };
@@ -137,8 +163,11 @@ class CpuBackend final : public Backend {
   StatusOr<std::shared_ptr<Event>> CreateEvent() const override;
   StatusOr<Allocation> Allocate(size_t bytes, size_t alignment = 64) const override;
   Status Deallocate(const Allocation& alloc) const override;
+  StatusOr<Allocation> AllocatePinned(size_t bytes, size_t alignment = 64) const override;
+  Status DeallocatePinned(const Allocation& alloc) const override;
   int NumThreads() const override;
   size_t OutstandingAllocs() const override;
+  BackendMemoryStats MemoryStats() const override;
   void SetDefaultPriority(int priority) override;
   void SetDeterministic(bool deterministic) override;
 

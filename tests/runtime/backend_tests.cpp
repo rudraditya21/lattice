@@ -47,6 +47,23 @@ void RunBackendTests(TestContext* ctx) {
   ExpectTrue(dealloc_status.ok(), "backend_dealloc_status", ctx);
   ExpectTrue(backend->OutstandingAllocs() == 0, "backend_no_leaks", ctx);
 
+  auto pinned_or = backend->AllocatePinned(64, 64);
+  if (pinned_or.ok()) {
+    auto pinned = pinned_or.value();
+    ExpectTrue(pinned.ptr != nullptr && pinned.bytes == 64, "backend_pinned_alloc", ctx);
+    auto pinned_dealloc = backend->DeallocatePinned(pinned);
+    ExpectTrue(pinned_dealloc.ok(), "backend_pinned_dealloc", ctx);
+  } else {
+    ExpectTrue(pinned_or.status().code == rt::StatusCode::kUnavailable,
+               "backend_pinned_optional", ctx);
+  }
+
+  auto stats = backend->MemoryStats();
+  ExpectTrue(stats.device.peak_in_use_blocks >= stats.device.in_use_blocks,
+             "backend_stats_peak_blocks", ctx);
+  ExpectTrue(stats.device.peak_in_use_bytes >= stats.device.in_use_bytes,
+             "backend_stats_peak_bytes", ctx);
+
   const char* run_smoke = std::getenv("LATTICE_GPU_SMOKE_TEST");
   if (run_smoke && run_smoke[0] != '\0') {
     rt::Status status = rt::Status::OK();

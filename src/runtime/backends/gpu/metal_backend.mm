@@ -13,6 +13,8 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -23,6 +25,7 @@
 #include "runtime/backends/cache_store.h"
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
+#include "runtime/backends/memory_pool.h"
 #include "runtime/backends/metal_abi.h"
 
 namespace lattice::runtime {
@@ -114,6 +117,26 @@ DeviceMetadata BuildDeviceMetadata(const MetalDeviceDesc& desc, const DeviceCapa
   return meta;
 }
 
+MemoryPoolConfig MetalDevicePoolConfig() {
+  static MemoryPoolConfig config = [] {
+    MemoryPoolConfig base = DefaultDevicePoolConfig();
+    base = LoadMemoryPoolConfig("LATTICE_DEVICE_POOL", base);
+    base = LoadMemoryPoolConfig("LATTICE_METAL_DEVICE_POOL", base);
+    return base;
+  }();
+  return config;
+}
+
+MemoryPoolConfig MetalPinnedPoolConfig() {
+  static MemoryPoolConfig config = [] {
+    MemoryPoolConfig base = DefaultPinnedPoolConfig();
+    base = LoadMemoryPoolConfig("LATTICE_PINNED_POOL", base);
+    base = LoadMemoryPoolConfig("LATTICE_METAL_PINNED_POOL", base);
+    return base;
+  }();
+  return config;
+}
+
 }  // namespace
 
 struct MetalBackend::DeviceContext {
@@ -123,12 +146,32 @@ struct MetalBackend::DeviceContext {
   DeviceCapabilities caps;
   std::string fingerprint;
   std::unordered_map<std::string, id<MTLComputePipelineState>> pipeline_cache;
+  std::unique_ptr<MemoryPool> device_pool;
+  std::unique_ptr<MemoryPool> pinned_pool;
 };
 
 MetalBackend::MetalBackend() = default;
 
 MetalBackend::~MetalBackend() {
   std::lock_guard<std::mutex> lock(mu_);
+  for (auto& dev : devices_) {
+    if (dev.device_pool) {
+      if (dev.device_pool->Outstanding() > 0) {
+        LogBackend({LogLevel::kWarn, BackendType::kMetal, BackendErrorKind::kMemory,
+                    "device pool has outstanding allocations", "device_pool_leak", dev.desc.index,
+                    dev.desc.name});
+      }
+      dev.device_pool->Trim();
+    }
+    if (dev.pinned_pool) {
+      if (dev.pinned_pool->Outstanding() > 0) {
+        LogBackend({LogLevel::kWarn, BackendType::kMetal, BackendErrorKind::kMemory,
+                    "pinned pool has outstanding allocations", "pinned_pool_leak", dev.desc.index,
+                    dev.desc.name});
+      }
+      dev.pinned_pool->Trim();
+    }
+  }
   devices_.clear();
 }
 
@@ -167,38 +210,115 @@ StatusOr<std::shared_ptr<Event>> MetalBackend::CreateEvent() const {
 }
 
 StatusOr<Allocation> MetalBackend::Allocate(size_t bytes, size_t alignment) const {
-  (void)alignment;
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (devices_.empty()) {
     return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
                        "No Metal devices available");
   }
-  auto buf_or = CreateBuffer(0, bytes);
-  if (!buf_or.ok()) return buf_or.status();
-  auto buf = buf_or.value();
+  if (bytes == 0) {
+    Allocation empty;
+    empty.kind = AllocationKind::kDevice;
+    return empty;
+  }
+  auto* pool = DevicePool(0);
+  if (!pool) {
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                       "Device pool unavailable");
+  }
+  auto block_or = pool->Acquire(bytes, alignment);
+  if (!block_or.ok()) return block_or.status();
+  auto block = block_or.value();
   Allocation alloc;
   alloc.ptr = nullptr;
-  alloc.device_handle = buf.handle;
+  alloc.device_handle = reinterpret_cast<void*>(block.handle);
   alloc.bytes = bytes;
   alloc.alignment = alignment;
-  alloc.from_pool = false;
+  alloc.from_pool = block.from_pool;
+  alloc.kind = AllocationKind::kDevice;
   return alloc;
 }
 
 Status MetalBackend::Deallocate(const Allocation& alloc) const {
   if (!alloc.device_handle) return Status::OK();
-  MetalBuffer buffer;
-  buffer.handle = alloc.device_handle;
-  buffer.bytes = alloc.bytes;
-  return ReleaseBuffer(&buffer);
+  Status status = EnsureInitialized();
+  if (!status.ok()) return status;
+  auto* pool = DevicePool(0);
+  if (!pool) {
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                       "Device pool unavailable");
+  }
+  return pool->Release(reinterpret_cast<uintptr_t>(alloc.device_handle));
+}
+
+StatusOr<Allocation> MetalBackend::AllocatePinned(size_t bytes, size_t alignment) const {
+  Status status = EnsureInitialized();
+  if (!status.ok()) return status;
+  if (devices_.empty()) {
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                       "No Metal devices available");
+  }
+  if (bytes == 0) {
+    Allocation empty;
+    empty.kind = AllocationKind::kPinnedHost;
+    return empty;
+  }
+  auto* pool = PinnedPool(0);
+  if (!pool) {
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                       "Pinned pool unavailable");
+  }
+  auto block_or = pool->Acquire(bytes, alignment);
+  if (!block_or.ok()) return block_or.status();
+  auto block = block_or.value();
+  Allocation alloc;
+  alloc.ptr = block.host_ptr;
+  alloc.device_handle = reinterpret_cast<void*>(block.handle);
+  alloc.bytes = bytes;
+  alloc.alignment = alignment;
+  alloc.from_pool = block.from_pool;
+  alloc.kind = AllocationKind::kPinnedHost;
+  return alloc;
+}
+
+Status MetalBackend::DeallocatePinned(const Allocation& alloc) const {
+  if (!alloc.ptr) return Status::OK();
+  Status status = EnsureInitialized();
+  if (!status.ok()) return status;
+  auto* pool = PinnedPool(0);
+  if (!pool) {
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                       "Pinned pool unavailable");
+  }
+  return pool->Release(reinterpret_cast<uintptr_t>(alloc.ptr));
 }
 
 int MetalBackend::NumThreads() const { return 1; }
 
 size_t MetalBackend::OutstandingAllocs() const {
-  std::lock_guard<std::mutex> lock(alloc_mu_);
-  return allocations_.size();
+  size_t total = 0;
+  for (int i = 0; i < static_cast<int>(devices_.size()); ++i) {
+    auto& dev = devices_[i];
+    if (dev.device_pool) total += dev.device_pool->Outstanding();
+    if (dev.pinned_pool) total += dev.pinned_pool->Outstanding();
+  }
+  return total;
+}
+
+BackendMemoryStats MetalBackend::MemoryStats() const {
+  BackendMemoryStats stats;
+  Status status = EnsureInitialized();
+  if (!status.ok()) return stats;
+  for (int i = 0; i < static_cast<int>(devices_.size()); ++i) {
+    auto& dev = devices_[i];
+    if (dev.device_pool) {
+      AccumulateMemoryPoolStats(&stats.device, dev.device_pool->Stats());
+    }
+    if (dev.pinned_pool) {
+      AccumulateMemoryPoolStats(&stats.pinned, dev.pinned_pool->Stats());
+    }
+  }
+  return stats;
 }
 
 void MetalBackend::SetDefaultPriority(int priority) { default_priority_ = priority; }
@@ -238,30 +358,32 @@ StatusOr<MetalBuffer> MetalBackend::CreateBuffer(int device_index, size_t bytes)
     return MetalStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
                        "Invalid Metal device index");
   }
-  auto& dev = devices_[device_index];
-  id<MTLBuffer> buffer = [dev.device newBufferWithLength:bytes
-                                                 options:MTLResourceStorageModeShared];
-  if (!buffer) {
-    return MetalStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
-                       "Failed to allocate Metal buffer");
+  if (bytes == 0) {
+    return MetalBuffer{nullptr, 0, device_index};
   }
-  void* handle = (__bridge_retained void*)buffer;
-  {
-    std::lock_guard<std::mutex> lock(alloc_mu_);
-    allocations_[handle] = bytes;
+  auto* pool = DevicePool(device_index);
+  if (!pool) {
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                       "Device pool unavailable");
   }
-  return MetalBuffer{handle, bytes};
+  auto block_or = pool->Acquire(bytes, 64);
+  if (!block_or.ok()) return block_or.status();
+  auto block = block_or.value();
+  return MetalBuffer{reinterpret_cast<void*>(block.handle), bytes, device_index};
 }
 
 Status MetalBackend::ReleaseBuffer(MetalBuffer* buffer) const {
   if (!buffer || !buffer->handle) return Status::OK();
-  {
-    std::lock_guard<std::mutex> lock(alloc_mu_);
-    allocations_.erase(buffer->handle);
+  auto* pool = DevicePool(buffer->device_index);
+  if (!pool) {
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                       "Device pool unavailable");
   }
-  CFRelease(buffer->handle);
+  Status release = pool->Release(reinterpret_cast<uintptr_t>(buffer->handle));
+  if (!release.ok()) return release;
   buffer->handle = nullptr;
   buffer->bytes = 0;
+  buffer->device_index = -1;
   return Status::OK();
 }
 
@@ -670,6 +792,101 @@ Status MetalBackend::EnsureInitialized() const {
 
   init_status_ = Status::OK();
   return init_status_;
+}
+
+MemoryPool* MetalBackend::DevicePool(int device_index) const {
+  if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) return nullptr;
+  std::lock_guard<std::mutex> lock(mu_);
+  auto& dev = devices_[device_index];
+  if (dev.device_pool) return dev.device_pool.get();
+
+  MemoryPoolConfig config = MetalDevicePoolConfig();
+  const int idx = device_index;
+  auto alloc_fn = [this, idx](size_t bytes, size_t alignment) -> StatusOr<PoolBlock> {
+    (void)alignment;
+    auto& device = devices_[idx];
+    id<MTLBuffer> buffer = [device.device newBufferWithLength:bytes
+                                                      options:MTLResourceStorageModeShared];
+    if (!buffer) {
+      return MetalStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                         "Failed to allocate Metal buffer");
+    }
+    void* handle = (__bridge_retained void*)buffer;
+    PoolBlock block;
+    block.key = reinterpret_cast<uintptr_t>(handle);
+    block.handle = reinterpret_cast<uintptr_t>(handle);
+    block.bytes = bytes;
+    block.alignment = alignment;
+    return block;
+  };
+  auto free_fn = [](const PoolBlock& block) -> Status {
+    if (!block.handle) return Status::OK();
+    CFRelease(reinterpret_cast<void*>(block.handle));
+    return Status::OK();
+  };
+  auto scrub_fn = [this, idx](const PoolBlock& block) -> Status {
+    if (!block.handle || block.bytes == 0) return Status::OK();
+    id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)reinterpret_cast<void*>(block.handle);
+    void* dst = buffer.contents;
+    if (dst) {
+      std::memset(dst, 0, block.bytes);
+    }
+    return Status::OK();
+  };
+
+  std::ostringstream label;
+  label << "metal_device_pool_" << dev.desc.index;
+  dev.device_pool = std::make_unique<MemoryPool>(label.str(), config, alloc_fn, free_fn, scrub_fn);
+  return dev.device_pool.get();
+}
+
+MemoryPool* MetalBackend::PinnedPool(int device_index) const {
+  if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) return nullptr;
+  std::lock_guard<std::mutex> lock(mu_);
+  auto& dev = devices_[device_index];
+  if (dev.pinned_pool) return dev.pinned_pool.get();
+
+  MemoryPoolConfig config = MetalPinnedPoolConfig();
+  const int idx = device_index;
+  auto alloc_fn = [this, idx](size_t bytes, size_t alignment) -> StatusOr<PoolBlock> {
+    (void)alignment;
+    auto& device = devices_[idx];
+    MTLResourceOptions options = MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined;
+    id<MTLBuffer> buffer = [device.device newBufferWithLength:bytes options:options];
+    if (!buffer) {
+      return MetalStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                         "Failed to allocate Metal pinned buffer");
+    }
+    void* host_ptr = buffer.contents;
+    if (!host_ptr) {
+      return MetalStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                         "Metal pinned buffer has no host pointer");
+    }
+    void* handle = (__bridge_retained void*)buffer;
+    PoolBlock block;
+    block.key = reinterpret_cast<uintptr_t>(host_ptr);
+    block.handle = reinterpret_cast<uintptr_t>(handle);
+    block.host_ptr = host_ptr;
+    block.bytes = bytes;
+    block.alignment = alignment;
+    return block;
+  };
+  auto free_fn = [](const PoolBlock& block) -> Status {
+    if (!block.handle) return Status::OK();
+    CFRelease(reinterpret_cast<void*>(block.handle));
+    return Status::OK();
+  };
+  auto scrub_fn = [](const PoolBlock& block) -> Status {
+    if (block.host_ptr && block.bytes > 0) {
+      std::memset(block.host_ptr, 0, block.bytes);
+    }
+    return Status::OK();
+  };
+
+  std::ostringstream label;
+  label << "metal_pinned_pool_" << dev.desc.index;
+  dev.pinned_pool = std::make_unique<MemoryPool>(label.str(), config, alloc_fn, free_fn, scrub_fn);
+  return dev.pinned_pool.get();
 }
 
 std::string MetalBackend::KernelDir() const {

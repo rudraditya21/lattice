@@ -54,8 +54,10 @@ bool OpenCLLoader::Load(std::string* error) {
   ok &= LoadSymbol(lib, "clCreateProgramWithSource", &clCreateProgramWithSource, error);
   ok &= LoadSymbol(lib, "clEnqueueCopyBuffer", &clEnqueueCopyBuffer, error);
   LoadSymbol(lib, "clEnqueueFillBuffer", &clEnqueueFillBuffer, nullptr);
+  LoadSymbol(lib, "clEnqueueMapBuffer", &clEnqueueMapBuffer, nullptr);
   ok &= LoadSymbol(lib, "clEnqueueNDRangeKernel", &clEnqueueNDRangeKernel, error);
   ok &= LoadSymbol(lib, "clEnqueueReadBuffer", &clEnqueueReadBuffer, error);
+  LoadSymbol(lib, "clEnqueueUnmapMemObject", &clEnqueueUnmapMemObject, nullptr);
   ok &= LoadSymbol(lib, "clEnqueueWriteBuffer", &clEnqueueWriteBuffer, error);
   ok &= LoadSymbol(lib, "clFinish", &clFinish, error);
   ok &= LoadSymbol(lib, "clFlush", &clFlush, error);

@@ -3,10 +3,13 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -18,6 +21,7 @@
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
 #include "runtime/backends/hip_abi.h"
+#include "runtime/backends/memory_pool.h"
 
 namespace lattice::runtime {
 
@@ -138,6 +142,26 @@ CacheStore& HipCacheStore() {
   return store;
 }
 
+MemoryPoolConfig HipDevicePoolConfig() {
+  static MemoryPoolConfig config = [] {
+    MemoryPoolConfig base = DefaultDevicePoolConfig();
+    base = LoadMemoryPoolConfig("LATTICE_DEVICE_POOL", base);
+    base = LoadMemoryPoolConfig("LATTICE_HIP_DEVICE_POOL", base);
+    return base;
+  }();
+  return config;
+}
+
+MemoryPoolConfig HipPinnedPoolConfig() {
+  static MemoryPoolConfig config = [] {
+    MemoryPoolConfig base = DefaultPinnedPoolConfig();
+    base = LoadMemoryPoolConfig("LATTICE_PINNED_POOL", base);
+    base = LoadMemoryPoolConfig("LATTICE_HIP_PINNED_POOL", base);
+    return base;
+  }();
+  return config;
+}
+
 class HipEvent final : public Event {
  public:
   void Record() override { ready_ = true; }
@@ -179,6 +203,7 @@ struct HipBackend::DeviceContext {
   DeviceCapabilities caps;
   std::string fingerprint;
   std::unordered_map<std::string, gpu::hipModule_t> module_cache;
+  std::unique_ptr<MemoryPool> device_pool;
 };
 
 HipBackend::HipBackend() = default;
@@ -189,6 +214,14 @@ HipBackend::~HipBackend() {
     if (loader_.hipCtxSetCurrent && dev.context) {
       loader_.hipCtxSetCurrent(dev.context);
     }
+    if (dev.device_pool) {
+      if (dev.device_pool->Outstanding() > 0) {
+        LogBackend({LogLevel::kWarn, BackendType::kHIP, BackendErrorKind::kMemory,
+                    "device pool has outstanding allocations", "device_pool_leak", dev.desc.index,
+                    dev.desc.name});
+      }
+      dev.device_pool->Trim();
+    }
     if (loader_.hipStreamDestroy && dev.stream) {
       loader_.hipStreamDestroy(dev.stream);
       dev.stream = nullptr;
@@ -197,6 +230,13 @@ HipBackend::~HipBackend() {
       loader_.hipCtxDestroy(dev.context);
       dev.context = nullptr;
     }
+  }
+  if (pinned_pool_) {
+    if (pinned_pool_->Outstanding() > 0) {
+      LogBackend({LogLevel::kWarn, BackendType::kHIP, BackendErrorKind::kMemory,
+                  "pinned pool has outstanding allocations", "pinned_pool_leak", -1, "hip"});
+    }
+    pinned_pool_->Trim();
   }
   loader_.Unload();
 }
@@ -240,32 +280,32 @@ StatusOr<std::shared_ptr<Event>> HipBackend::CreateEvent() const {
 }
 
 StatusOr<Allocation> HipBackend::Allocate(size_t bytes, size_t alignment) const {
-  (void)alignment;
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
   if (devices_.empty()) {
     return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
                      "No HIP devices available");
   }
-  if (loader_.hipCtxSetCurrent && devices_[0].context) {
-    loader_.hipCtxSetCurrent(devices_[0].context);
+  if (bytes == 0) {
+    Allocation empty;
+    empty.kind = AllocationKind::kDevice;
+    return empty;
   }
-  void* ptr = nullptr;
-  gpu::hipError_t err = loader_.hipMalloc(&ptr, bytes);
-  if (err != gpu::hipSuccess) {
-    return HipStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
-                     "hipMalloc failed: " + gpu::HipErrorString(err, &loader_));
+  auto* pool = DevicePool(0);
+  if (!pool) {
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                     "Device pool unavailable");
   }
+  auto block_or = pool->Acquire(bytes, alignment);
+  if (!block_or.ok()) return block_or.status();
+  auto block = block_or.value();
   Allocation alloc;
   alloc.ptr = nullptr;
-  alloc.device_handle = ptr;
+  alloc.device_handle = reinterpret_cast<void*>(block.handle);
   alloc.bytes = bytes;
   alloc.alignment = alignment;
-  alloc.from_pool = false;
-  {
-    std::lock_guard<std::mutex> lock(alloc_mu_);
-    allocations_[ptr] = bytes;
-  }
+  alloc.from_pool = block.from_pool;
+  alloc.kind = AllocationKind::kDevice;
   return alloc;
 }
 
@@ -273,16 +313,50 @@ Status HipBackend::Deallocate(const Allocation& alloc) const {
   if (!alloc.device_handle) return Status::OK();
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  gpu::hipError_t err = loader_.hipFree(alloc.device_handle);
-  if (err != gpu::hipSuccess) {
-    return HipStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
-                     "hipFree failed: " + gpu::HipErrorString(err, &loader_));
+  auto* pool = DevicePool(0);
+  if (!pool) {
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                     "Device pool unavailable");
   }
-  {
-    std::lock_guard<std::mutex> lock(alloc_mu_);
-    allocations_.erase(alloc.device_handle);
+  return pool->Release(reinterpret_cast<uintptr_t>(alloc.device_handle));
+}
+
+StatusOr<Allocation> HipBackend::AllocatePinned(size_t bytes, size_t alignment) const {
+  Status status = EnsureInitialized();
+  if (!status.ok()) return status;
+  if (bytes == 0) {
+    Allocation empty;
+    empty.kind = AllocationKind::kPinnedHost;
+    return empty;
   }
-  return Status::OK();
+  auto* pool = PinnedPool();
+  if (!pool) {
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                     "Pinned pool unavailable");
+  }
+  auto block_or = pool->Acquire(bytes, alignment);
+  if (!block_or.ok()) return block_or.status();
+  auto block = block_or.value();
+  Allocation alloc;
+  alloc.ptr = block.host_ptr;
+  alloc.device_handle = reinterpret_cast<void*>(block.handle);
+  alloc.bytes = bytes;
+  alloc.alignment = alignment;
+  alloc.from_pool = block.from_pool;
+  alloc.kind = AllocationKind::kPinnedHost;
+  return alloc;
+}
+
+Status HipBackend::DeallocatePinned(const Allocation& alloc) const {
+  if (!alloc.ptr) return Status::OK();
+  Status status = EnsureInitialized();
+  if (!status.ok()) return status;
+  auto* pool = PinnedPool();
+  if (!pool) {
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                     "Pinned pool unavailable");
+  }
+  return pool->Release(reinterpret_cast<uintptr_t>(alloc.ptr));
 }
 
 int HipBackend::NumThreads() const {
@@ -290,8 +364,29 @@ int HipBackend::NumThreads() const {
 }
 
 size_t HipBackend::OutstandingAllocs() const {
-  std::lock_guard<std::mutex> lock(alloc_mu_);
-  return allocations_.size();
+  size_t total = 0;
+  for (int i = 0; i < static_cast<int>(devices_.size()); ++i) {
+    auto& dev = devices_[i];
+    if (dev.device_pool) total += dev.device_pool->Outstanding();
+  }
+  if (pinned_pool_) total += pinned_pool_->Outstanding();
+  return total;
+}
+
+BackendMemoryStats HipBackend::MemoryStats() const {
+  BackendMemoryStats stats;
+  Status status = EnsureInitialized();
+  if (!status.ok()) return stats;
+  for (int i = 0; i < static_cast<int>(devices_.size()); ++i) {
+    auto& dev = devices_[i];
+    if (dev.device_pool) {
+      AccumulateMemoryPoolStats(&stats.device, dev.device_pool->Stats());
+    }
+  }
+  if (pinned_pool_) {
+    AccumulateMemoryPoolStats(&stats.pinned, pinned_pool_->Stats());
+  }
+  return stats;
 }
 
 void HipBackend::SetDefaultPriority(int priority) {
@@ -335,38 +430,34 @@ StatusOr<HipBuffer> HipBackend::CreateBuffer(int device_index, size_t bytes) con
     return HipStatus(StatusCode::kInvalidArgument, BackendErrorKind::kInvalidArgument,
                      "Invalid HIP device index");
   }
-  auto& dev = devices_[device_index];
-  if (loader_.hipCtxSetCurrent && dev.context) {
-    loader_.hipCtxSetCurrent(dev.context);
+  if (bytes == 0) {
+    return HipBuffer{nullptr, 0, device_index};
   }
-  void* ptr = nullptr;
-  gpu::hipError_t err = loader_.hipMalloc(&ptr, bytes);
-  if (err != gpu::hipSuccess) {
-    return HipStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
-                     "hipMalloc failed: " + gpu::HipErrorString(err, &loader_));
+  auto* pool = DevicePool(device_index);
+  if (!pool) {
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                     "Device pool unavailable");
   }
-  {
-    std::lock_guard<std::mutex> lock(alloc_mu_);
-    allocations_[ptr] = bytes;
-  }
-  return HipBuffer{ptr, bytes};
+  auto block_or = pool->Acquire(bytes, 64);
+  if (!block_or.ok()) return block_or.status();
+  auto block = block_or.value();
+  return HipBuffer{reinterpret_cast<void*>(block.handle), bytes, device_index};
 }
 
 Status HipBackend::ReleaseBuffer(HipBuffer* buffer) const {
   if (!buffer || !buffer->ptr) return Status::OK();
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  gpu::hipError_t err = loader_.hipFree(buffer->ptr);
-  if (err != gpu::hipSuccess) {
-    return HipStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
-                     "hipFree failed: " + gpu::HipErrorString(err, &loader_));
+  auto* pool = DevicePool(buffer->device_index);
+  if (!pool) {
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                     "Device pool unavailable");
   }
-  {
-    std::lock_guard<std::mutex> lock(alloc_mu_);
-    allocations_.erase(buffer->ptr);
-  }
+  Status release = pool->Release(reinterpret_cast<uintptr_t>(buffer->ptr));
+  if (!release.ok()) return release;
   buffer->ptr = nullptr;
   buffer->bytes = 0;
+  buffer->device_index = -1;
   return Status::OK();
 }
 
@@ -800,6 +891,120 @@ Status HipBackend::EnsureInitialized() const {
 
   init_status_ = Status::OK();
   return init_status_;
+}
+
+MemoryPool* HipBackend::DevicePool(int device_index) const {
+  if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) return nullptr;
+  std::lock_guard<std::mutex> lock(mu_);
+  auto& dev = devices_[device_index];
+  if (dev.device_pool) return dev.device_pool.get();
+
+  MemoryPoolConfig config = HipDevicePoolConfig();
+  const int idx = device_index;
+  auto alloc_fn = [this, idx](size_t bytes, size_t alignment) -> StatusOr<PoolBlock> {
+    (void)alignment;
+    if (loader_.hipCtxSetCurrent && devices_[idx].context) {
+      loader_.hipCtxSetCurrent(devices_[idx].context);
+    }
+    void* ptr = nullptr;
+    gpu::hipError_t err = loader_.hipMalloc(&ptr, bytes);
+    if (err != gpu::hipSuccess) {
+      return HipStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                       "hipMalloc failed: " + gpu::HipErrorString(err, &loader_));
+    }
+    PoolBlock block;
+    block.key = reinterpret_cast<uintptr_t>(ptr);
+    block.handle = reinterpret_cast<uintptr_t>(ptr);
+    block.bytes = bytes;
+    block.alignment = alignment;
+    return block;
+  };
+  auto free_fn = [this, idx](const PoolBlock& block) -> Status {
+    if (loader_.hipCtxSetCurrent && devices_[idx].context) {
+      loader_.hipCtxSetCurrent(devices_[idx].context);
+    }
+    void* ptr = reinterpret_cast<void*>(block.handle);
+    gpu::hipError_t err = loader_.hipFree(ptr);
+    if (err != gpu::hipSuccess) {
+      return HipStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                       "hipFree failed: " + gpu::HipErrorString(err, &loader_));
+    }
+    return Status::OK();
+  };
+  auto scrub_fn = [this, idx](const PoolBlock& block) -> Status {
+    if (!loader_.hipMemset) {
+      return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                       "hipMemset unavailable");
+    }
+    if (loader_.hipCtxSetCurrent && devices_[idx].context) {
+      loader_.hipCtxSetCurrent(devices_[idx].context);
+    }
+    void* ptr = reinterpret_cast<void*>(block.handle);
+    gpu::hipError_t err = loader_.hipMemset(ptr, 0, block.bytes);
+    if (err != gpu::hipSuccess) {
+      return HipStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                       "hipMemset failed: " + gpu::HipErrorString(err, &loader_));
+    }
+    if (loader_.hipStreamSynchronize && devices_[idx].stream) {
+      loader_.hipStreamSynchronize(devices_[idx].stream);
+    }
+    return Status::OK();
+  };
+
+  std::ostringstream label;
+  label << "hip_device_pool_" << dev.desc.index;
+  dev.device_pool = std::make_unique<MemoryPool>(label.str(), config, alloc_fn, free_fn, scrub_fn);
+  return dev.device_pool.get();
+}
+
+MemoryPool* HipBackend::PinnedPool() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (pinned_pool_) return pinned_pool_.get();
+
+  MemoryPoolConfig config = HipPinnedPoolConfig();
+  auto alloc_fn = [this](size_t bytes, size_t alignment) -> StatusOr<PoolBlock> {
+    (void)alignment;
+    if (!loader_.hipHostMalloc) {
+      return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                       "hipHostMalloc unavailable");
+    }
+    void* host = nullptr;
+    gpu::hipError_t err = loader_.hipHostMalloc(&host, bytes, 0);
+    if (err != gpu::hipSuccess || !host) {
+      return HipStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                       "hipHostMalloc failed: " + gpu::HipErrorString(err, &loader_));
+    }
+    PoolBlock block;
+    block.key = reinterpret_cast<uintptr_t>(host);
+    block.handle = reinterpret_cast<uintptr_t>(host);
+    block.host_ptr = host;
+    block.bytes = bytes;
+    block.alignment = alignment;
+    return block;
+  };
+  auto free_fn = [this](const PoolBlock& block) -> Status {
+    if (!loader_.hipHostFree) {
+      return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kMemory,
+                       "hipHostFree unavailable");
+    }
+    void* host = reinterpret_cast<void*>(block.handle);
+    gpu::hipError_t err = loader_.hipHostFree(host);
+    if (err != gpu::hipSuccess) {
+      return HipStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
+                       "hipHostFree failed: " + gpu::HipErrorString(err, &loader_));
+    }
+    return Status::OK();
+  };
+  auto scrub_fn = [](const PoolBlock& block) -> Status {
+    if (block.host_ptr && block.bytes > 0) {
+      std::memset(block.host_ptr, 0, block.bytes);
+    }
+    return Status::OK();
+  };
+
+  pinned_pool_ =
+      std::make_unique<MemoryPool>("hip_pinned_pool", config, alloc_fn, free_fn, scrub_fn);
+  return pinned_pool_.get();
 }
 
 std::string HipBackend::KernelDir() const {

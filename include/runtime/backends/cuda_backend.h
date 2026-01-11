@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -13,6 +14,8 @@
 #include "runtime/backends/gpu/cuda_loader.h"
 
 namespace lattice::runtime {
+
+class MemoryPool;
 
 struct CudaDeviceDesc {
   int index = -1;
@@ -30,6 +33,7 @@ struct CudaDeviceDesc {
 struct CudaBuffer {
   gpu::CUdeviceptr ptr = 0;
   size_t bytes = 0;
+  int device_index = -1;
 };
 
 struct CudaKernel {
@@ -80,8 +84,11 @@ class CudaBackend final : public Backend {
   StatusOr<std::shared_ptr<Event>> CreateEvent() const override;
   StatusOr<Allocation> Allocate(size_t bytes, size_t alignment = 64) const override;
   Status Deallocate(const Allocation& alloc) const override;
+  StatusOr<Allocation> AllocatePinned(size_t bytes, size_t alignment = 64) const override;
+  Status DeallocatePinned(const Allocation& alloc) const override;
   int NumThreads() const override;
   size_t OutstandingAllocs() const override;
+  BackendMemoryStats MemoryStats() const override;
   void SetDefaultPriority(int priority) override;
   void SetDeterministic(bool deterministic) override;
 
@@ -119,14 +126,15 @@ class CudaBackend final : public Backend {
                                             const std::string& build_options,
                                             const std::string& cache_key, bool source_is_binary,
                                             const std::string& kernel_name) const;
+  MemoryPool* DevicePool(int device_index) const;
+  MemoryPool* PinnedPool() const;
 
   mutable std::vector<DeviceContext> devices_;
-  mutable std::unordered_map<gpu::CUdeviceptr, size_t> allocations_;
-  mutable std::mutex alloc_mu_;
   mutable gpu::CudaLoader loader_;
   mutable bool initialized_ = false;
   mutable Status init_status_ = Status::OK();
   mutable std::mutex mu_;
+  mutable std::unique_ptr<MemoryPool> pinned_pool_;
   int default_priority_ = 0;
   bool deterministic_ = false;
 };

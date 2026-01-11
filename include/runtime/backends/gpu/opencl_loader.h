@@ -33,11 +33,16 @@ using OclEnqueueCopyBuffer = cl_int(CL_API_CALL*)(cl_command_queue, cl_mem, cl_m
 using OclEnqueueFillBuffer = cl_int(CL_API_CALL*)(cl_command_queue, cl_mem, const void*, size_t,
                                                   size_t, size_t, cl_uint, const cl_event*,
                                                   cl_event*);
+using OclEnqueueMapBuffer = void*(CL_API_CALL*)(cl_command_queue, cl_mem, cl_bool, cl_map_flags,
+                                                size_t, size_t, cl_uint, const cl_event*, cl_event*,
+                                                cl_int*);
 using OclEnqueueNDRangeKernel = cl_int(CL_API_CALL*)(cl_command_queue, cl_kernel, cl_uint,
                                                      const size_t*, const size_t*, const size_t*,
                                                      cl_uint, const cl_event*, cl_event*);
 using OclEnqueueReadBuffer = cl_int(CL_API_CALL*)(cl_command_queue, cl_mem, cl_bool, size_t, size_t,
                                                   void*, cl_uint, const cl_event*, cl_event*);
+using OclEnqueueUnmapMemObject = cl_int(CL_API_CALL*)(cl_command_queue, cl_mem, void*, cl_uint,
+                                                      const cl_event*, cl_event*);
 using OclEnqueueWriteBuffer = cl_int(CL_API_CALL*)(cl_command_queue, cl_mem, cl_bool, size_t,
                                                    size_t, const void*, cl_uint, const cl_event*,
                                                    cl_event*);
@@ -83,8 +88,10 @@ struct OpenCLLoader {
   OclCreateProgramWithSource clCreateProgramWithSource = nullptr;
   OclEnqueueCopyBuffer clEnqueueCopyBuffer = nullptr;
   OclEnqueueFillBuffer clEnqueueFillBuffer = nullptr;
+  OclEnqueueMapBuffer clEnqueueMapBuffer = nullptr;
   OclEnqueueNDRangeKernel clEnqueueNDRangeKernel = nullptr;
   OclEnqueueReadBuffer clEnqueueReadBuffer = nullptr;
+  OclEnqueueUnmapMemObject clEnqueueUnmapMemObject = nullptr;
   OclEnqueueWriteBuffer clEnqueueWriteBuffer = nullptr;
   OclFinish clFinish = nullptr;
   OclFlush clFlush = nullptr;
