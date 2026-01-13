@@ -1863,7 +1863,7 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
       case DType::kC128:
         return Value::F64(std::abs(args[0].complex));
       case DType::kDecimal:
-        return Value::Decimal(std::fabsl(args[0].decimal));
+        return Value::Decimal(std::fabs(args[0].decimal));
       case DType::kRational:
         return Value::RationalValueNormalized(std::abs(args[0].rational.num),
                                               std::abs(args[0].rational.den));
