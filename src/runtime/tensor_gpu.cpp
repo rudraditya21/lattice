@@ -8,9 +8,9 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "runtime/backend.h"
@@ -124,14 +124,20 @@ struct GpuBuffer {
   BackendType backend = BackendType::kCPU;
   int device_index = 0;
   size_t bytes = 0;
-  std::variant<OpenCLBuffer, CudaBuffer, HipBuffer, MetalBuffer> handle;
+  OpenCLBuffer opencl;
+  CudaBuffer cuda;
+  HipBuffer hip;
+  MetalBuffer metal;
 };
 
 struct GpuKernel {
   BackendType backend = BackendType::kCPU;
   int device_index = 0;
   std::string name;
-  std::variant<OpenCLKernel, CudaKernel, HipKernel, MetalKernel> handle;
+  OpenCLKernel opencl;
+  CudaKernel cuda;
+  HipKernel hip;
+  MetalKernel metal;
 };
 
 struct GpuArg {
@@ -274,7 +280,7 @@ class GpuExecutor {
         out.backend = backend_type_;
         out.device_index = device_index_;
         out.bytes = buf_or.value().bytes;
-        out.handle = buf_or.value();
+        out.opencl = buf_or.value();
         return out;
       }
       case BackendType::kCUDA: {
@@ -284,7 +290,7 @@ class GpuExecutor {
         out.backend = backend_type_;
         out.device_index = device_index_;
         out.bytes = buf_or.value().bytes;
-        out.handle = buf_or.value();
+        out.cuda = buf_or.value();
         return out;
       }
       case BackendType::kHIP: {
@@ -294,7 +300,7 @@ class GpuExecutor {
         out.backend = backend_type_;
         out.device_index = device_index_;
         out.bytes = buf_or.value().bytes;
-        out.handle = buf_or.value();
+        out.hip = buf_or.value();
         return out;
       }
       case BackendType::kMetal: {
@@ -305,7 +311,7 @@ class GpuExecutor {
         out.backend = backend_type_;
         out.device_index = device_index_;
         out.bytes = buf_or.value().bytes;
-        out.handle = buf_or.value();
+        out.metal = buf_or.value();
         return out;
 #else
         return Status::Unavailable("Metal backend unavailable on this platform");
@@ -321,21 +327,17 @@ class GpuExecutor {
     if (!buffer) return Status::OK();
     switch (buffer->backend) {
       case BackendType::kOpenCL: {
-        auto buf = std::get<OpenCLBuffer>(buffer->handle);
-        return opencl_->ReleaseBuffer(&buf);
+        return opencl_->ReleaseBuffer(&buffer->opencl);
       }
       case BackendType::kCUDA: {
-        auto buf = std::get<CudaBuffer>(buffer->handle);
-        return cuda_->ReleaseBuffer(&buf);
+        return cuda_->ReleaseBuffer(&buffer->cuda);
       }
       case BackendType::kHIP: {
-        auto buf = std::get<HipBuffer>(buffer->handle);
-        return hip_->ReleaseBuffer(&buf);
+        return hip_->ReleaseBuffer(&buffer->hip);
       }
       case BackendType::kMetal: {
 #if defined(__APPLE__)
-        auto buf = std::get<MetalBuffer>(buffer->handle);
-        return metal_->ReleaseBuffer(&buf);
+        return metal_->ReleaseBuffer(&buffer->metal);
 #else
         return Status::Unavailable("Metal backend unavailable on this platform");
 #endif
@@ -349,18 +351,14 @@ class GpuExecutor {
   Status WriteBuffer(const GpuBuffer& buffer, const void* data, size_t bytes) {
     switch (buffer.backend) {
       case BackendType::kOpenCL:
-        return opencl_->WriteBuffer(buffer.device_index, std::get<OpenCLBuffer>(buffer.handle),
-                                    data, bytes);
+        return opencl_->WriteBuffer(buffer.device_index, buffer.opencl, data, bytes);
       case BackendType::kCUDA:
-        return cuda_->WriteBuffer(buffer.device_index, std::get<CudaBuffer>(buffer.handle), data,
-                                  bytes);
+        return cuda_->WriteBuffer(buffer.device_index, buffer.cuda, data, bytes);
       case BackendType::kHIP:
-        return hip_->WriteBuffer(buffer.device_index, std::get<HipBuffer>(buffer.handle), data,
-                                 bytes);
+        return hip_->WriteBuffer(buffer.device_index, buffer.hip, data, bytes);
       case BackendType::kMetal:
 #if defined(__APPLE__)
-        return metal_->WriteBuffer(buffer.device_index, std::get<MetalBuffer>(buffer.handle), data,
-                                   bytes);
+        return metal_->WriteBuffer(buffer.device_index, buffer.metal, data, bytes);
 #else
         return Status::Unavailable("Metal backend unavailable on this platform");
 #endif
@@ -373,18 +371,14 @@ class GpuExecutor {
   Status ReadBuffer(const GpuBuffer& buffer, void* data, size_t bytes) {
     switch (buffer.backend) {
       case BackendType::kOpenCL:
-        return opencl_->ReadBuffer(buffer.device_index, std::get<OpenCLBuffer>(buffer.handle), data,
-                                   bytes);
+        return opencl_->ReadBuffer(buffer.device_index, buffer.opencl, data, bytes);
       case BackendType::kCUDA:
-        return cuda_->ReadBuffer(buffer.device_index, std::get<CudaBuffer>(buffer.handle), data,
-                                 bytes);
+        return cuda_->ReadBuffer(buffer.device_index, buffer.cuda, data, bytes);
       case BackendType::kHIP:
-        return hip_->ReadBuffer(buffer.device_index, std::get<HipBuffer>(buffer.handle), data,
-                                bytes);
+        return hip_->ReadBuffer(buffer.device_index, buffer.hip, data, bytes);
       case BackendType::kMetal:
 #if defined(__APPLE__)
-        return metal_->ReadBuffer(buffer.device_index, std::get<MetalBuffer>(buffer.handle), data,
-                                  bytes);
+        return metal_->ReadBuffer(buffer.device_index, buffer.metal, data, bytes);
 #else
         return Status::Unavailable("Metal backend unavailable on this platform");
 #endif
@@ -488,8 +482,7 @@ class GpuExecutor {
         oargs.reserve(args.size());
         for (const auto& arg : args) {
           if (arg.kind == GpuArg::Kind::kBuffer) {
-            const auto& buf = std::get<OpenCLBuffer>(arg.buffer->handle);
-            oargs.push_back(OpenCLKernelArg::Mem(buf.mem));
+            oargs.push_back(OpenCLKernelArg::Mem(arg.buffer->opencl.mem));
           } else {
             oargs.push_back(OpenCLKernelArg::Value(arg.value.data(), arg.value.size()));
           }
@@ -503,15 +496,14 @@ class GpuExecutor {
         config.local[1] = cfg.block[1];
         config.local[2] = cfg.block[2];
         config.use_local = cfg.use_local;
-        return opencl_->LaunchKernel(std::get<OpenCLKernel>(kernel.handle), config, oargs);
+        return opencl_->LaunchKernel(kernel.opencl, config, oargs);
       }
       case BackendType::kCUDA: {
         std::vector<CudaKernelArg> cargs;
         cargs.reserve(args.size());
         for (const auto& arg : args) {
           if (arg.kind == GpuArg::Kind::kBuffer) {
-            const auto& buf = std::get<CudaBuffer>(arg.buffer->handle);
-            cargs.push_back(CudaKernelArg::Device(buf.ptr));
+            cargs.push_back(CudaKernelArg::Device(arg.buffer->cuda.ptr));
           } else {
             cargs.push_back(CudaKernelArg::Value(arg.value.data(), arg.value.size()));
           }
@@ -523,15 +515,14 @@ class GpuExecutor {
         config.block[0] = cfg.block[0];
         config.block[1] = cfg.block[1];
         config.block[2] = cfg.block[2];
-        return cuda_->LaunchKernel(std::get<CudaKernel>(kernel.handle), config, cargs);
+        return cuda_->LaunchKernel(kernel.cuda, config, cargs);
       }
       case BackendType::kHIP: {
         std::vector<HipKernelArg> hargs;
         hargs.reserve(args.size());
         for (const auto& arg : args) {
           if (arg.kind == GpuArg::Kind::kBuffer) {
-            const auto& buf = std::get<HipBuffer>(arg.buffer->handle);
-            hargs.push_back(HipKernelArg::Device(buf.ptr));
+            hargs.push_back(HipKernelArg::Device(arg.buffer->hip.ptr));
           } else {
             hargs.push_back(HipKernelArg::Value(arg.value.data(), arg.value.size()));
           }
@@ -543,7 +534,7 @@ class GpuExecutor {
         config.block[0] = cfg.block[0];
         config.block[1] = cfg.block[1];
         config.block[2] = cfg.block[2];
-        return hip_->LaunchKernel(std::get<HipKernel>(kernel.handle), config, hargs);
+        return hip_->LaunchKernel(kernel.hip, config, hargs);
       }
       case BackendType::kMetal: {
 #if defined(__APPLE__)
@@ -551,8 +542,7 @@ class GpuExecutor {
         margs.reserve(args.size());
         for (const auto& arg : args) {
           if (arg.kind == GpuArg::Kind::kBuffer) {
-            const auto& buf = std::get<MetalBuffer>(arg.buffer->handle);
-            margs.push_back(MetalKernelArg::Buffer(buf.handle));
+            margs.push_back(MetalKernelArg::Buffer(arg.buffer->metal.handle));
           } else {
             margs.push_back(MetalKernelArg::Value(arg.value.data(), arg.value.size()));
           }
@@ -565,7 +555,7 @@ class GpuExecutor {
         config.threads[1] = cfg.block[1];
         config.threads[2] = cfg.block[2];
         config.use_threads = cfg.use_local;
-        return metal_->LaunchKernel(std::get<MetalKernel>(kernel.handle), config, margs);
+        return metal_->LaunchKernel(kernel.metal, config, margs);
 #else
         return Status::Unavailable("Metal backend unavailable on this platform");
 #endif
@@ -639,6 +629,19 @@ class GpuExecutor {
   }
 
   template <typename T>
+  void AssignKernelHandle(GpuKernel* out, const T& kernel) const {
+    if constexpr (std::is_same_v<T, OpenCLKernel>) {
+      out->opencl = kernel;
+    } else if constexpr (std::is_same_v<T, CudaKernel>) {
+      out->cuda = kernel;
+    } else if constexpr (std::is_same_v<T, HipKernel>) {
+      out->hip = kernel;
+    } else if constexpr (std::is_same_v<T, MetalKernel>) {
+      out->metal = kernel;
+    }
+  }
+
+  template <typename T>
   GpuKernel WrapKernel(const std::vector<T>& kernels) const {
     for (const auto& kernel : kernels) {
       if (kernel.device_index == device_index_) {
@@ -646,7 +649,7 @@ class GpuExecutor {
         out.backend = backend_type_;
         out.device_index = device_index_;
         out.name = kernel.name;
-        out.handle = kernel;
+        AssignKernelHandle(&out, kernel);
         return out;
       }
     }
@@ -655,7 +658,7 @@ class GpuExecutor {
       out.backend = backend_type_;
       out.device_index = device_index_;
       out.name = kernels.front().name;
-      out.handle = kernels.front();
+      AssignKernelHandle(&out, kernels.front());
       return out;
     }
     return {};
