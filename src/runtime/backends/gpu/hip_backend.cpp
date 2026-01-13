@@ -1,6 +1,7 @@
 #include "runtime/backends/hip_backend.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -164,12 +165,61 @@ MemoryPoolConfig HipPinnedPoolConfig() {
 
 class HipEvent final : public Event {
  public:
-  void Record() override { ready_ = true; }
-  void Wait() override {}
-  bool Ready() const override { return ready_; }
+  HipEvent(const gpu::HipLoader* loader, gpu::hipStream_t stream)
+      : loader_(loader), stream_(stream) {}
+  ~HipEvent() override {
+    if (event_ && loader_ && loader_->hipEventDestroy) {
+      loader_->hipEventDestroy(event_);
+    }
+  }
+
+  void Record() override {
+    ready_.store(false, std::memory_order_relaxed);
+    if (!loader_) {
+      ready_.store(true, std::memory_order_relaxed);
+      return;
+    }
+    if (!event_ && loader_->hipEventCreate) {
+      if (loader_->hipEventCreate(&event_) != gpu::hipSuccess) {
+        event_ = nullptr;
+      }
+    }
+    if (event_ && loader_->hipEventRecord) {
+      loader_->hipEventRecord(event_, stream_);
+      return;
+    }
+    if (loader_->hipStreamSynchronize && stream_) {
+      loader_->hipStreamSynchronize(stream_);
+    }
+    ready_.store(true, std::memory_order_relaxed);
+  }
+
+  void Wait() override {
+    if (event_ && loader_ && loader_->hipEventSynchronize) {
+      loader_->hipEventSynchronize(event_);
+      ready_.store(true, std::memory_order_relaxed);
+      return;
+    }
+    if (loader_ && loader_->hipStreamSynchronize && stream_) {
+      loader_->hipStreamSynchronize(stream_);
+    }
+    ready_.store(true, std::memory_order_relaxed);
+  }
+
+  bool Ready() const override {
+    if (event_ && loader_ && loader_->hipEventQuery) {
+      return loader_->hipEventQuery(event_) == gpu::hipSuccess;
+    }
+    return ready_.load(std::memory_order_relaxed);
+  }
+
+  gpu::hipEvent_t handle() const { return event_; }
 
  private:
-  bool ready_ = false;
+  const gpu::HipLoader* loader_ = nullptr;
+  gpu::hipStream_t stream_ = nullptr;
+  gpu::hipEvent_t event_ = nullptr;
+  std::atomic<bool> ready_{false};
 };
 
 class HipStream final : public Stream {
@@ -177,20 +227,38 @@ class HipStream final : public Stream {
   HipStream(const gpu::HipLoader* loader, gpu::hipStream_t stream)
       : loader_(loader), stream_(stream) {}
 
-  void Submit(std::function<void()> fn) override { fn(); }
+  void Submit(std::function<void()> fn) override {
+    for (auto& dep : deps_) {
+      dep->Wait();
+    }
+    deps_.clear();
+    fn();
+  }
 
   void Synchronize() override {
     if (loader_ && loader_->hipStreamSynchronize) {
       loader_->hipStreamSynchronize(stream_);
     }
+    deps_.clear();
   }
 
-  void AddDependency(const std::shared_ptr<Event>&) override {}
-  void SetPriority(int) override {}
+  void AddDependency(const std::shared_ptr<Event>& ev) override {
+    if (!ev) return;
+    auto* hip_event = dynamic_cast<HipEvent*>(ev.get());
+    if (hip_event && loader_ && loader_->hipStreamWaitEvent && hip_event->handle()) {
+      loader_->hipStreamWaitEvent(stream_, hip_event->handle(), 0);
+      return;
+    }
+    deps_.push_back(ev);
+  }
+
+  void SetPriority(int priority) override { priority_ = priority; }
 
  private:
   const gpu::HipLoader* loader_ = nullptr;
   gpu::hipStream_t stream_ = nullptr;
+  int priority_ = 0;
+  std::vector<std::shared_ptr<Event>> deps_;
 };
 
 }  // namespace
@@ -276,7 +344,11 @@ StatusOr<std::shared_ptr<Stream>> HipBackend::CreateStream() const {
 StatusOr<std::shared_ptr<Event>> HipBackend::CreateEvent() const {
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  return std::make_shared<HipEvent>();
+  if (devices_.empty()) {
+    return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                     "No HIP devices available");
+  }
+  return std::make_shared<HipEvent>(&loader_, devices_[0].stream);
 }
 
 StatusOr<Allocation> HipBackend::Allocate(size_t bytes, size_t alignment) const {

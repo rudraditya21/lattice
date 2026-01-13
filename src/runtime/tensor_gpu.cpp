@@ -127,7 +127,9 @@ struct GpuBuffer {
   OpenCLBuffer opencl;
   CudaBuffer cuda;
   HipBuffer hip;
+#if defined(__APPLE__)
   MetalBuffer metal;
+#endif
 };
 
 struct GpuKernel {
@@ -137,7 +139,9 @@ struct GpuKernel {
   OpenCLKernel opencl;
   CudaKernel cuda;
   HipKernel hip;
+#if defined(__APPLE__)
   MetalKernel metal;
+#endif
 };
 
 struct GpuArg {
@@ -636,8 +640,10 @@ class GpuExecutor {
       out->cuda = kernel;
     } else if constexpr (std::is_same_v<T, HipKernel>) {
       out->hip = kernel;
+#if defined(__APPLE__)
     } else if constexpr (std::is_same_v<T, MetalKernel>) {
       out->metal = kernel;
+#endif
     }
   }
 
@@ -669,8 +675,6 @@ class GpuExecutor {
   const CudaBackend* cuda_ = nullptr;
   const HipBackend* hip_ = nullptr;
 #if defined(__APPLE__)
-  const MetalBackend* metal_ = nullptr;
-#else
   const MetalBackend* metal_ = nullptr;
 #endif
   int device_index_ = 0;

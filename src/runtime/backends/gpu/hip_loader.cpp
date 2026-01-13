@@ -83,6 +83,12 @@ bool HipLoader::Load(std::string* error) {
   ok &= LoadSymbol(driver, "hipStreamCreate", &hipStreamCreate, error);
   ok &= LoadSymbol(driver, "hipStreamDestroy", &hipStreamDestroy, error);
   LoadOptional(driver, "hipStreamSynchronize", &hipStreamSynchronize);
+  LoadOptional(driver, "hipStreamWaitEvent", &hipStreamWaitEvent);
+  LoadOptional(driver, "hipEventCreate", &hipEventCreate);
+  LoadOptional(driver, "hipEventDestroy", &hipEventDestroy);
+  LoadOptional(driver, "hipEventRecord", &hipEventRecord);
+  LoadOptional(driver, "hipEventSynchronize", &hipEventSynchronize);
+  LoadOptional(driver, "hipEventQuery", &hipEventQuery);
   ok &= LoadSymbol(driver, "hipMalloc", &hipMalloc, error);
   ok &= LoadSymbol(driver, "hipFree", &hipFree, error);
   LoadOptional(driver, "hipHostMalloc", &hipHostMalloc);

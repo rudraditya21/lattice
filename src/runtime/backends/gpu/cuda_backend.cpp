@@ -1,6 +1,7 @@
 #include "runtime/backends/cuda_backend.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -170,12 +171,61 @@ MemoryPoolConfig CudaPinnedPoolConfig() {
 
 class CudaEvent final : public Event {
  public:
-  void Record() override { ready_ = true; }
-  void Wait() override {}
-  bool Ready() const override { return ready_; }
+  CudaEvent(const gpu::CudaLoader* loader, gpu::CUstream stream)
+      : loader_(loader), stream_(stream) {}
+  ~CudaEvent() override {
+    if (event_ && loader_ && loader_->cuEventDestroy) {
+      loader_->cuEventDestroy(event_);
+    }
+  }
+
+  void Record() override {
+    ready_.store(false, std::memory_order_relaxed);
+    if (!loader_) {
+      ready_.store(true, std::memory_order_relaxed);
+      return;
+    }
+    if (!event_ && loader_->cuEventCreate) {
+      if (loader_->cuEventCreate(&event_, 0) != gpu::CUDA_SUCCESS) {
+        event_ = nullptr;
+      }
+    }
+    if (event_ && loader_->cuEventRecord) {
+      loader_->cuEventRecord(event_, stream_);
+      return;
+    }
+    if (loader_->cuStreamSynchronize && stream_) {
+      loader_->cuStreamSynchronize(stream_);
+    }
+    ready_.store(true, std::memory_order_relaxed);
+  }
+
+  void Wait() override {
+    if (event_ && loader_ && loader_->cuEventSynchronize) {
+      loader_->cuEventSynchronize(event_);
+      ready_.store(true, std::memory_order_relaxed);
+      return;
+    }
+    if (loader_ && loader_->cuStreamSynchronize && stream_) {
+      loader_->cuStreamSynchronize(stream_);
+    }
+    ready_.store(true, std::memory_order_relaxed);
+  }
+
+  bool Ready() const override {
+    if (event_ && loader_ && loader_->cuEventQuery) {
+      return loader_->cuEventQuery(event_) == gpu::CUDA_SUCCESS;
+    }
+    return ready_.load(std::memory_order_relaxed);
+  }
+
+  gpu::CUevent handle() const { return event_; }
 
  private:
-  bool ready_ = false;
+  const gpu::CudaLoader* loader_ = nullptr;
+  gpu::CUstream stream_ = nullptr;
+  gpu::CUevent event_ = nullptr;
+  std::atomic<bool> ready_{false};
 };
 
 class CudaStream final : public Stream {
@@ -183,20 +233,38 @@ class CudaStream final : public Stream {
   CudaStream(const gpu::CudaLoader* loader, gpu::CUstream stream)
       : loader_(loader), stream_(stream) {}
 
-  void Submit(std::function<void()> fn) override { fn(); }
+  void Submit(std::function<void()> fn) override {
+    for (auto& dep : deps_) {
+      dep->Wait();
+    }
+    deps_.clear();
+    fn();
+  }
 
   void Synchronize() override {
     if (loader_ && loader_->cuStreamSynchronize) {
       loader_->cuStreamSynchronize(stream_);
     }
+    deps_.clear();
   }
 
-  void AddDependency(const std::shared_ptr<Event>&) override {}
-  void SetPriority(int) override {}
+  void AddDependency(const std::shared_ptr<Event>& ev) override {
+    if (!ev) return;
+    auto* cuda_event = dynamic_cast<CudaEvent*>(ev.get());
+    if (cuda_event && loader_ && loader_->cuStreamWaitEvent && cuda_event->handle()) {
+      loader_->cuStreamWaitEvent(stream_, cuda_event->handle(), 0);
+      return;
+    }
+    deps_.push_back(ev);
+  }
+
+  void SetPriority(int priority) override { priority_ = priority; }
 
  private:
   const gpu::CudaLoader* loader_ = nullptr;
   gpu::CUstream stream_ = nullptr;
+  int priority_ = 0;
+  std::vector<std::shared_ptr<Event>> deps_;
 };
 
 }  // namespace
@@ -282,7 +350,11 @@ StatusOr<std::shared_ptr<Stream>> CudaBackend::CreateStream() const {
 StatusOr<std::shared_ptr<Event>> CudaBackend::CreateEvent() const {
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  return std::make_shared<CudaEvent>();
+  if (devices_.empty()) {
+    return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                      "No CUDA devices available");
+  }
+  return std::make_shared<CudaEvent>(&loader_, devices_[0].stream);
 }
 
 StatusOr<Allocation> CudaBackend::Allocate(size_t bytes, size_t alignment) const {

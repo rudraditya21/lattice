@@ -6,6 +6,7 @@
 #import <objc/message.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -78,20 +79,77 @@ bool ReadFile(const std::filesystem::path& path, std::string* out, std::string* 
 
 class MetalEvent final : public Event {
  public:
-  void Record() override { ready_ = true; }
-  void Wait() override {}
-  bool Ready() const override { return ready_; }
+  explicit MetalEvent(id<MTLCommandQueue> queue) : queue_(queue) {}
+
+  void Record() override {
+    ready_.store(false, std::memory_order_relaxed);
+    if (!queue_) {
+      ready_.store(true, std::memory_order_relaxed);
+      return;
+    }
+    cmd_ = [queue_ commandBuffer];
+    if (!cmd_) {
+      ready_.store(true, std::memory_order_relaxed);
+      return;
+    }
+    std::atomic<bool>* ready_ptr = &ready_;
+    [cmd_ addCompletedHandler:^(id<MTLCommandBuffer>) {
+      ready_ptr->store(true, std::memory_order_relaxed);
+    }];
+    [cmd_ commit];
+  }
+
+  void Wait() override {
+    if (cmd_) {
+      [cmd_ waitUntilCompleted];
+    }
+    ready_.store(true, std::memory_order_relaxed);
+  }
+
+  bool Ready() const override {
+    if (cmd_) {
+      if (ready_.load(std::memory_order_relaxed)) return true;
+      return [cmd_ status] == MTLCommandBufferStatusCompleted;
+    }
+    return ready_.load(std::memory_order_relaxed);
+  }
+
+  id<MTLCommandBuffer> handle() const { return cmd_; }
 
  private:
-  bool ready_ = false;
+  id<MTLCommandQueue> queue_ = nil;
+  id<MTLCommandBuffer> cmd_ = nil;
+  std::atomic<bool> ready_{false};
 };
 
 class MetalStream final : public Stream {
  public:
-  void Submit(std::function<void()> fn) override { fn(); }
-  void Synchronize() override {}
-  void AddDependency(const std::shared_ptr<Event>&) override {}
-  void SetPriority(int) override {}
+  explicit MetalStream(id<MTLCommandQueue> queue) : queue_(queue) {}
+  void Submit(std::function<void()> fn) override {
+    for (auto& dep : deps_) {
+      dep->Wait();
+    }
+    deps_.clear();
+    fn();
+  }
+  void Synchronize() override {
+    if (queue_) {
+      id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
+      [cmd commit];
+      [cmd waitUntilCompleted];
+    }
+    deps_.clear();
+  }
+  void AddDependency(const std::shared_ptr<Event>& ev) override {
+    if (!ev) return;
+    deps_.push_back(ev);
+  }
+  void SetPriority(int priority) override { priority_ = priority; }
+
+ private:
+  id<MTLCommandQueue> queue_ = nil;
+  int priority_ = 0;
+  std::vector<std::shared_ptr<Event>> deps_;
 };
 
 bool QueryBoolSelector(id obj, SEL sel, bool* out) {
@@ -204,13 +262,17 @@ StatusOr<std::shared_ptr<Stream>> MetalBackend::CreateStream() const {
     return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
                        "No Metal devices available");
   }
-  return std::make_shared<MetalStream>();
+  return std::make_shared<MetalStream>(devices_[0].queue);
 }
 
 StatusOr<std::shared_ptr<Event>> MetalBackend::CreateEvent() const {
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  return std::make_shared<MetalEvent>();
+  if (devices_.empty()) {
+    return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                       "No Metal devices available");
+  }
+  return std::make_shared<MetalEvent>(devices_[0].queue);
 }
 
 StatusOr<Allocation> MetalBackend::Allocate(size_t bytes, size_t alignment) const {

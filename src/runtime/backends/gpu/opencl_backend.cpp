@@ -1,6 +1,7 @@
 #include "runtime/backends/opencl_backend.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -195,34 +196,104 @@ Status FillBufferZero(const OpenCLLoader* loader, cl_command_queue queue, cl_mem
 
 class OpenCLEvent final : public Event {
  public:
-  void Record() override {
-    ready_ = std::make_shared<std::promise<void>>();
-    future_ = ready_->get_future();
-    ready_->set_value();
-  }
-  void Wait() override {
-    if (future_.valid()) future_.wait();
-  }
-  bool Ready() const override {
-    return future_.valid() &&
-           future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+  OpenCLEvent(const OpenCLLoader* loader, cl_command_queue queue)
+      : loader_(loader), queue_(queue) {}
+  ~OpenCLEvent() override {
+    if (event_ && loader_ && loader_->clReleaseEvent) {
+      loader_->clReleaseEvent(event_);
+    }
   }
 
+  void Record() override {
+    ready_.store(false, std::memory_order_relaxed);
+    if (!loader_ || !queue_) {
+      ready_.store(true, std::memory_order_relaxed);
+      return;
+    }
+    if (event_ && loader_->clReleaseEvent) {
+      loader_->clReleaseEvent(event_);
+      event_ = nullptr;
+    }
+    cl_int err = CL_SUCCESS;
+    if (loader_->clEnqueueMarkerWithWaitList) {
+      err = loader_->clEnqueueMarkerWithWaitList(queue_, 0, nullptr, &event_);
+    } else if (loader_->clEnqueueMarker) {
+      err = loader_->clEnqueueMarker(queue_, &event_);
+    } else {
+      loader_->clFinish(queue_);
+      ready_.store(true, std::memory_order_relaxed);
+      return;
+    }
+    if (err != CL_SUCCESS) {
+      event_ = nullptr;
+      ready_.store(true, std::memory_order_relaxed);
+      return;
+    }
+    if (loader_->clFlush) {
+      loader_->clFlush(queue_);
+    }
+  }
+
+  void Wait() override {
+    if (event_ && loader_ && loader_->clWaitForEvents) {
+      loader_->clWaitForEvents(1, &event_);
+      ready_.store(true, std::memory_order_relaxed);
+      return;
+    }
+    if (loader_ && queue_ && loader_->clFinish) {
+      loader_->clFinish(queue_);
+    }
+    ready_.store(true, std::memory_order_relaxed);
+  }
+
+  bool Ready() const override {
+    if (event_ && loader_ && loader_->clGetEventInfo) {
+      cl_int status = 0;
+      loader_->clGetEventInfo(event_, CL_EVENT_COMMAND_EXECUTION_STATUS, sizeof(status), &status,
+                              nullptr);
+      return status == CL_COMPLETE;
+    }
+    return ready_.load(std::memory_order_relaxed);
+  }
+
+  cl_event handle() const { return event_; }
+
  private:
-  std::shared_ptr<std::promise<void>> ready_;
-  std::future<void> future_;
+  const OpenCLLoader* loader_ = nullptr;
+  cl_command_queue queue_ = nullptr;
+  cl_event event_ = nullptr;
+  std::atomic<bool> ready_{false};
 };
 
 class OpenCLStream final : public Stream {
  public:
   explicit OpenCLStream(const OpenCLLoader* loader, cl_command_queue queue)
       : loader_(loader), queue_(queue) {}
-  void Submit(std::function<void()> fn) override { fn(); }
+  void Submit(std::function<void()> fn) override {
+    for (auto& dep : deps_) {
+      dep->Wait();
+    }
+    deps_.clear();
+    fn();
+  }
   void Synchronize() override {
     if (loader_ && queue_) loader_->clFinish(queue_);
+    deps_.clear();
   }
   void AddDependency(const std::shared_ptr<Event>& ev) override {
-    if (ev) ev->Wait();
+    if (!ev) return;
+    auto* ocl_event = dynamic_cast<OpenCLEvent*>(ev.get());
+    if (ocl_event && loader_ && queue_) {
+      cl_event handle = ocl_event->handle();
+      if (handle && loader_->clEnqueueBarrierWithWaitList) {
+        cl_int err = loader_->clEnqueueBarrierWithWaitList(queue_, 1, &handle, nullptr);
+        if (err == CL_SUCCESS) return;
+      } else if (handle && loader_->clWaitForEvents) {
+        loader_->clWaitForEvents(1, &handle);
+        return;
+      }
+    }
+    deps_.push_back(ev);
   }
   void SetPriority(int priority) override { priority_ = priority; }
 
@@ -230,6 +301,7 @@ class OpenCLStream final : public Stream {
   const OpenCLLoader* loader_ = nullptr;
   cl_command_queue queue_ = nullptr;
   int priority_ = 0;
+  std::vector<std::shared_ptr<Event>> deps_;
 };
 
 }  // namespace
@@ -317,7 +389,11 @@ StatusOr<std::shared_ptr<Stream>> OpenCLBackend::CreateStream() const {
 StatusOr<std::shared_ptr<Event>> OpenCLBackend::CreateEvent() const {
   Status status = EnsureInitialized();
   if (!status.ok()) return status;
-  return std::make_shared<OpenCLEvent>();
+  if (devices_.empty()) {
+    return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
+                        "No OpenCL devices available");
+  }
+  return std::make_shared<OpenCLEvent>(&loader_, devices_[0].queue);
 }
 
 StatusOr<Allocation> OpenCLBackend::Allocate(size_t bytes, size_t alignment) const {

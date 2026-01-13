@@ -98,6 +98,12 @@ bool CudaLoader::Load(std::string* error) {
     ok &= LoadSymbol(driver, "cuStreamDestroy", &cuStreamDestroy, error);
   }
   LoadOptional(driver, "cuStreamSynchronize", &cuStreamSynchronize);
+  LoadOptional(driver, "cuStreamWaitEvent", &cuStreamWaitEvent);
+  LoadOptional(driver, "cuEventCreate", &cuEventCreate);
+  LoadOptional(driver, "cuEventDestroy", &cuEventDestroy);
+  LoadOptional(driver, "cuEventRecord", &cuEventRecord);
+  LoadOptional(driver, "cuEventSynchronize", &cuEventSynchronize);
+  LoadOptional(driver, "cuEventQuery", &cuEventQuery);
   if (!LoadOptional(driver, "cuMemAlloc_v2", &cuMemAlloc)) {
     ok &= LoadSymbol(driver, "cuMemAlloc", &cuMemAlloc, error);
   }
