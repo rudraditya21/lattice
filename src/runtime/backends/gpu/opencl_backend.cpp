@@ -93,13 +93,6 @@ bool ReadFile(const std::filesystem::path& path,
     return true;
 }
 
-std::string NormalizePathArg(const std::filesystem::path& path) {
-    const std::string raw = path.string();
-    if (raw.find(' ') == std::string::npos)
-        return raw;
-    return "\"" + raw + "\"";
-}
-
 std::string DeviceTypeString(cl_device_type type) {
     if (type & CL_DEVICE_TYPE_GPU)
         return "GPU";
@@ -1503,33 +1496,12 @@ std::string OpenCLBackend::PlatformInfoString(cl_platform_id platform,
 std::string OpenCLBackend::BuildOptions(const DeviceContext& dev,
                                         const std::string& extra) const {
     std::string options;
-    const std::string kernel_dir = KernelDir();
-    if (!kernel_dir.empty()) {
-        options += "-I ";
-        options += NormalizePathArg(kernel_dir);
-    }
-
-    std::string env_opts = LoadBuildOptionsEnv("LATTICE_OPENCL_BUILD_OPTIONS");
-    if (!env_opts.empty()) {
-        if (!options.empty())
-            options.push_back(' ');
-        options += env_opts;
-    }
-
-    if (!extra.empty()) {
-        if (!options.empty())
-            options.push_back(' ');
-        options += extra;
-    }
-
     std::string c_version =
         DeviceInfoString(dev.device, CL_DEVICE_OPENCL_C_VERSION);
     std::string std_opt = OpenclCStd(c_version);
-    if (!std_opt.empty()) {
-        if (!options.empty())
-            options.push_back(' ');
-        options += std_opt;
-    }
+    AppendOption(&options, std_opt);
+    const std::string kernel_dir = KernelDir();
+    AppendOption(&options, BuildIncludeOption(kernel_dir, "-I"));
 
     KernelBuildDefines defs;
     defs.backend = BackendType::kOpenCL;
@@ -1546,10 +1518,13 @@ std::string OpenCLBackend::BuildOptions(const DeviceContext& dev,
         defs.has_fp16 = true;
     }
     std::string defines = KernelDefineString(defs, "-D");
-    if (!defines.empty()) {
-        if (!options.empty())
-            options.push_back(' ');
-        options += defines;
+    AppendOption(&options, defines);
+
+    std::string env_opts = LoadBuildOptionsEnv("LATTICE_OPENCL_BUILD_OPTIONS");
+    AppendOption(&options, env_opts);
+    AppendOption(&options, extra);
+    if (KernelDebugEnabled("LATTICE_OPENCL_BUILD_DEBUG")) {
+        AppendOption(&options, KernelDebugOptions(BackendType::kOpenCL));
     }
 
     LogBackend({LogLevel::kDebug, BackendType::kOpenCL,

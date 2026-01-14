@@ -131,6 +131,8 @@ class MetalBackend final : public Backend {
 
     Status EnsureInitialized() const;
     std::string KernelDir() const;
+    std::string BuildOptions(const DeviceContext& dev,
+                             const std::string& extra) const;
     std::string CacheKey(const DeviceContext& dev,
                          const std::string& kernel_name,
                          const std::string& build_options,

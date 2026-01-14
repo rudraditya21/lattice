@@ -14,6 +14,7 @@
 - `LATTICE_CACHE_MAX_ENTRIES=<count>` caps number of cached binaries (default 4096).
 - `LATTICE_CACHE_MAX_AGE_DAYS=<days>` evicts entries older than the age threshold (default 30).
 - `LATTICE_CACHE_UPDATE_ATIME=0` disables access-time updates on cache hits.
+- `LATTICE_BUILD_DEBUG=1` appends backend debug flags to kernel builds (OpenCL `-g -cl-opt-disable`, CUDA `-G`, HIP `-g -O0`).
 - Kernel cache is on by default (per-device, per-build-options). Metal uses an in-memory pipeline cache per run.
 - Device metadata is persisted under `LATTICE_CACHE_DIR/devices` as key/value text files keyed by a device fingerprint.
 - `LATTICE_GPU_SMOKE_TEST=1` runs the vector-add smoke test for the selected GPU backend during `backend_tests`.
@@ -56,19 +57,23 @@
 
 ### OpenCL
 - `LATTICE_OPENCL_BUILD_OPTIONS=<opts>` appends OpenCL compiler options.
+- `LATTICE_OPENCL_BUILD_DEBUG=1` appends OpenCL debug flags.
 - `LATTICE_OPENCL_VERBOSE=1` logs OpenCL device info and build options.
 
 ### CUDA
 - `LATTICE_CUDA_BUILD_OPTIONS=<opts>` appends NVRTC compiler options.
+- `LATTICE_CUDA_BUILD_DEBUG=1` appends CUDA debug flags.
 - `LATTICE_CUDA_VERBOSE=1` logs CUDA device info and build options.
 
 ### HIP
 - `LATTICE_HIP_BUILD_OPTIONS=<opts>` appends HIPRTC compiler options.
 - `LATTICE_HIP_ARCH=<gfx>` sets `--gpu-architecture` for HIPRTC (e.g. `gfx1030`).
+- `LATTICE_HIP_BUILD_DEBUG=1` appends HIP debug flags.
 - `LATTICE_HIP_VERBOSE=1` logs HIP device info and build options.
 
 ### Metal
 - `LATTICE_METAL_VERBOSE=1` logs Metal device info.
+- `LATTICE_METAL_BUILD_DEBUG=1` appends Metal debug flags (no compiler flags today, but affects cache keys).
 
 ## Kernel ABI
 - OpenCL: `OpenCL/lattice_abi.h` and `include/runtime/backends/opencl_abi.h`.

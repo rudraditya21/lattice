@@ -1317,16 +1317,15 @@ std::string CudaBackend::KernelDir() const {
 
 std::string CudaBackend::BuildOptions(const DeviceContext& dev,
                                       const std::string& extra) const {
-    std::ostringstream opts;
-    opts << "--std=c++11";
+    std::string options;
+    AppendOption(&options, "--std=c++11");
     if (dev.desc.major > 0) {
-        opts << " --gpu-architecture=compute_" << dev.desc.major
-             << dev.desc.minor;
+        AppendOption(&options, "--gpu-architecture=compute_" +
+                                   std::to_string(dev.desc.major) +
+                                   std::to_string(dev.desc.minor));
     }
     const std::string kernel_dir = KernelDir();
-    if (!kernel_dir.empty()) {
-        opts << " -I" << kernel_dir;
-    }
+    AppendOption(&options, BuildIncludeOption(kernel_dir, "-I"));
     KernelBuildDefines defs;
     defs.backend = BackendType::kCUDA;
     defs.device_index = dev.desc.index;
@@ -1335,17 +1334,14 @@ std::string CudaBackend::BuildOptions(const DeviceContext& dev,
     defs.has_fp16 = dev.caps.fp16 == CapabilityStatus::kYes;
     defs.has_fp64 = dev.caps.fp64 == CapabilityStatus::kYes;
     std::string defines = KernelDefineString(defs, "-D");
-    if (!defines.empty()) {
-        opts << " " << defines;
-    }
+    AppendOption(&options, defines);
     std::string env_opts = LoadBuildOptionsEnv("LATTICE_CUDA_BUILD_OPTIONS");
-    if (!env_opts.empty()) {
-        opts << " " << env_opts;
+    AppendOption(&options, env_opts);
+    AppendOption(&options, extra);
+    if (KernelDebugEnabled("LATTICE_CUDA_BUILD_DEBUG")) {
+        AppendOption(&options, KernelDebugOptions(BackendType::kCUDA));
     }
-    if (!extra.empty()) {
-        opts << " " << extra;
-    }
-    return opts.str();
+    return options;
 }
 
 std::string CudaBackend::CacheKey(const DeviceContext& dev,

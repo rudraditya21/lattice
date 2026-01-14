@@ -22,6 +22,12 @@ struct KernelBuildDefines {
 std::string KernelDefineString(const KernelBuildDefines& defs,
                                const std::string& prefix = "-D");
 std::string LoadBuildOptionsEnv(const std::string& backend_env);
+bool KernelDebugEnabled(const std::string& backend_env);
+std::string KernelDebugOptions(BackendType backend);
+std::string NormalizePathArg(const std::string& path);
+std::string BuildIncludeOption(const std::string& include_dir,
+                               const std::string& prefix = "-I");
+void AppendOption(std::string* out, const std::string& option);
 
 }  // namespace lattice::runtime
 

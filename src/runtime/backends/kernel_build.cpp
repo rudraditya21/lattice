@@ -1,5 +1,7 @@
 #include "runtime/backends/kernel_build.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <sstream>
 
@@ -42,6 +44,16 @@ std::string GetEnvString(const char* key) {
     if (!env || env[0] == '\0')
         return "";
     return std::string(env);
+}
+
+bool IsTrueEnvValue(const char* value) {
+    if (!value)
+        return false;
+    std::string v(value);
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return v == "1" || v == "true" || v == "yes" || v == "on";
 }
 
 }  // namespace
@@ -90,6 +102,58 @@ std::string LoadBuildOptionsEnv(const std::string& backend_env) {
     if (backend.empty())
         return global;
     return global + " " + backend;
+}
+
+bool KernelDebugEnabled(const std::string& backend_env) {
+    if (IsTrueEnvValue(std::getenv("LATTICE_BUILD_DEBUG"))) {
+        return true;
+    }
+    if (!backend_env.empty()) {
+        return IsTrueEnvValue(std::getenv(backend_env.c_str()));
+    }
+    return false;
+}
+
+std::string KernelDebugOptions(BackendType backend) {
+    switch (backend) {
+        case BackendType::kOpenCL:
+            return "-g -cl-opt-disable";
+        case BackendType::kCUDA:
+            return "-G";
+        case BackendType::kHIP:
+            return "-g -O0";
+        case BackendType::kMetal:
+        case BackendType::kCPU:
+            return "";
+    }
+    return "";
+}
+
+std::string NormalizePathArg(const std::string& path) {
+    if (path.find(' ') == std::string::npos)
+        return path;
+    return "\"" + path + "\"";
+}
+
+std::string BuildIncludeOption(const std::string& include_dir,
+                               const std::string& prefix) {
+    if (include_dir.empty())
+        return "";
+    std::string normalized = NormalizePathArg(include_dir);
+    if (prefix.empty())
+        return normalized;
+    if (!prefix.empty() && prefix.back() == ' ') {
+        return prefix + normalized;
+    }
+    return prefix + " " + normalized;
+}
+
+void AppendOption(std::string* out, const std::string& option) {
+    if (!out || option.empty())
+        return;
+    if (!out->empty())
+        out->push_back(' ');
+    out->append(option);
 }
 
 }  // namespace lattice::runtime

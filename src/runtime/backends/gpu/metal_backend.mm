@@ -660,30 +660,7 @@ StatusOr<std::vector<MetalKernel>> MetalBackend::BuildKernelsFromFile(
     std::string last_error;
     for (size_t i = 0; i < devices_.size(); ++i) {
         auto& dev = devices_[i];
-        std::string build_options;
-        if (!extra_build_options.empty()) {
-            build_options = extra_build_options;
-        }
-        std::string env_opts =
-            LoadBuildOptionsEnv("LATTICE_METAL_BUILD_OPTIONS");
-        if (!env_opts.empty()) {
-            if (!build_options.empty())
-                build_options.push_back(' ');
-            build_options += env_opts;
-        }
-        KernelBuildDefines defs;
-        defs.backend = BackendType::kMetal;
-        defs.device_index = dev.desc.index;
-        defs.abi_version = metal::kAbiVersion;
-        defs.abi_version_min = metal::kAbiVersionMin;
-        defs.has_fp16 = dev.caps.fp16 == CapabilityStatus::kYes;
-        defs.has_fp64 = dev.caps.fp64 == CapabilityStatus::kYes;
-        std::string defines = KernelDefineString(defs, "-D");
-        if (!defines.empty()) {
-            if (!build_options.empty())
-                build_options.push_back(' ');
-            build_options += defines;
-        }
+        std::string build_options = BuildOptions(dev, extra_build_options);
         std::string cache_key =
             CacheKey(dev, kernel_name, build_options, source);
         auto cache_it = dev.pipeline_cache.find(cache_key);
@@ -1212,6 +1189,27 @@ std::string MetalBackend::KernelDir() const {
         cwd = cwd.parent_path();
     }
     return "";
+}
+
+std::string MetalBackend::BuildOptions(const DeviceContext& dev,
+                                       const std::string& extra) const {
+    std::string options;
+    const std::string kernel_dir = KernelDir();
+    AppendOption(&options, BuildIncludeOption(kernel_dir, "-I"));
+    KernelBuildDefines defs;
+    defs.backend = BackendType::kMetal;
+    defs.device_index = dev.desc.index;
+    defs.abi_version = metal::kAbiVersion;
+    defs.abi_version_min = metal::kAbiVersionMin;
+    defs.has_fp16 = dev.caps.fp16 == CapabilityStatus::kYes;
+    defs.has_fp64 = dev.caps.fp64 == CapabilityStatus::kYes;
+    AppendOption(&options, KernelDefineString(defs, "-D"));
+    AppendOption(&options, LoadBuildOptionsEnv("LATTICE_METAL_BUILD_OPTIONS"));
+    AppendOption(&options, extra);
+    if (KernelDebugEnabled("LATTICE_METAL_BUILD_DEBUG")) {
+        AppendOption(&options, KernelDebugOptions(BackendType::kMetal));
+    }
+    return options;
 }
 
 std::string MetalBackend::CacheKey(const DeviceContext& dev,

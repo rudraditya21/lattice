@@ -1299,12 +1299,10 @@ std::string HipBackend::KernelDir() const {
 
 std::string HipBackend::BuildOptions(const DeviceContext& dev,
                                      const std::string& extra) const {
-    std::ostringstream opts;
-    opts << "--std=c++11";
+    std::string options;
+    AppendOption(&options, "--std=c++11");
     const std::string kernel_dir = KernelDir();
-    if (!kernel_dir.empty()) {
-        opts << " -I" << kernel_dir;
-    }
+    AppendOption(&options, BuildIncludeOption(kernel_dir, "-I"));
     KernelBuildDefines defs;
     defs.backend = BackendType::kHIP;
     defs.device_index = dev.desc.index;
@@ -1313,22 +1311,19 @@ std::string HipBackend::BuildOptions(const DeviceContext& dev,
     defs.has_fp16 = dev.caps.fp16 == CapabilityStatus::kYes;
     defs.has_fp64 = dev.caps.fp64 == CapabilityStatus::kYes;
     std::string defines = KernelDefineString(defs, "-D");
-    if (!defines.empty()) {
-        opts << " " << defines;
-    }
+    AppendOption(&options, defines);
     if (const char* arch = std::getenv("LATTICE_HIP_ARCH")) {
         if (arch[0] != '\0') {
-            opts << " --gpu-architecture=" << arch;
+            AppendOption(&options, std::string("--gpu-architecture=") + arch);
         }
     }
     std::string env_opts = LoadBuildOptionsEnv("LATTICE_HIP_BUILD_OPTIONS");
-    if (!env_opts.empty()) {
-        opts << " " << env_opts;
+    AppendOption(&options, env_opts);
+    AppendOption(&options, extra);
+    if (KernelDebugEnabled("LATTICE_HIP_BUILD_DEBUG")) {
+        AppendOption(&options, KernelDebugOptions(BackendType::kHIP));
     }
-    if (!extra.empty()) {
-        opts << " " << extra;
-    }
-    return opts.str();
+    return options;
 }
 
 std::string HipBackend::CacheKey(const DeviceContext& dev,
