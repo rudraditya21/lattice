@@ -4,206 +4,215 @@
 
 namespace lattice::lexer {
 
-Lexer::Lexer(const std::string& source) : source_(source), index_(0), line_(1), column_(1) {}
+Lexer::Lexer(const std::string& source)
+    : source_(source), index_(0), line_(1), column_(1) {}
 
 char Lexer::Peek() const {
-  if (index_ >= source_.size()) {
-    return '\0';
-  }
-  return source_[index_];
+    if (index_ >= source_.size()) {
+        return '\0';
+    }
+    return source_[index_];
 }
 
 char Lexer::Advance() {
-  char ch = Peek();
-  ++index_;
-  if (ch == '\n') {
-    ++line_;
-    column_ = 1;
-  } else {
-    ++column_;
-  }
-  return ch;
+    char ch = Peek();
+    ++index_;
+    if (ch == '\n') {
+        ++line_;
+        column_ = 1;
+    } else {
+        ++column_;
+    }
+    return ch;
 }
 
 bool Lexer::IsAtEnd() const {
-  return index_ >= source_.size();
+    return index_ >= source_.size();
 }
 
 void Lexer::SkipWhitespace() {
-  while (!IsAtEnd()) {
-    char ch = Peek();
-    if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
-      Advance();
-    } else if (ch == '/' && index_ + 1 < source_.size() && source_[index_ + 1] == '/') {
-      // Skip line comment.
-      while (!IsAtEnd() && Peek() != '\n') {
-        Advance();
-      }
-    } else {
-      break;
+    while (!IsAtEnd()) {
+        char ch = Peek();
+        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
+            Advance();
+        } else if (ch == '/' && index_ + 1 < source_.size() &&
+                   source_[index_ + 1] == '/') {
+            // Skip line comment.
+            while (!IsAtEnd() && Peek() != '\n') {
+                Advance();
+            }
+        } else {
+            break;
+        }
     }
-  }
 }
 
 Token Lexer::NumberToken() {
-  int token_line = line_;
-  int token_column = column_;
-  std::string lexeme;
-  while (std::isdigit(Peek())) {
-    lexeme.push_back(Advance());
-  }
-  if (Peek() == '.') {
-    lexeme.push_back(Advance());
-    if (!std::isdigit(Peek())) {
-      throw util::Error("Invalid number format", token_line, token_column);
-    }
+    int token_line = line_;
+    int token_column = column_;
+    std::string lexeme;
     while (std::isdigit(Peek())) {
-      lexeme.push_back(Advance());
+        lexeme.push_back(Advance());
     }
-  }
-  return Token{TokenType::kNumber, lexeme, token_line, token_column};
+    if (Peek() == '.') {
+        lexeme.push_back(Advance());
+        if (!std::isdigit(Peek())) {
+            throw util::Error("Invalid number format", token_line,
+                              token_column);
+        }
+        while (std::isdigit(Peek())) {
+            lexeme.push_back(Advance());
+        }
+    }
+    return Token{TokenType::kNumber, lexeme, token_line, token_column};
 }
 
 Token Lexer::StringToken() {
-  int token_line = line_;
-  int token_column = column_;
-  std::string lexeme;
-  // Consume until closing quote or end.
-  while (!IsAtEnd() && Peek() != '"') {
-    char ch = Advance();
-    if (ch == '\\' && !IsAtEnd()) {
-      // Simple escape passthrough.
-      ch = Advance();
+    int token_line = line_;
+    int token_column = column_;
+    std::string lexeme;
+    // Consume until closing quote or end.
+    while (!IsAtEnd() && Peek() != '"') {
+        char ch = Advance();
+        if (ch == '\\' && !IsAtEnd()) {
+            // Simple escape passthrough.
+            ch = Advance();
+        }
+        lexeme.push_back(ch);
     }
-    lexeme.push_back(ch);
-  }
-  if (IsAtEnd()) {
-    throw util::Error("Unterminated string literal", token_line, token_column);
-  }
-  Advance();  // consume closing quote
-  return Token{TokenType::kString, lexeme, token_line, token_column};
+    if (IsAtEnd()) {
+        throw util::Error("Unterminated string literal", token_line,
+                          token_column);
+    }
+    Advance();  // consume closing quote
+    return Token{TokenType::kString, lexeme, token_line, token_column};
 }
 
 Token Lexer::IdentifierToken() {
-  int token_line = line_;
-  int token_column = column_;
-  std::string lexeme;
-  while (std::isalnum(Peek()) || Peek() == '_') {
-    lexeme.push_back(Advance());
-  }
-  if (lexeme == "if") {
-    return Token{TokenType::kIf, lexeme, token_line, token_column};
-  }
-  if (lexeme == "else") {
-    return Token{TokenType::kElse, lexeme, token_line, token_column};
-  }
-  if (lexeme == "while") {
-    return Token{TokenType::kWhile, lexeme, token_line, token_column};
-  }
-  if (lexeme == "for") {
-    return Token{TokenType::kFor, lexeme, token_line, token_column};
-  }
-  if (lexeme == "func") {
-    return Token{TokenType::kFunc, lexeme, token_line, token_column};
-  }
-  if (lexeme == "return") {
-    return Token{TokenType::kReturn, lexeme, token_line, token_column};
-  }
-  if (lexeme == "break") {
-    return Token{TokenType::kBreak, lexeme, token_line, token_column};
-  }
-  if (lexeme == "continue") {
-    return Token{TokenType::kContinue, lexeme, token_line, token_column};
-  }
-  if (lexeme == "true") {
-    return Token{TokenType::kTrue, lexeme, token_line, token_column};
-  }
-  if (lexeme == "false") {
-    return Token{TokenType::kFalse, lexeme, token_line, token_column};
-  }
-  return Token{TokenType::kIdentifier, lexeme, token_line, token_column};
+    int token_line = line_;
+    int token_column = column_;
+    std::string lexeme;
+    while (std::isalnum(Peek()) || Peek() == '_') {
+        lexeme.push_back(Advance());
+    }
+    if (lexeme == "if") {
+        return Token{TokenType::kIf, lexeme, token_line, token_column};
+    }
+    if (lexeme == "else") {
+        return Token{TokenType::kElse, lexeme, token_line, token_column};
+    }
+    if (lexeme == "while") {
+        return Token{TokenType::kWhile, lexeme, token_line, token_column};
+    }
+    if (lexeme == "for") {
+        return Token{TokenType::kFor, lexeme, token_line, token_column};
+    }
+    if (lexeme == "func") {
+        return Token{TokenType::kFunc, lexeme, token_line, token_column};
+    }
+    if (lexeme == "return") {
+        return Token{TokenType::kReturn, lexeme, token_line, token_column};
+    }
+    if (lexeme == "break") {
+        return Token{TokenType::kBreak, lexeme, token_line, token_column};
+    }
+    if (lexeme == "continue") {
+        return Token{TokenType::kContinue, lexeme, token_line, token_column};
+    }
+    if (lexeme == "true") {
+        return Token{TokenType::kTrue, lexeme, token_line, token_column};
+    }
+    if (lexeme == "false") {
+        return Token{TokenType::kFalse, lexeme, token_line, token_column};
+    }
+    return Token{TokenType::kIdentifier, lexeme, token_line, token_column};
 }
 
 Token Lexer::NextToken() {
-  SkipWhitespace();
-  int token_line = line_;
-  int token_column = column_;
+    SkipWhitespace();
+    int token_line = line_;
+    int token_column = column_;
 
-  if (IsAtEnd()) {
-    return Token{TokenType::kEof, "", token_line, token_column};
-  }
+    if (IsAtEnd()) {
+        return Token{TokenType::kEof, "", token_line, token_column};
+    }
 
-  char ch = Advance();
-  switch (ch) {
-    case '+':
-      return Token{TokenType::kPlus, "+", token_line, token_column};
-    case '-':
-      return Token{TokenType::kMinus, "-", token_line, token_column};
-    case '*':
-      return Token{TokenType::kStar, "*", token_line, token_column};
-    case '/':
-      return Token{TokenType::kSlash, "/", token_line, token_column};
-    case ',':
-      return Token{TokenType::kComma, ",", token_line, token_column};
-    case ';':
-      return Token{TokenType::kSemicolon, ";", token_line, token_column};
-    case ':':
-      return Token{TokenType::kColon, ":", token_line, token_column};
-    case '=':
-      if (Peek() == '=') {
-        Advance();
-        return Token{TokenType::kEqualEqual, "==", token_line, token_column};
-      }
-      return Token{TokenType::kEqual, "=", token_line, token_column};
-    case '(':
-      return Token{TokenType::kLParen, "(", token_line, token_column};
-    case ')':
-      return Token{TokenType::kRParen, ")", token_line, token_column};
-    case '>':
-      if (Peek() == '=') {
-        Advance();
-        return Token{TokenType::kGreaterEqual, ">=", token_line, token_column};
-      }
-      return Token{TokenType::kGreater, ">", token_line, token_column};
-    case '<':
-      if (Peek() == '=') {
-        Advance();
-        return Token{TokenType::kLessEqual, "<=", token_line, token_column};
-      }
-      return Token{TokenType::kLess, "<", token_line, token_column};
-    case '{':
-      return Token{TokenType::kLBrace, "{", token_line, token_column};
-    case '}':
-      return Token{TokenType::kRBrace, "}", token_line, token_column};
-    case '[':
-      return Token{TokenType::kLBracket, "[", token_line, token_column};
-    case ']':
-      return Token{TokenType::kRBracket, "]", token_line, token_column};
-    case '"':
-      return StringToken();
-    case '!':
-      if (Peek() == '=') {
-        Advance();
-        return Token{TokenType::kBangEqual, "!=", token_line, token_column};
-      }
-      return Token{TokenType::kInvalid, "!", token_line, token_column};
-    default:
-      break;
-  }
+    char ch = Advance();
+    switch (ch) {
+        case '+':
+            return Token{TokenType::kPlus, "+", token_line, token_column};
+        case '-':
+            return Token{TokenType::kMinus, "-", token_line, token_column};
+        case '*':
+            return Token{TokenType::kStar, "*", token_line, token_column};
+        case '/':
+            return Token{TokenType::kSlash, "/", token_line, token_column};
+        case ',':
+            return Token{TokenType::kComma, ",", token_line, token_column};
+        case ';':
+            return Token{TokenType::kSemicolon, ";", token_line, token_column};
+        case ':':
+            return Token{TokenType::kColon, ":", token_line, token_column};
+        case '=':
+            if (Peek() == '=') {
+                Advance();
+                return Token{TokenType::kEqualEqual, "==", token_line,
+                             token_column};
+            }
+            return Token{TokenType::kEqual, "=", token_line, token_column};
+        case '(':
+            return Token{TokenType::kLParen, "(", token_line, token_column};
+        case ')':
+            return Token{TokenType::kRParen, ")", token_line, token_column};
+        case '>':
+            if (Peek() == '=') {
+                Advance();
+                return Token{TokenType::kGreaterEqual, ">=", token_line,
+                             token_column};
+            }
+            return Token{TokenType::kGreater, ">", token_line, token_column};
+        case '<':
+            if (Peek() == '=') {
+                Advance();
+                return Token{TokenType::kLessEqual, "<=", token_line,
+                             token_column};
+            }
+            return Token{TokenType::kLess, "<", token_line, token_column};
+        case '{':
+            return Token{TokenType::kLBrace, "{", token_line, token_column};
+        case '}':
+            return Token{TokenType::kRBrace, "}", token_line, token_column};
+        case '[':
+            return Token{TokenType::kLBracket, "[", token_line, token_column};
+        case ']':
+            return Token{TokenType::kRBracket, "]", token_line, token_column};
+        case '"':
+            return StringToken();
+        case '!':
+            if (Peek() == '=') {
+                Advance();
+                return Token{TokenType::kBangEqual, "!=", token_line,
+                             token_column};
+            }
+            return Token{TokenType::kInvalid, "!", token_line, token_column};
+        default:
+            break;
+    }
 
-  if (std::isdigit(ch)) {
-    --index_;
-    --column_;
-    return NumberToken();
-  }
+    if (std::isdigit(ch)) {
+        --index_;
+        --column_;
+        return NumberToken();
+    }
 
-  if (std::isalpha(ch) || ch == '_') {
-    --index_;
-    --column_;
-    return IdentifierToken();
-  }
+    if (std::isalpha(ch) || ch == '_') {
+        --index_;
+        --column_;
+        return IdentifierToken();
+    }
 
-  return Token{TokenType::kInvalid, std::string(1, ch), token_line, token_column};
+    return Token{TokenType::kInvalid, std::string(1, ch), token_line,
+                 token_column};
 }
 
 }  // namespace lattice::lexer

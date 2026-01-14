@@ -8,8 +8,10 @@
 
 namespace lattice::runtime {
 
-/// Executes a source string as a program (sequence of statements) and returns the resulting signal.
-ExecResult RunSource(const std::string& source, std::shared_ptr<Environment> env);
+/// Executes a source string as a program (sequence of statements) and returns
+/// the resulting signal.
+ExecResult RunSource(const std::string& source,
+                     std::shared_ptr<Environment> env);
 
 }  // namespace lattice::runtime
 

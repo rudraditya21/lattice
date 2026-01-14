@@ -8,24 +8,27 @@
 namespace lattice::runtime {
 
 enum class BackendErrorKind {
-  kUnknown,
-  kInit,
-  kDiscovery,
-  kContext,
-  kMemory,
-  kBuild,
-  kCompile,
-  kLaunch,
-  kIo,
-  kUnsupported,
-  kInvalidArgument,
-  kRuntime,
+    kUnknown,
+    kInit,
+    kDiscovery,
+    kContext,
+    kMemory,
+    kBuild,
+    kCompile,
+    kLaunch,
+    kIo,
+    kUnsupported,
+    kInvalidArgument,
+    kRuntime,
 };
 
 const char* BackendTypeName(BackendType backend);
 const char* BackendErrorKindName(BackendErrorKind kind);
-std::string FormatBackendErrorPrefix(BackendType backend, BackendErrorKind kind);
-Status MakeBackendError(StatusCode code, BackendType backend, BackendErrorKind kind,
+std::string FormatBackendErrorPrefix(BackendType backend,
+                                     BackendErrorKind kind);
+Status MakeBackendError(StatusCode code,
+                        BackendType backend,
+                        BackendErrorKind kind,
                         const std::string& message);
 
 }  // namespace lattice::runtime

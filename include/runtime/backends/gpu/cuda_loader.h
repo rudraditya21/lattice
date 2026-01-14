@@ -50,21 +50,35 @@ using CuMemsetD8 = CUresult (*)(CUdeviceptr, unsigned char, size_t);
 using CuMemcpyHtoD = CUresult (*)(CUdeviceptr, const void*, size_t);
 using CuMemcpyDtoH = CUresult (*)(void*, CUdeviceptr, size_t);
 using CuModuleLoadData = CUresult (*)(CUmodule*, const void*);
-using CuModuleLoadDataEx = CUresult (*)(CUmodule*, const void*, unsigned int, CUjit_option*,
-                                        void**);
+using CuModuleLoadDataEx =
+    CUresult (*)(CUmodule*, const void*, unsigned int, CUjit_option*, void**);
 using CuModuleUnload = CUresult (*)(CUmodule);
 using CuModuleGetFunction = CUresult (*)(CUfunction*, CUmodule, const char*);
-using CuLaunchKernel = CUresult (*)(CUfunction, unsigned int, unsigned int, unsigned int,
-                                    unsigned int, unsigned int, unsigned int, unsigned int,
-                                    CUstream, void**, void**);
+using CuLaunchKernel = CUresult (*)(CUfunction,
+                                    unsigned int,
+                                    unsigned int,
+                                    unsigned int,
+                                    unsigned int,
+                                    unsigned int,
+                                    unsigned int,
+                                    unsigned int,
+                                    CUstream,
+                                    void**,
+                                    void**);
 using CuGetErrorName = CUresult (*)(CUresult, const char**);
 using CuGetErrorString = CUresult (*)(CUresult, const char**);
 
 using NvrtcResult = int;
 using nvrtcProgram = void*;
-using NvrtcCreateProgram = NvrtcResult (*)(nvrtcProgram*, const char*, const char*, int,
-                                           const char* const*, const char* const*);
-using NvrtcCompileProgram = NvrtcResult (*)(nvrtcProgram, int, const char* const*);
+using NvrtcCreateProgram = NvrtcResult (*)(nvrtcProgram*,
+                                           const char*,
+                                           const char*,
+                                           int,
+                                           const char* const*,
+                                           const char* const*);
+using NvrtcCompileProgram = NvrtcResult (*)(nvrtcProgram,
+                                            int,
+                                            const char* const*);
 using NvrtcDestroyProgram = NvrtcResult (*)(nvrtcProgram*);
 using NvrtcGetPTXSize = NvrtcResult (*)(nvrtcProgram, size_t*);
 using NvrtcGetPTX = NvrtcResult (*)(nvrtcProgram, char*);
@@ -74,59 +88,59 @@ using NvrtcGetErrorString = const char* (*)(NvrtcResult);
 using NvrtcVersion = NvrtcResult (*)(int*, int*);
 
 struct CudaLoader {
-  DynLib driver = nullptr;
-  DynLib nvrtc = nullptr;
+    DynLib driver = nullptr;
+    DynLib nvrtc = nullptr;
 
-  CuInit cuInit = nullptr;
-  CuDriverGetVersion cuDriverGetVersion = nullptr;
-  CuDeviceGetCount cuDeviceGetCount = nullptr;
-  CuDeviceGet cuDeviceGet = nullptr;
-  CuDeviceGetName cuDeviceGetName = nullptr;
-  CuDeviceComputeCapability cuDeviceComputeCapability = nullptr;
-  CuDeviceTotalMem cuDeviceTotalMem = nullptr;
-  CuDeviceGetAttribute cuDeviceGetAttribute = nullptr;
-  CuCtxCreate cuCtxCreate = nullptr;
-  CuCtxDestroy cuCtxDestroy = nullptr;
-  CuCtxSetCurrent cuCtxSetCurrent = nullptr;
-  CuStreamCreate cuStreamCreate = nullptr;
-  CuStreamDestroy cuStreamDestroy = nullptr;
-  CuStreamSynchronize cuStreamSynchronize = nullptr;
-  CuStreamWaitEvent cuStreamWaitEvent = nullptr;
-  CuEventCreate cuEventCreate = nullptr;
-  CuEventDestroy cuEventDestroy = nullptr;
-  CuEventRecord cuEventRecord = nullptr;
-  CuEventSynchronize cuEventSynchronize = nullptr;
-  CuEventQuery cuEventQuery = nullptr;
-  CuEventElapsedTime cuEventElapsedTime = nullptr;
-  CuMemAlloc cuMemAlloc = nullptr;
-  CuMemFree cuMemFree = nullptr;
-  CuMemHostAlloc cuMemHostAlloc = nullptr;
-  CuMemFreeHost cuMemFreeHost = nullptr;
-  CuMemsetD8 cuMemsetD8 = nullptr;
-  CuMemcpyHtoD cuMemcpyHtoD = nullptr;
-  CuMemcpyDtoH cuMemcpyDtoH = nullptr;
-  CuModuleLoadData cuModuleLoadData = nullptr;
-  CuModuleLoadDataEx cuModuleLoadDataEx = nullptr;
-  CuModuleUnload cuModuleUnload = nullptr;
-  CuModuleGetFunction cuModuleGetFunction = nullptr;
-  CuLaunchKernel cuLaunchKernel = nullptr;
-  CuGetErrorName cuGetErrorName = nullptr;
-  CuGetErrorString cuGetErrorString = nullptr;
+    CuInit cuInit = nullptr;
+    CuDriverGetVersion cuDriverGetVersion = nullptr;
+    CuDeviceGetCount cuDeviceGetCount = nullptr;
+    CuDeviceGet cuDeviceGet = nullptr;
+    CuDeviceGetName cuDeviceGetName = nullptr;
+    CuDeviceComputeCapability cuDeviceComputeCapability = nullptr;
+    CuDeviceTotalMem cuDeviceTotalMem = nullptr;
+    CuDeviceGetAttribute cuDeviceGetAttribute = nullptr;
+    CuCtxCreate cuCtxCreate = nullptr;
+    CuCtxDestroy cuCtxDestroy = nullptr;
+    CuCtxSetCurrent cuCtxSetCurrent = nullptr;
+    CuStreamCreate cuStreamCreate = nullptr;
+    CuStreamDestroy cuStreamDestroy = nullptr;
+    CuStreamSynchronize cuStreamSynchronize = nullptr;
+    CuStreamWaitEvent cuStreamWaitEvent = nullptr;
+    CuEventCreate cuEventCreate = nullptr;
+    CuEventDestroy cuEventDestroy = nullptr;
+    CuEventRecord cuEventRecord = nullptr;
+    CuEventSynchronize cuEventSynchronize = nullptr;
+    CuEventQuery cuEventQuery = nullptr;
+    CuEventElapsedTime cuEventElapsedTime = nullptr;
+    CuMemAlloc cuMemAlloc = nullptr;
+    CuMemFree cuMemFree = nullptr;
+    CuMemHostAlloc cuMemHostAlloc = nullptr;
+    CuMemFreeHost cuMemFreeHost = nullptr;
+    CuMemsetD8 cuMemsetD8 = nullptr;
+    CuMemcpyHtoD cuMemcpyHtoD = nullptr;
+    CuMemcpyDtoH cuMemcpyDtoH = nullptr;
+    CuModuleLoadData cuModuleLoadData = nullptr;
+    CuModuleLoadDataEx cuModuleLoadDataEx = nullptr;
+    CuModuleUnload cuModuleUnload = nullptr;
+    CuModuleGetFunction cuModuleGetFunction = nullptr;
+    CuLaunchKernel cuLaunchKernel = nullptr;
+    CuGetErrorName cuGetErrorName = nullptr;
+    CuGetErrorString cuGetErrorString = nullptr;
 
-  NvrtcCreateProgram nvrtcCreateProgram = nullptr;
-  NvrtcCompileProgram nvrtcCompileProgram = nullptr;
-  NvrtcDestroyProgram nvrtcDestroyProgram = nullptr;
-  NvrtcGetPTXSize nvrtcGetPTXSize = nullptr;
-  NvrtcGetPTX nvrtcGetPTX = nullptr;
-  NvrtcGetProgramLogSize nvrtcGetProgramLogSize = nullptr;
-  NvrtcGetProgramLog nvrtcGetProgramLog = nullptr;
-  NvrtcGetErrorString nvrtcGetErrorString = nullptr;
-  NvrtcVersion nvrtcVersion = nullptr;
+    NvrtcCreateProgram nvrtcCreateProgram = nullptr;
+    NvrtcCompileProgram nvrtcCompileProgram = nullptr;
+    NvrtcDestroyProgram nvrtcDestroyProgram = nullptr;
+    NvrtcGetPTXSize nvrtcGetPTXSize = nullptr;
+    NvrtcGetPTX nvrtcGetPTX = nullptr;
+    NvrtcGetProgramLogSize nvrtcGetProgramLogSize = nullptr;
+    NvrtcGetProgramLog nvrtcGetProgramLog = nullptr;
+    NvrtcGetErrorString nvrtcGetErrorString = nullptr;
+    NvrtcVersion nvrtcVersion = nullptr;
 
-  bool Load(std::string* error);
-  void Unload();
-  bool Loaded() const { return driver != nullptr; }
-  bool NvrtcLoaded() const { return nvrtc != nullptr; }
+    bool Load(std::string* error);
+    void Unload();
+    bool Loaded() const { return driver != nullptr; }
+    bool NvrtcLoaded() const { return nvrtc != nullptr; }
 };
 
 std::string CudaErrorString(CUresult err, const CudaLoader* loader);

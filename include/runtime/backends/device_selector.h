@@ -9,26 +9,26 @@ namespace lattice::runtime {
 enum class DeviceKind { kAny, kCPU, kGPU, kAccelerator };
 
 struct DeviceIdentity {
-  int index = -1;
-  std::string name;
-  std::string vendor;
-  std::string driver;
-  DeviceKind kind = DeviceKind::kAny;
+    int index = -1;
+    std::string name;
+    std::string vendor;
+    std::string driver;
+    DeviceKind kind = DeviceKind::kAny;
 };
 
 struct DeviceSelectionOptions {
-  DeviceKind kind = DeviceKind::kAny;
-  std::vector<std::string> include_patterns;
-  std::vector<std::string> exclude_patterns;
-  std::string mask;
-  std::vector<int> indices;
-  std::vector<int> order;
-  bool explicit_selection = false;
+    DeviceKind kind = DeviceKind::kAny;
+    std::vector<std::string> include_patterns;
+    std::vector<std::string> exclude_patterns;
+    std::string mask;
+    std::vector<int> indices;
+    std::vector<int> order;
+    bool explicit_selection = false;
 };
 
 struct DeviceSelectionResult {
-  std::vector<int> indices;
-  std::string diagnostics;
+    std::vector<int> indices;
+    std::string diagnostics;
 };
 
 DeviceSelectionOptions LoadDeviceSelectionOptions(const char* prefix);

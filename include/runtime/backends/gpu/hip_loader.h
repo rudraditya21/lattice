@@ -21,8 +21,8 @@ using hipDeviceptr_t = void*;
 constexpr hipError_t hipSuccess = 0;
 
 enum hipMemcpyKind {
-  hipMemcpyHostToDevice = 1,
-  hipMemcpyDeviceToHost = 2,
+    hipMemcpyHostToDevice = 1,
+    hipMemcpyDeviceToHost = 2,
 };
 
 using HipInit = hipError_t (*)(unsigned int);
@@ -38,7 +38,9 @@ using HipCtxSetCurrent = hipError_t (*)(hipCtx_t);
 using HipStreamCreate = hipError_t (*)(hipStream_t*);
 using HipStreamDestroy = hipError_t (*)(hipStream_t);
 using HipStreamSynchronize = hipError_t (*)(hipStream_t);
-using HipStreamWaitEvent = hipError_t (*)(hipStream_t, hipEvent_t, unsigned int);
+using HipStreamWaitEvent = hipError_t (*)(hipStream_t,
+                                          hipEvent_t,
+                                          unsigned int);
 using HipEventCreate = hipError_t (*)(hipEvent_t*);
 using HipEventCreateWithFlags = hipError_t (*)(hipEvent_t*, unsigned int);
 using HipEventDestroy = hipError_t (*)(hipEvent_t);
@@ -54,18 +56,34 @@ using HipMemset = hipError_t (*)(void*, int, size_t);
 using HipMemcpy = hipError_t (*)(void*, const void*, size_t, hipMemcpyKind);
 using HipModuleLoadData = hipError_t (*)(hipModule_t*, const void*);
 using HipModuleUnload = hipError_t (*)(hipModule_t);
-using HipModuleGetFunction = hipError_t (*)(hipFunction_t*, hipModule_t, const char*);
-using HipModuleLaunchKernel = hipError_t (*)(hipFunction_t, unsigned int, unsigned int,
-                                             unsigned int, unsigned int, unsigned int, unsigned int,
-                                             unsigned int, hipStream_t, void**, void**);
+using HipModuleGetFunction = hipError_t (*)(hipFunction_t*,
+                                            hipModule_t,
+                                            const char*);
+using HipModuleLaunchKernel = hipError_t (*)(hipFunction_t,
+                                             unsigned int,
+                                             unsigned int,
+                                             unsigned int,
+                                             unsigned int,
+                                             unsigned int,
+                                             unsigned int,
+                                             unsigned int,
+                                             hipStream_t,
+                                             void**,
+                                             void**);
 using HipGetErrorString = const char* (*)(hipError_t);
 using HipRuntimeGetVersion = hipError_t (*)(int*);
 
 using HiprtcResult = int;
 using hiprtcProgram = void*;
-using HiprtcCreateProgram = HiprtcResult (*)(hiprtcProgram*, const char*, const char*, int,
-                                             const char* const*, const char* const*);
-using HiprtcCompileProgram = HiprtcResult (*)(hiprtcProgram, int, const char* const*);
+using HiprtcCreateProgram = HiprtcResult (*)(hiprtcProgram*,
+                                             const char*,
+                                             const char*,
+                                             int,
+                                             const char* const*,
+                                             const char* const*);
+using HiprtcCompileProgram = HiprtcResult (*)(hiprtcProgram,
+                                              int,
+                                              const char* const*);
 using HiprtcDestroyProgram = HiprtcResult (*)(hiprtcProgram*);
 using HiprtcGetCodeSize = HiprtcResult (*)(hiprtcProgram, size_t*);
 using HiprtcGetCode = HiprtcResult (*)(hiprtcProgram, char*);
@@ -74,56 +92,56 @@ using HiprtcGetProgramLog = HiprtcResult (*)(hiprtcProgram, char*);
 using HiprtcGetErrorString = const char* (*)(HiprtcResult);
 
 struct HipLoader {
-  DynLib driver = nullptr;
-  DynLib hiprtc = nullptr;
+    DynLib driver = nullptr;
+    DynLib hiprtc = nullptr;
 
-  HipInit hipInit = nullptr;
-  HipDriverGetVersion hipDriverGetVersion = nullptr;
-  HipGetDeviceCount hipGetDeviceCount = nullptr;
-  HipDeviceGet hipDeviceGet = nullptr;
-  HipDeviceGetName hipDeviceGetName = nullptr;
-  HipDeviceTotalMem hipDeviceTotalMem = nullptr;
-  HipDeviceGetAttribute hipDeviceGetAttribute = nullptr;
-  HipCtxCreate hipCtxCreate = nullptr;
-  HipCtxDestroy hipCtxDestroy = nullptr;
-  HipCtxSetCurrent hipCtxSetCurrent = nullptr;
-  HipStreamCreate hipStreamCreate = nullptr;
-  HipStreamDestroy hipStreamDestroy = nullptr;
-  HipStreamSynchronize hipStreamSynchronize = nullptr;
-  HipStreamWaitEvent hipStreamWaitEvent = nullptr;
-  HipEventCreate hipEventCreate = nullptr;
-  HipEventCreateWithFlags hipEventCreateWithFlags = nullptr;
-  HipEventDestroy hipEventDestroy = nullptr;
-  HipEventRecord hipEventRecord = nullptr;
-  HipEventSynchronize hipEventSynchronize = nullptr;
-  HipEventQuery hipEventQuery = nullptr;
-  HipEventElapsedTime hipEventElapsedTime = nullptr;
-  HipMalloc hipMalloc = nullptr;
-  HipFree hipFree = nullptr;
-  HipHostMalloc hipHostMalloc = nullptr;
-  HipHostFree hipHostFree = nullptr;
-  HipMemset hipMemset = nullptr;
-  HipMemcpy hipMemcpy = nullptr;
-  HipModuleLoadData hipModuleLoadData = nullptr;
-  HipModuleUnload hipModuleUnload = nullptr;
-  HipModuleGetFunction hipModuleGetFunction = nullptr;
-  HipModuleLaunchKernel hipModuleLaunchKernel = nullptr;
-  HipGetErrorString hipGetErrorString = nullptr;
-  HipRuntimeGetVersion hipRuntimeGetVersion = nullptr;
+    HipInit hipInit = nullptr;
+    HipDriverGetVersion hipDriverGetVersion = nullptr;
+    HipGetDeviceCount hipGetDeviceCount = nullptr;
+    HipDeviceGet hipDeviceGet = nullptr;
+    HipDeviceGetName hipDeviceGetName = nullptr;
+    HipDeviceTotalMem hipDeviceTotalMem = nullptr;
+    HipDeviceGetAttribute hipDeviceGetAttribute = nullptr;
+    HipCtxCreate hipCtxCreate = nullptr;
+    HipCtxDestroy hipCtxDestroy = nullptr;
+    HipCtxSetCurrent hipCtxSetCurrent = nullptr;
+    HipStreamCreate hipStreamCreate = nullptr;
+    HipStreamDestroy hipStreamDestroy = nullptr;
+    HipStreamSynchronize hipStreamSynchronize = nullptr;
+    HipStreamWaitEvent hipStreamWaitEvent = nullptr;
+    HipEventCreate hipEventCreate = nullptr;
+    HipEventCreateWithFlags hipEventCreateWithFlags = nullptr;
+    HipEventDestroy hipEventDestroy = nullptr;
+    HipEventRecord hipEventRecord = nullptr;
+    HipEventSynchronize hipEventSynchronize = nullptr;
+    HipEventQuery hipEventQuery = nullptr;
+    HipEventElapsedTime hipEventElapsedTime = nullptr;
+    HipMalloc hipMalloc = nullptr;
+    HipFree hipFree = nullptr;
+    HipHostMalloc hipHostMalloc = nullptr;
+    HipHostFree hipHostFree = nullptr;
+    HipMemset hipMemset = nullptr;
+    HipMemcpy hipMemcpy = nullptr;
+    HipModuleLoadData hipModuleLoadData = nullptr;
+    HipModuleUnload hipModuleUnload = nullptr;
+    HipModuleGetFunction hipModuleGetFunction = nullptr;
+    HipModuleLaunchKernel hipModuleLaunchKernel = nullptr;
+    HipGetErrorString hipGetErrorString = nullptr;
+    HipRuntimeGetVersion hipRuntimeGetVersion = nullptr;
 
-  HiprtcCreateProgram hiprtcCreateProgram = nullptr;
-  HiprtcCompileProgram hiprtcCompileProgram = nullptr;
-  HiprtcDestroyProgram hiprtcDestroyProgram = nullptr;
-  HiprtcGetCodeSize hiprtcGetCodeSize = nullptr;
-  HiprtcGetCode hiprtcGetCode = nullptr;
-  HiprtcGetProgramLogSize hiprtcGetProgramLogSize = nullptr;
-  HiprtcGetProgramLog hiprtcGetProgramLog = nullptr;
-  HiprtcGetErrorString hiprtcGetErrorString = nullptr;
+    HiprtcCreateProgram hiprtcCreateProgram = nullptr;
+    HiprtcCompileProgram hiprtcCompileProgram = nullptr;
+    HiprtcDestroyProgram hiprtcDestroyProgram = nullptr;
+    HiprtcGetCodeSize hiprtcGetCodeSize = nullptr;
+    HiprtcGetCode hiprtcGetCode = nullptr;
+    HiprtcGetProgramLogSize hiprtcGetProgramLogSize = nullptr;
+    HiprtcGetProgramLog hiprtcGetProgramLog = nullptr;
+    HiprtcGetErrorString hiprtcGetErrorString = nullptr;
 
-  bool Load(std::string* error);
-  void Unload();
-  bool Loaded() const { return driver != nullptr; }
-  bool HiprtcLoaded() const { return hiprtc != nullptr; }
+    bool Load(std::string* error);
+    void Unload();
+    bool Loaded() const { return driver != nullptr; }
+    bool HiprtcLoaded() const { return hiprtc != nullptr; }
 };
 
 std::string HipErrorString(hipError_t err, const HipLoader* loader);

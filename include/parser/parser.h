@@ -10,48 +10,49 @@
 namespace lattice::parser {
 
 class Parser {
- public:
-  /// Builds a parser with ownership of the provided lexer.
-  explicit Parser(lexer::Lexer lexer);
+   public:
+    /// Builds a parser with ownership of the provided lexer.
+    explicit Parser(lexer::Lexer lexer);
 
-  /// Parses an expression and throws util::Error on syntax issues.
-  std::unique_ptr<Expression> ParseExpression();
+    /// Parses an expression and throws util::Error on syntax issues.
+    std::unique_ptr<Expression> ParseExpression();
 
-  /// Parses a statement (including blocks/conditionals) and throws util::Error on syntax issues.
-  std::unique_ptr<Statement> ParseStatement();
+    /// Parses a statement (including blocks/conditionals) and throws
+    /// util::Error on syntax issues.
+    std::unique_ptr<Statement> ParseStatement();
 
- private:
-  const lexer::Token& Peek() const;
-  const lexer::Token& Next() const;
-  const lexer::Token& Previous() const;
-  lexer::Token Advance();
-  bool Match(lexer::TokenType type);
-  void Consume(lexer::TokenType type, const std::string& message);
+   private:
+    const lexer::Token& Peek() const;
+    const lexer::Token& Next() const;
+    const lexer::Token& Previous() const;
+    lexer::Token Advance();
+    bool Match(lexer::TokenType type);
+    void Consume(lexer::TokenType type, const std::string& message);
 
-  std::unique_ptr<Statement> StatementRule();
-  std::unique_ptr<Statement> IfStatementRule();
-  std::unique_ptr<Statement> WhileStatementRule();
-  std::unique_ptr<Statement> ForStatementRule();
-  std::unique_ptr<Statement> FunctionStatementRule();
-  std::unique_ptr<Statement> ReturnStatementRule();
-  std::unique_ptr<Statement> Block();
-  std::unique_ptr<Statement> AssignmentOrExpression();
-  std::unique_ptr<Expression> ExpressionRule();
-  std::unique_ptr<Expression> Equality();
-  std::unique_ptr<Expression> Comparison();
-  std::unique_ptr<Expression> Term();
-  std::unique_ptr<Expression> Factor();
-  std::unique_ptr<Expression> Unary();
-  std::unique_ptr<Expression> Primary();
-  std::unique_ptr<Expression> FinishCall(std::string callee);
-  std::unique_ptr<TypeName> ParseTypeName();
-  BindingAnnotation ParseBindingAnnotation();
-  std::string TokenTypeName(lexer::TokenType type) const;
+    std::unique_ptr<Statement> StatementRule();
+    std::unique_ptr<Statement> IfStatementRule();
+    std::unique_ptr<Statement> WhileStatementRule();
+    std::unique_ptr<Statement> ForStatementRule();
+    std::unique_ptr<Statement> FunctionStatementRule();
+    std::unique_ptr<Statement> ReturnStatementRule();
+    std::unique_ptr<Statement> Block();
+    std::unique_ptr<Statement> AssignmentOrExpression();
+    std::unique_ptr<Expression> ExpressionRule();
+    std::unique_ptr<Expression> Equality();
+    std::unique_ptr<Expression> Comparison();
+    std::unique_ptr<Expression> Term();
+    std::unique_ptr<Expression> Factor();
+    std::unique_ptr<Expression> Unary();
+    std::unique_ptr<Expression> Primary();
+    std::unique_ptr<Expression> FinishCall(std::string callee);
+    std::unique_ptr<TypeName> ParseTypeName();
+    BindingAnnotation ParseBindingAnnotation();
+    std::string TokenTypeName(lexer::TokenType type) const;
 
-  lexer::Lexer lexer_;
-  lexer::Token current_;
-  lexer::Token lookahead_;
-  lexer::Token previous_;
+    lexer::Lexer lexer_;
+    lexer::Token current_;
+    lexer::Token lookahead_;
+    lexer::Token previous_;
 };
 
 }  // namespace lattice::parser

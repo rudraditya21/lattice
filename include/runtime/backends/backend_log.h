@@ -13,25 +13,25 @@ enum class LogLevel { kError, kWarn, kInfo, kDebug, kTrace };
 enum class LogFormat { kText, kJson };
 
 struct LogRecord {
-  LogLevel level = LogLevel::kInfo;
-  BackendType backend = BackendType::kCPU;
-  BackendErrorKind kind = BackendErrorKind::kUnknown;
-  std::string message;
-  std::string operation;
-  int device_index = -1;
-  std::string device_name;
-  int64_t error_code = 0;
-  std::string error_name;
-  std::string trace_path;
+    LogLevel level = LogLevel::kInfo;
+    BackendType backend = BackendType::kCPU;
+    BackendErrorKind kind = BackendErrorKind::kUnknown;
+    std::string message;
+    std::string operation;
+    int device_index = -1;
+    std::string device_name;
+    int64_t error_code = 0;
+    std::string error_name;
+    std::string trace_path;
 };
 
 struct KernelTrace {
-  BackendType backend = BackendType::kCPU;
-  std::string kernel_name;
-  std::string build_options;
-  std::string source;
-  int device_index = -1;
-  std::string device_name;
+    BackendType backend = BackendType::kCPU;
+    std::string kernel_name;
+    std::string build_options;
+    std::string source;
+    int device_index = -1;
+    std::string device_name;
 };
 
 std::string FormatLogLine(const LogRecord& record, LogFormat format);

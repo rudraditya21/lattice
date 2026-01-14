@@ -7,8 +7,8 @@
 
 namespace lattice::builtin {
 
-/// Registers builtin constants (pi, e, gamma, inf) and math functions into the provided
-/// environment.
+/// Registers builtin constants (pi, e, gamma, inf) and math functions into the
+/// provided environment.
 void InstallBuiltins(const std::shared_ptr<runtime::Environment>& env);
 void InstallPrint(const std::shared_ptr<runtime::Environment>& env);
 

@@ -13,18 +13,18 @@
 namespace lattice::repl {
 
 class Repl {
- public:
-  /// Initializes the REPL with builtin constants/functions.
-  Repl();
+   public:
+    /// Initializes the REPL with builtin constants/functions.
+    Repl();
 
-  /// Starts the interactive loop until EOF or "exit".
-  void Run();
+    /// Starts the interactive loop until EOF or "exit".
+    void Run();
 
- private:
-  /// Processes one line; returns true when the loop should terminate.
-  bool ProcessLine(const std::string& line);
+   private:
+    /// Processes one line; returns true when the loop should terminate.
+    bool ProcessLine(const std::string& line);
 
-  std::shared_ptr<runtime::Environment> env_;
+    std::shared_ptr<runtime::Environment> env_;
 };
 
 }  // namespace lattice::repl

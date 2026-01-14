@@ -32,14 +32,16 @@ constexpr std::array<KernelDefinition, 20> kKernelDefs = {{
 }  // namespace
 
 const KernelDefinition* FindKernelDefinition(std::string_view name) {
-  for (const auto& def : kKernelDefs) {
-    if (def.name == name) return &def;
-  }
-  return nullptr;
+    for (const auto& def : kKernelDefs) {
+        if (def.name == name)
+            return &def;
+    }
+    return nullptr;
 }
 
 std::vector<KernelDefinition> AllKernelDefinitions() {
-  return std::vector<KernelDefinition>(kKernelDefs.begin(), kKernelDefs.end());
+    return std::vector<KernelDefinition>(kKernelDefs.begin(),
+                                         kKernelDefs.end());
 }
 
 }  // namespace lattice::runtime

@@ -17,142 +17,163 @@ namespace lattice::runtime {
 class MemoryPool;
 
 struct OpenCLDeviceDesc {
-  int index = -1;
-  std::string name;
-  std::string vendor;
-  std::string platform_name;
-  std::string platform_vendor;
-  std::string platform_version;
-  std::string device_version;
-  std::string runtime_version;
-  std::string driver_version;
-  cl_device_type type = 0;
-  cl_uint vendor_id = 0;
-  size_t max_work_group_size = 0;
-  cl_ulong local_mem_size = 0;
-  cl_device_local_mem_type local_mem_type = CL_LOCAL;
-  cl_uint compute_units = 0;
-  cl_uint max_clock_mhz = 0;
+    int index = -1;
+    std::string name;
+    std::string vendor;
+    std::string platform_name;
+    std::string platform_vendor;
+    std::string platform_version;
+    std::string device_version;
+    std::string runtime_version;
+    std::string driver_version;
+    cl_device_type type = 0;
+    cl_uint vendor_id = 0;
+    size_t max_work_group_size = 0;
+    cl_ulong local_mem_size = 0;
+    cl_device_local_mem_type local_mem_type = CL_LOCAL;
+    cl_uint compute_units = 0;
+    cl_uint max_clock_mhz = 0;
 };
 
 struct OpenCLBuffer {
-  cl_mem mem = nullptr;
-  size_t bytes = 0;
-  cl_mem_flags flags = CL_MEM_READ_WRITE;
-  int device_index = -1;
+    cl_mem mem = nullptr;
+    size_t bytes = 0;
+    cl_mem_flags flags = CL_MEM_READ_WRITE;
+    int device_index = -1;
 };
 
 struct OpenCLKernel {
-  cl_program program = nullptr;
-  cl_kernel kernel = nullptr;
-  int device_index = -1;
-  std::string name;
+    cl_program program = nullptr;
+    cl_kernel kernel = nullptr;
+    int device_index = -1;
+    std::string name;
 };
 
 struct OpenCLKernelArg {
-  enum class Kind { kMem, kValue };
-  Kind kind = Kind::kValue;
-  cl_mem mem = nullptr;
-  const void* value = nullptr;
-  size_t size = 0;
+    enum class Kind { kMem, kValue };
+    Kind kind = Kind::kValue;
+    cl_mem mem = nullptr;
+    const void* value = nullptr;
+    size_t size = 0;
 
-  static OpenCLKernelArg Mem(cl_mem mem_handle) {
-    OpenCLKernelArg arg;
-    arg.kind = Kind::kMem;
-    arg.mem = mem_handle;
-    return arg;
-  }
+    static OpenCLKernelArg Mem(cl_mem mem_handle) {
+        OpenCLKernelArg arg;
+        arg.kind = Kind::kMem;
+        arg.mem = mem_handle;
+        return arg;
+    }
 
-  static OpenCLKernelArg Value(const void* data, size_t data_size) {
-    OpenCLKernelArg arg;
-    arg.kind = Kind::kValue;
-    arg.value = data;
-    arg.size = data_size;
-    return arg;
-  }
+    static OpenCLKernelArg Value(const void* data, size_t data_size) {
+        OpenCLKernelArg arg;
+        arg.kind = Kind::kValue;
+        arg.value = data;
+        arg.size = data_size;
+        return arg;
+    }
 };
 
 struct OpenCLLaunchConfig {
-  cl_uint dims = 1;
-  size_t global[3] = {0, 0, 0};
-  size_t local[3] = {0, 0, 0};
-  bool use_local = false;
+    cl_uint dims = 1;
+    size_t global[3] = {0, 0, 0};
+    size_t local[3] = {0, 0, 0};
+    bool use_local = false;
 };
 
 class OpenCLBackend final : public Backend {
- public:
-  OpenCLBackend();
-  ~OpenCLBackend() override;
+   public:
+    OpenCLBackend();
+    ~OpenCLBackend() override;
 
-  BackendType Type() const override;
-  std::string Name() const override;
-  BackendCapabilities Capabilities() const override;
-  StatusOr<std::shared_ptr<Stream>> CreateStream() const override;
-  StatusOr<std::shared_ptr<Event>> CreateEvent() const override;
-  StatusOr<Allocation> Allocate(size_t bytes, size_t alignment = 64) const override;
-  Status Deallocate(const Allocation& alloc) const override;
-  StatusOr<Allocation> AllocatePinned(size_t bytes, size_t alignment = 64) const override;
-  Status DeallocatePinned(const Allocation& alloc) const override;
-  int NumThreads() const override;
-  size_t OutstandingAllocs() const override;
-  BackendMemoryStats MemoryStats() const override;
-  ExecutionConfig GetExecutionConfig() const override;
-  Status SetExecutionConfig(const ExecutionConfig& config) override;
-  StatusOr<uint64_t> ElapsedNs(const std::shared_ptr<Event>& start,
-                               const std::shared_ptr<Event>& end) const override;
-  void SetDefaultPriority(int priority) override;
-  void SetDeterministic(bool deterministic) override;
+    BackendType Type() const override;
+    std::string Name() const override;
+    BackendCapabilities Capabilities() const override;
+    StatusOr<std::shared_ptr<Stream>> CreateStream() const override;
+    StatusOr<std::shared_ptr<Event>> CreateEvent() const override;
+    StatusOr<Allocation> Allocate(size_t bytes,
+                                  size_t alignment = 64) const override;
+    Status Deallocate(const Allocation& alloc) const override;
+    StatusOr<Allocation> AllocatePinned(size_t bytes,
+                                        size_t alignment = 64) const override;
+    Status DeallocatePinned(const Allocation& alloc) const override;
+    int NumThreads() const override;
+    size_t OutstandingAllocs() const override;
+    BackendMemoryStats MemoryStats() const override;
+    ExecutionConfig GetExecutionConfig() const override;
+    Status SetExecutionConfig(const ExecutionConfig& config) override;
+    StatusOr<uint64_t> ElapsedNs(
+        const std::shared_ptr<Event>& start,
+        const std::shared_ptr<Event>& end) const override;
+    void SetDefaultPriority(int priority) override;
+    void SetDeterministic(bool deterministic) override;
 
-  int DeviceCount() const;
-  std::vector<OpenCLDeviceDesc> DeviceInfo() const;
-  std::vector<DeviceCapabilities> DeviceCaps() const;
+    int DeviceCount() const;
+    std::vector<OpenCLDeviceDesc> DeviceInfo() const;
+    std::vector<DeviceCapabilities> DeviceCaps() const;
 
-  StatusOr<OpenCLBuffer> CreateBuffer(int device_index, size_t bytes,
-                                      cl_mem_flags flags = CL_MEM_READ_WRITE) const;
-  Status ReleaseBuffer(OpenCLBuffer* buffer) const;
-  Status WriteBuffer(int device_index, const OpenCLBuffer& buffer, const void* data, size_t bytes,
-                     size_t offset = 0) const;
-  Status ReadBuffer(int device_index, const OpenCLBuffer& buffer, void* data, size_t bytes,
-                    size_t offset = 0) const;
+    StatusOr<OpenCLBuffer> CreateBuffer(
+        int device_index,
+        size_t bytes,
+        cl_mem_flags flags = CL_MEM_READ_WRITE) const;
+    Status ReleaseBuffer(OpenCLBuffer* buffer) const;
+    Status WriteBuffer(int device_index,
+                       const OpenCLBuffer& buffer,
+                       const void* data,
+                       size_t bytes,
+                       size_t offset = 0) const;
+    Status ReadBuffer(int device_index,
+                      const OpenCLBuffer& buffer,
+                      void* data,
+                      size_t bytes,
+                      size_t offset = 0) const;
 
-  StatusOr<OpenCLKernel> BuildKernelFromFile(const std::string& path,
-                                             const std::string& kernel_name,
-                                             const std::string& extra_build_options = "") const;
-  StatusOr<std::vector<OpenCLKernel>> BuildKernelsFromFile(
-      const std::string& path, const std::string& kernel_name,
-      const std::string& extra_build_options = "") const;
-  Status ReleaseKernel(OpenCLKernel* kernel) const;
-  Status LaunchKernel(const OpenCLKernel& kernel, const OpenCLLaunchConfig& config,
-                      const std::vector<OpenCLKernelArg>& args) const;
+    StatusOr<OpenCLKernel> BuildKernelFromFile(
+        const std::string& path,
+        const std::string& kernel_name,
+        const std::string& extra_build_options = "") const;
+    StatusOr<std::vector<OpenCLKernel>> BuildKernelsFromFile(
+        const std::string& path,
+        const std::string& kernel_name,
+        const std::string& extra_build_options = "") const;
+    Status ReleaseKernel(OpenCLKernel* kernel) const;
+    Status LaunchKernel(const OpenCLKernel& kernel,
+                        const OpenCLLaunchConfig& config,
+                        const std::vector<OpenCLKernelArg>& args) const;
 
-  Status SmokeTest() const;
+    Status SmokeTest() const;
 
- private:
-  struct DeviceContext;
+   private:
+    struct DeviceContext;
 
-  Status EnsureInitialized() const;
-  std::string KernelDir() const;
-  std::string DeviceInfoString(cl_device_id device, cl_device_info param) const;
-  std::string PlatformInfoString(cl_platform_id platform, cl_platform_info param) const;
-  std::string BuildOptions(const DeviceContext& dev, const std::string& extra) const;
-  std::string CacheKey(const DeviceContext& dev, const std::string& kernel_name,
-                       const std::string& build_options, const std::string& source) const;
-  StatusOr<cl_program> BuildOrLoadProgram(DeviceContext& dev, const std::string& source,
-                                          const std::string& build_options,
-                                          const std::string& cache_key,
-                                          const std::string& kernel_name) const;
-  MemoryPool* DevicePool(int device_index, cl_mem_flags flags) const;
-  MemoryPool* PinnedPool(int device_index) const;
+    Status EnsureInitialized() const;
+    std::string KernelDir() const;
+    std::string DeviceInfoString(cl_device_id device,
+                                 cl_device_info param) const;
+    std::string PlatformInfoString(cl_platform_id platform,
+                                   cl_platform_info param) const;
+    std::string BuildOptions(const DeviceContext& dev,
+                             const std::string& extra) const;
+    std::string CacheKey(const DeviceContext& dev,
+                         const std::string& kernel_name,
+                         const std::string& build_options,
+                         const std::string& source) const;
+    StatusOr<cl_program> BuildOrLoadProgram(
+        DeviceContext& dev,
+        const std::string& source,
+        const std::string& build_options,
+        const std::string& cache_key,
+        const std::string& kernel_name) const;
+    MemoryPool* DevicePool(int device_index, cl_mem_flags flags) const;
+    MemoryPool* PinnedPool(int device_index) const;
 
-  mutable std::vector<DeviceContext> devices_;
-  mutable gpu::OpenCLLoader loader_;
-  mutable bool initialized_ = false;
-  mutable Status init_status_ = Status::OK();
-  mutable std::mutex mu_;
-  mutable std::mutex config_mu_;
-  int default_priority_ = 0;
-  bool deterministic_ = false;
-  mutable ExecutionConfig exec_config_{};
+    mutable std::vector<DeviceContext> devices_;
+    mutable gpu::OpenCLLoader loader_;
+    mutable bool initialized_ = false;
+    mutable Status init_status_ = Status::OK();
+    mutable std::mutex mu_;
+    mutable std::mutex config_mu_;
+    int default_priority_ = 0;
+    bool deterministic_ = false;
+    mutable ExecutionConfig exec_config_{};
 };
 
 const Backend* GetOpenCLBackend();

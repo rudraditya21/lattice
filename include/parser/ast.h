@@ -19,193 +19,217 @@ enum class UnaryOp { kNegate };
 enum class BinaryOp { kAdd, kSub, kMul, kDiv, kEq, kNe, kGt, kGe, kLt, kLe };
 
 struct Expression {
-  virtual ~Expression() = default;
-  int line = 0;
-  int column = 0;
+    virtual ~Expression() = default;
+    int line = 0;
+    int column = 0;
 };
 
 /// Numeric literal value.
 struct NumberLiteral : public Expression {
-  NumberLiteral(double v, bool is_int_token, std::string lex)
-      : value(v), is_integer_token(is_int_token), lexeme(std::move(lex)) {}
-  double value;
-  bool is_integer_token;
-  std::string lexeme;
+    NumberLiteral(double v, bool is_int_token, std::string lex)
+        : value(v), is_integer_token(is_int_token), lexeme(std::move(lex)) {}
+    double value;
+    bool is_integer_token;
+    std::string lexeme;
 };
 
 /// Boolean literal value.
 struct BoolLiteral : public Expression {
-  explicit BoolLiteral(bool v) : value(v) {}
-  bool value;
+    explicit BoolLiteral(bool v) : value(v) {}
+    bool value;
 };
 
 struct StringLiteral : public Expression {
-  explicit StringLiteral(std::string v) : value(std::move(v)) {}
-  std::string value;
+    explicit StringLiteral(std::string v) : value(std::move(v)) {}
+    std::string value;
 };
 
 /// Unary expression such as negation.
 struct UnaryExpression : public Expression {
-  UnaryExpression(UnaryOp o, std::unique_ptr<Expression> expr) : op(o), operand(std::move(expr)) {}
-  UnaryOp op;
-  std::unique_ptr<Expression> operand;
-  int line = 0;
-  int column = 0;
+    UnaryExpression(UnaryOp o, std::unique_ptr<Expression> expr)
+        : op(o), operand(std::move(expr)) {}
+    UnaryOp op;
+    std::unique_ptr<Expression> operand;
+    int line = 0;
+    int column = 0;
 };
 
 /// Binary expression for arithmetic operators.
 struct BinaryExpression : public Expression {
-  BinaryExpression(BinaryOp o, std::unique_ptr<Expression> lhs_expr,
-                   std::unique_ptr<Expression> rhs_expr)
-      : op(o), lhs(std::move(lhs_expr)), rhs(std::move(rhs_expr)) {}
-  BinaryOp op;
-  std::unique_ptr<Expression> lhs;
-  std::unique_ptr<Expression> rhs;
-  int line = 0;
-  int column = 0;
+    BinaryExpression(BinaryOp o,
+                     std::unique_ptr<Expression> lhs_expr,
+                     std::unique_ptr<Expression> rhs_expr)
+        : op(o), lhs(std::move(lhs_expr)), rhs(std::move(rhs_expr)) {}
+    BinaryOp op;
+    std::unique_ptr<Expression> lhs;
+    std::unique_ptr<Expression> rhs;
+    int line = 0;
+    int column = 0;
 };
 
 /// Named identifier reference.
 struct Identifier : public Expression {
-  explicit Identifier(std::string n) : name(std::move(n)) {}
-  std::string name;
+    explicit Identifier(std::string n) : name(std::move(n)) {}
+    std::string name;
 };
 
 /// Type annotation identifier.
 struct TypeName {
-  explicit TypeName(std::string n, std::optional<runtime::DType> dt = std::nullopt)
-      : name(std::move(n)), dtype(dt) {}
-  std::string name;
-  std::optional<runtime::DType> dtype;
+    explicit TypeName(std::string n,
+                      std::optional<runtime::DType> dt = std::nullopt)
+        : name(std::move(n)), dtype(dt) {}
+    std::string name;
+    std::optional<runtime::DType> dtype;
 };
 
 /// Function call with positional arguments.
 struct CallExpression : public Expression {
-  CallExpression(std::string callee_name, std::vector<std::unique_ptr<Expression>> arguments)
-      : callee(std::move(callee_name)), args(std::move(arguments)) {}
-  std::string callee;
-  std::vector<std::unique_ptr<Expression>> args;
-  int line = 0;
-  int column = 0;
+    CallExpression(std::string callee_name,
+                   std::vector<std::unique_ptr<Expression>> arguments)
+        : callee(std::move(callee_name)), args(std::move(arguments)) {}
+    std::string callee;
+    std::vector<std::unique_ptr<Expression>> args;
+    int line = 0;
+    int column = 0;
 };
 
 struct TupleLiteral : public Expression {
-  explicit TupleLiteral(std::vector<std::unique_ptr<Expression>> elems, int l = 0, int c = 0)
-      : elements(std::move(elems)), line(l), column(c) {}
-  std::vector<std::unique_ptr<Expression>> elements;
-  int line = 0;
-  int column = 0;
+    explicit TupleLiteral(std::vector<std::unique_ptr<Expression>> elems,
+                          int l = 0,
+                          int c = 0)
+        : elements(std::move(elems)), line(l), column(c) {}
+    std::vector<std::unique_ptr<Expression>> elements;
+    int line = 0;
+    int column = 0;
 };
 
 struct RecordLiteral : public Expression {
-  explicit RecordLiteral(std::vector<std::pair<std::string, std::unique_ptr<Expression>>> fs,
-                         int l = 0, int c = 0)
-      : fields(std::move(fs)), line(l), column(c) {}
-  std::vector<std::pair<std::string, std::unique_ptr<Expression>>> fields;
-  int line = 0;
-  int column = 0;
+    explicit RecordLiteral(
+        std::vector<std::pair<std::string, std::unique_ptr<Expression>>> fs,
+        int l = 0,
+        int c = 0)
+        : fields(std::move(fs)), line(l), column(c) {}
+    std::vector<std::pair<std::string, std::unique_ptr<Expression>>> fields;
+    int line = 0;
+    int column = 0;
 };
 
 struct IndexExpression : public Expression {
-  IndexExpression(std::unique_ptr<Expression> o, std::unique_ptr<Expression> idx, int l = 0,
-                  int c = 0)
-      : object(std::move(o)), index(std::move(idx)), line(l), column(c) {}
-  std::unique_ptr<Expression> object;
-  std::unique_ptr<Expression> index;
-  int line = 0;
-  int column = 0;
+    IndexExpression(std::unique_ptr<Expression> o,
+                    std::unique_ptr<Expression> idx,
+                    int l = 0,
+                    int c = 0)
+        : object(std::move(o)), index(std::move(idx)), line(l), column(c) {}
+    std::unique_ptr<Expression> object;
+    std::unique_ptr<Expression> index;
+    int line = 0;
+    int column = 0;
 };
 
 /// Optional type annotation for bindings.
 struct BindingAnnotation {
-  BindingAnnotation() = default;
-  explicit BindingAnnotation(std::unique_ptr<TypeName> tn) : type(std::move(tn)) {}
-  std::unique_ptr<TypeName> type;
+    BindingAnnotation() = default;
+    explicit BindingAnnotation(std::unique_ptr<TypeName> tn)
+        : type(std::move(tn)) {}
+    std::unique_ptr<TypeName> type;
 };
 
 struct Pattern {
-  virtual ~Pattern() = default;
-  int line = 0;
-  int column = 0;
+    virtual ~Pattern() = default;
+    int line = 0;
+    int column = 0;
 };
 
 struct TuplePattern : public Pattern {
-  std::vector<std::string> names;
+    std::vector<std::string> names;
 };
 
 struct RecordPattern : public Pattern {
-  // key name -> binding name (for now they match).
-  std::vector<std::pair<std::string, std::string>> fields;
+    // key name -> binding name (for now they match).
+    std::vector<std::pair<std::string, std::string>> fields;
 };
 
 struct Statement {
-  virtual ~Statement() = default;
-  int line = 0;
-  int column = 0;
+    virtual ~Statement() = default;
+    int line = 0;
+    int column = 0;
 };
 
 /// Expression used as a statement.
 struct ExpressionStatement : public Statement {
-  explicit ExpressionStatement(std::unique_ptr<Expression> e) : expr(std::move(e)) {}
-  std::unique_ptr<Expression> expr;
+    explicit ExpressionStatement(std::unique_ptr<Expression> e)
+        : expr(std::move(e)) {}
+    std::unique_ptr<Expression> expr;
 };
 
 /// Assignment to a named identifier.
 struct AssignmentStatement : public Statement {
-  AssignmentStatement(std::string n, BindingAnnotation ann, std::unique_ptr<Expression> v)
-      : name(std::move(n)), annotation(std::move(ann)), value(std::move(v)) {}
-  AssignmentStatement(std::unique_ptr<TuplePattern> tp, BindingAnnotation ann,
-                      std::unique_ptr<Expression> v)
-      : tuple_pattern(std::move(tp)), annotation(std::move(ann)), value(std::move(v)) {}
-  AssignmentStatement(std::unique_ptr<RecordPattern> rp, BindingAnnotation ann,
-                      std::unique_ptr<Expression> v)
-      : record_pattern(std::move(rp)), annotation(std::move(ann)), value(std::move(v)) {}
-  std::string name;  // empty when using destructuring patterns.
-  std::unique_ptr<TuplePattern> tuple_pattern;
-  std::unique_ptr<RecordPattern> record_pattern;
-  BindingAnnotation annotation;
-  std::unique_ptr<Expression> value;
+    AssignmentStatement(std::string n,
+                        BindingAnnotation ann,
+                        std::unique_ptr<Expression> v)
+        : name(std::move(n)), annotation(std::move(ann)), value(std::move(v)) {}
+    AssignmentStatement(std::unique_ptr<TuplePattern> tp,
+                        BindingAnnotation ann,
+                        std::unique_ptr<Expression> v)
+        : tuple_pattern(std::move(tp)),
+          annotation(std::move(ann)),
+          value(std::move(v)) {}
+    AssignmentStatement(std::unique_ptr<RecordPattern> rp,
+                        BindingAnnotation ann,
+                        std::unique_ptr<Expression> v)
+        : record_pattern(std::move(rp)),
+          annotation(std::move(ann)),
+          value(std::move(v)) {}
+    std::string name;  // empty when using destructuring patterns.
+    std::unique_ptr<TuplePattern> tuple_pattern;
+    std::unique_ptr<RecordPattern> record_pattern;
+    BindingAnnotation annotation;
+    std::unique_ptr<Expression> value;
 };
 
 /// Sequence of statements in a block.
 struct BlockStatement : public Statement {
-  explicit BlockStatement(std::vector<std::unique_ptr<Statement>> stmts)
-      : statements(std::move(stmts)) {}
-  std::vector<std::unique_ptr<Statement>> statements;
+    explicit BlockStatement(std::vector<std::unique_ptr<Statement>> stmts)
+        : statements(std::move(stmts)) {}
+    std::vector<std::unique_ptr<Statement>> statements;
 };
 
 /// Conditional statement with optional else branch.
 struct IfStatement : public Statement {
-  IfStatement(std::unique_ptr<Expression> cond, std::unique_ptr<Statement> then_branch,
-              std::unique_ptr<Statement> else_branch)
-      : condition(std::move(cond)),
-        then_branch(std::move(then_branch)),
-        else_branch(std::move(else_branch)) {}
-  std::unique_ptr<Expression> condition;
-  std::unique_ptr<Statement> then_branch;
-  std::unique_ptr<Statement> else_branch;
+    IfStatement(std::unique_ptr<Expression> cond,
+                std::unique_ptr<Statement> then_branch,
+                std::unique_ptr<Statement> else_branch)
+        : condition(std::move(cond)),
+          then_branch(std::move(then_branch)),
+          else_branch(std::move(else_branch)) {}
+    std::unique_ptr<Expression> condition;
+    std::unique_ptr<Statement> then_branch;
+    std::unique_ptr<Statement> else_branch;
 };
 
 /// While loop with a condition and body.
 struct WhileStatement : public Statement {
-  WhileStatement(std::unique_ptr<Expression> cond, std::unique_ptr<Statement> body_stmt)
-      : condition(std::move(cond)), body(std::move(body_stmt)) {}
-  std::unique_ptr<Expression> condition;
-  std::unique_ptr<Statement> body;
+    WhileStatement(std::unique_ptr<Expression> cond,
+                   std::unique_ptr<Statement> body_stmt)
+        : condition(std::move(cond)), body(std::move(body_stmt)) {}
+    std::unique_ptr<Expression> condition;
+    std::unique_ptr<Statement> body;
 };
 
 /// For loop with optional init/condition/increment parts.
 struct ForStatement : public Statement {
-  ForStatement(std::unique_ptr<Statement> init_stmt, std::unique_ptr<Expression> cond_expr,
-               std::unique_ptr<Statement> incr_stmt, std::unique_ptr<Statement> body_stmt)
-      : init(std::move(init_stmt)),
-        condition(std::move(cond_expr)),
-        increment(std::move(incr_stmt)),
-        body(std::move(body_stmt)) {}
-  std::unique_ptr<Statement> init;
-  std::unique_ptr<Expression> condition;
-  std::unique_ptr<Statement> increment;
-  std::unique_ptr<Statement> body;
+    ForStatement(std::unique_ptr<Statement> init_stmt,
+                 std::unique_ptr<Expression> cond_expr,
+                 std::unique_ptr<Statement> incr_stmt,
+                 std::unique_ptr<Statement> body_stmt)
+        : init(std::move(init_stmt)),
+          condition(std::move(cond_expr)),
+          increment(std::move(incr_stmt)),
+          body(std::move(body_stmt)) {}
+    std::unique_ptr<Statement> init;
+    std::unique_ptr<Expression> condition;
+    std::unique_ptr<Statement> increment;
+    std::unique_ptr<Statement> body;
 };
 
 /// Break out of the nearest loop.
@@ -216,25 +240,28 @@ struct ContinueStatement : public Statement {};
 
 /// Return from the nearest function.
 struct ReturnStatement : public Statement {
-  explicit ReturnStatement(std::unique_ptr<Expression> e) : expr(std::move(e)) {}
-  std::unique_ptr<Expression> expr;
+    explicit ReturnStatement(std::unique_ptr<Expression> e)
+        : expr(std::move(e)) {}
+    std::unique_ptr<Expression> expr;
 };
 
 /// Function definition statement.
 struct FunctionStatement : public Statement {
-  FunctionStatement(std::string n, std::vector<std::string> params,
-                    std::vector<BindingAnnotation> param_types, BindingAnnotation ret_type,
-                    std::unique_ptr<Statement> b)
-      : name(std::move(n)),
-        parameters(std::move(params)),
-        parameter_types(std::move(param_types)),
-        return_type(std::move(ret_type)),
-        body(std::move(b)) {}
-  std::string name;
-  std::vector<std::string> parameters;
-  std::vector<BindingAnnotation> parameter_types;
-  BindingAnnotation return_type;
-  std::unique_ptr<Statement> body;
+    FunctionStatement(std::string n,
+                      std::vector<std::string> params,
+                      std::vector<BindingAnnotation> param_types,
+                      BindingAnnotation ret_type,
+                      std::unique_ptr<Statement> b)
+        : name(std::move(n)),
+          parameters(std::move(params)),
+          parameter_types(std::move(param_types)),
+          return_type(std::move(ret_type)),
+          body(std::move(b)) {}
+    std::string name;
+    std::vector<std::string> parameters;
+    std::vector<BindingAnnotation> parameter_types;
+    BindingAnnotation return_type;
+    std::unique_ptr<Statement> body;
 };
 
 }  // namespace lattice::parser

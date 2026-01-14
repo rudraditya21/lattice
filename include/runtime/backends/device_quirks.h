@@ -9,21 +9,23 @@
 namespace lattice::runtime {
 
 enum DeviceQuirkFlag : uint32_t {
-  kNoQuirk = 0,
-  kSoftwareEmulation = 1u << 0,
-  kDisableFp16 = 1u << 1,
-  kDisableFp64 = 1u << 2,
-  kPrefer1DLaunch = 1u << 3,
+    kNoQuirk = 0,
+    kSoftwareEmulation = 1u << 0,
+    kDisableFp16 = 1u << 1,
+    kDisableFp64 = 1u << 2,
+    kPrefer1DLaunch = 1u << 3,
 };
 
 struct DeviceQuirkInfo {
-  uint32_t flags = 0;
-  bool disabled = false;
-  std::string reason;
+    uint32_t flags = 0;
+    bool disabled = false;
+    std::string reason;
 };
 
-DeviceQuirkInfo QueryDeviceQuirks(BackendType backend, const std::string& vendor,
-                                  const std::string& name, const std::string& driver);
+DeviceQuirkInfo QueryDeviceQuirks(BackendType backend,
+                                  const std::string& vendor,
+                                  const std::string& name,
+                                  const std::string& driver);
 
 }  // namespace lattice::runtime
 

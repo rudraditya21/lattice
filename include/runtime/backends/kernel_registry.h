@@ -7,8 +7,8 @@
 namespace lattice::runtime {
 
 struct KernelDefinition {
-  std::string_view name;
-  std::string_view file;
+    std::string_view name;
+    std::string_view file;
 };
 
 const KernelDefinition* FindKernelDefinition(std::string_view name);
