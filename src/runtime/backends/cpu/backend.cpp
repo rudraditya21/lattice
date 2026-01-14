@@ -3,21 +3,23 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <future>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <new>
 #include <queue>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 
 #include "runtime/backends/backend_log.h"
+#include "runtime/backends/memory_pool.h"
 
 #ifdef __linux__
 #include <numaif.h>
@@ -31,22 +33,166 @@ namespace {
 
 constexpr size_t kDefaultAlignment = 64;
 constexpr uint64_t kCanary = 0xDEADBEEFCAFEBABEULL;
-constexpr size_t kPoolMaxSize = 64 * 1024;
+constexpr size_t kCanaryBytes = sizeof(uint64_t);
 
-struct AllocInfo {
-  size_t bytes;
-  size_t alignment;
-  uint64_t* pre_guard;
-  uint64_t* post_guard;
-  void* user_ptr;
-  void* raw_ptr;
-  bool from_pool;
+struct CpuPoolState {
+  std::mutex mu;
+  std::unique_ptr<MemoryPool> device_pool;
+  std::unique_ptr<MemoryPool> pinned_pool;
 };
 
-std::mutex g_alloc_mu;
-std::unordered_map<void*, AllocInfo> g_allocs;
-std::unordered_map<size_t, std::vector<void*>> g_pool;
-MemoryPoolStats g_pool_stats;
+void WriteCanary(void* ptr) {
+  uint64_t value = kCanary;
+  std::memcpy(ptr, &value, sizeof(value));
+}
+
+bool CheckCanary(const void* ptr) {
+  uint64_t value = 0;
+  std::memcpy(&value, ptr, sizeof(value));
+  return value == kCanary;
+}
+
+MemoryPoolConfig CpuDevicePoolConfig() {
+  static MemoryPoolConfig config = [] {
+    MemoryPoolConfig base = DefaultDevicePoolConfig();
+    base.scrub_on_free = true;
+    base.bucket_bytes = kDefaultAlignment;
+    base = LoadMemoryPoolConfig("LATTICE_DEVICE_POOL", base);
+    base = LoadMemoryPoolConfig("LATTICE_CPU_DEVICE_POOL", base);
+    return base;
+  }();
+  return config;
+}
+
+MemoryPoolConfig CpuPinnedPoolConfig() {
+  static MemoryPoolConfig config = [] {
+    MemoryPoolConfig base = DefaultPinnedPoolConfig();
+    base.scrub_on_free = true;
+    base.bucket_bytes = kDefaultAlignment;
+    base = LoadMemoryPoolConfig("LATTICE_PINNED_POOL", base);
+    base = LoadMemoryPoolConfig("LATTICE_CPU_PINNED_POOL", base);
+    return base;
+  }();
+  return config;
+}
+
+StatusOr<PoolBlock> CpuPoolAlloc(size_t bytes, size_t alignment) {
+  PoolBlock block;
+  if (bytes == 0) return block;
+  if (alignment == 0) alignment = kDefaultAlignment;
+  size_t total = bytes + 2 * kCanaryBytes;
+  size_t alloc_align = std::max(alignment, kDefaultAlignment);
+  void* raw = nullptr;
+#if defined(_MSC_VER)
+  raw = _aligned_malloc(total, alloc_align);
+  if (!raw) {
+    return Status::Internal("cpu alloc failed");
+  }
+#else
+  if (posix_memalign(&raw, alloc_align, total) != 0 || !raw) {
+    return Status::Internal("cpu alloc failed");
+  }
+#endif
+  void* user_ptr = static_cast<char*>(raw) + kCanaryBytes;
+  block.key = reinterpret_cast<uintptr_t>(user_ptr);
+  block.handle = reinterpret_cast<uintptr_t>(raw);
+  block.host_ptr = user_ptr;
+  block.bytes = bytes;
+  block.alignment = alignment;
+  return block;
+}
+
+Status CpuPoolFree(const PoolBlock& block) {
+  void* raw = reinterpret_cast<void*>(block.handle);
+  if (!raw) return Status::OK();
+#if defined(_MSC_VER)
+  _aligned_free(raw);
+#else
+  free(raw);
+#endif
+  return Status::OK();
+}
+
+Status CpuPoolScrub(const PoolBlock& block) {
+  if (block.handle == 0) return Status::OK();
+  size_t requested = block.requested_bytes ? block.requested_bytes : block.bytes;
+  if (requested == 0) return Status::OK();
+  if (requested > block.bytes) requested = block.bytes;
+  auto* raw = reinterpret_cast<unsigned char*>(block.handle);
+  auto* user = block.host_ptr ? static_cast<unsigned char*>(block.host_ptr)
+                              : raw + static_cast<std::ptrdiff_t>(kCanaryBytes);
+  if (!CheckCanary(raw) || !CheckCanary(user + requested)) {
+    return Status::Internal("memory canary corrupted");
+  }
+  std::memset(user, 0, requested);
+  WriteCanary(raw);
+  WriteCanary(user + requested);
+  return Status::OK();
+}
+
+CpuPoolState& CpuPools() {
+  static CpuPoolState state;
+  return state;
+}
+
+MemoryPool* CpuDevicePool() {
+  auto& state = CpuPools();
+  std::lock_guard<std::mutex> lock(state.mu);
+  if (!state.device_pool) {
+    state.device_pool = std::make_unique<MemoryPool>("cpu_device_pool", CpuDevicePoolConfig(),
+                                                     CpuPoolAlloc, CpuPoolFree, CpuPoolScrub);
+  }
+  return state.device_pool.get();
+}
+
+MemoryPool* CpuPinnedPool() {
+  auto& state = CpuPools();
+  std::lock_guard<std::mutex> lock(state.mu);
+  if (!state.pinned_pool) {
+    state.pinned_pool = std::make_unique<MemoryPool>("cpu_pinned_pool", CpuPinnedPoolConfig(),
+                                                     CpuPoolAlloc, CpuPoolFree, CpuPoolScrub);
+  }
+  return state.pinned_pool.get();
+}
+
+StatusOr<Allocation> CpuAllocateFromPool(MemoryPool* pool, AllocationKind kind, size_t bytes,
+                                         size_t alignment, int numa_node) {
+  if (!pool) {
+    return Status::Internal("cpu pool unavailable");
+  }
+  if (alignment == 0) alignment = kDefaultAlignment;
+  Allocation alloc;
+  alloc.bytes = bytes;
+  alloc.alignment = alignment;
+  alloc.numa_node = numa_node;
+  alloc.kind = kind;
+  auto block_or = pool->Acquire(bytes, alignment);
+  if (!block_or.ok()) return block_or.status();
+  PoolBlock block = block_or.value();
+  void* raw = reinterpret_cast<void*>(block.handle);
+  void* user_ptr =
+      block.host_ptr ? block.host_ptr : (raw ? static_cast<char*>(raw) + kCanaryBytes : nullptr);
+  if (user_ptr && bytes > 0 && raw) {
+    WriteCanary(raw);
+    WriteCanary(static_cast<char*>(user_ptr) + bytes);
+    std::memset(user_ptr, 0, bytes);
+  }
+  alloc.ptr = user_ptr;
+  alloc.device_handle = raw;
+  alloc.from_pool = block.from_pool;
+#ifdef __linux__
+  if (numa_node >= 0 && raw && block.bytes > 0) {
+    unsigned long nodemask = 1UL << numa_node;
+    size_t total = block.bytes + 2 * kCanaryBytes;
+    long mbind_res = syscall(SYS_mbind, raw, total, MPOL_PREFERRED, &nodemask, sizeof(nodemask) * 8,
+                             MPOL_MF_STRICT);
+    if (mbind_res != 0) {
+      return Status::Internal("numa mbind failed");
+    }
+  }
+#endif
+  return alloc;
+}
 
 std::string NormalizeBackendName(const char* name) {
   std::string out;
@@ -242,6 +388,8 @@ class CpuStream final : public Stream {
 class CpuEvent final : public Event {
  public:
   void Record() override {
+    timestamp_ = std::chrono::steady_clock::now();
+    has_timestamp_ = true;
     ready_ = std::make_shared<std::promise<void>>();
     future_ = ready_->get_future();
     ready_->set_value();
@@ -254,9 +402,14 @@ class CpuEvent final : public Event {
            future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
   }
 
+  bool HasTimestamp() const { return has_timestamp_; }
+  std::chrono::steady_clock::time_point Timestamp() const { return timestamp_; }
+
  private:
   std::shared_ptr<std::promise<void>> ready_;
   std::future<void> future_;
+  std::chrono::steady_clock::time_point timestamp_{};
+  bool has_timestamp_ = false;
 };
 
 BackendCapabilities CpuCaps() {
@@ -269,6 +422,7 @@ BackendCapabilities CpuCaps() {
   caps.supports_conv = true;
   caps.supports_rng = true;
   caps.supports_events = true;
+  caps.supports_profiling = true;
   caps.supported_dtypes = {
       DType::kBool, DType::kI8,  DType::kI16,  DType::kI32,     DType::kI64,      DType::kU8,
       DType::kU16,  DType::kU32, DType::kU64,  DType::kF16,     DType::kBF16,     DType::kF32,
@@ -311,142 +465,31 @@ StatusOr<std::shared_ptr<Event>> CpuBackend::CreateEvent() const {
 }
 
 StatusOr<Allocation> CpuBackend::Allocate(size_t bytes, size_t alignment) const {
-  Allocation alloc;
-  alloc.bytes = bytes;
-  alloc.alignment = alignment;
-  alloc.numa_node = preferred_numa_node_;
-  alloc.kind = AllocationKind::kHost;
-  const bool use_pool = bytes > 0 && bytes <= kPoolMaxSize && alignment <= kDefaultAlignment;
-  void* pooled = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_alloc_mu);
-    g_pool_stats.total_alloc_calls++;
-    if (use_pool) {
-      auto it = g_pool.find(bytes);
-      if (it != g_pool.end() && !it->second.empty()) {
-        pooled = it->second.back();
-        it->second.pop_back();
-        g_pool_stats.pool_hits++;
-        if (g_pool_stats.cached_blocks > 0) {
-          g_pool_stats.cached_blocks--;
-        }
-        if (g_pool_stats.cached_bytes >= bytes) {
-          g_pool_stats.cached_bytes -= bytes;
-        } else {
-          g_pool_stats.cached_bytes = 0;
-        }
-      }
-    }
-    if (use_pool && !pooled) {
-      g_pool_stats.pool_misses++;
-    }
-  }
-
-  void* raw = pooled;
-  size_t canary_bytes = sizeof(uint64_t);
-  size_t total = bytes + 2 * canary_bytes;
-  size_t alloc_align = std::max(alignment, kDefaultAlignment);
-
-  if (!raw) {
-#if defined(_MSC_VER)
-    raw = _aligned_malloc(total, alloc_align);
-    if (!raw) return Status::Internal("cpu alloc failed");
-#else
-    if (posix_memalign(&raw, alloc_align, total) != 0) {
-      return Status::Internal("cpu alloc failed");
-    }
-#endif
-  }
-
-  void* user_ptr = static_cast<void*>(static_cast<char*>(raw) + canary_bytes);
-  auto* pre = reinterpret_cast<uint64_t*>(raw);
-  auto* post = reinterpret_cast<uint64_t*>(static_cast<char*>(user_ptr) + bytes);
-  *pre = kCanary;
-  *post = kCanary;
-  if (user_ptr && bytes > 0) {
-    std::memset(user_ptr, 0, bytes);  // zero-init for safety
-  }
-  alloc.ptr = user_ptr;
-  alloc.from_pool = use_pool && pooled != nullptr;
-
-  {
-    std::lock_guard<std::mutex> lock(g_alloc_mu);
-    g_allocs[user_ptr] = {bytes, alignment, pre, post, user_ptr, raw, alloc.from_pool};
-    g_pool_stats.in_use_bytes += bytes;
-    g_pool_stats.in_use_blocks++;
-    g_pool_stats.peak_in_use_bytes =
-        std::max(g_pool_stats.peak_in_use_bytes, g_pool_stats.in_use_bytes);
-    g_pool_stats.peak_in_use_blocks =
-        std::max(g_pool_stats.peak_in_use_blocks, g_pool_stats.in_use_blocks);
-  }
-#ifdef __linux__
-  if (preferred_numa_node_ >= 0) {
-    unsigned long nodemask = 1UL << preferred_numa_node_;
-    long mbind_res = syscall(SYS_mbind, raw, total, MPOL_PREFERRED, &nodemask, sizeof(nodemask) * 8,
-                             MPOL_MF_STRICT);
-    if (mbind_res != 0) {
-      return Status::Internal("numa mbind failed");
-    }
-  }
-#endif
-  return alloc;
+  return CpuAllocateFromPool(CpuDevicePool(), AllocationKind::kHost, bytes, alignment,
+                             preferred_numa_node_);
 }
 
 Status CpuBackend::Deallocate(const Allocation& alloc) const {
   if (!alloc.ptr) return Status::OK();
-  AllocInfo info;
-  {
-    std::lock_guard<std::mutex> lock(g_alloc_mu);
-    g_pool_stats.total_free_calls++;
-    auto it = g_allocs.find(alloc.ptr);
-    if (it == g_allocs.end()) {
-      return Status::Invalid("unknown allocation");
-    }
-    info = it->second;
-    g_allocs.erase(it);
-    if (g_pool_stats.in_use_bytes >= info.bytes) {
-      g_pool_stats.in_use_bytes -= info.bytes;
-    } else {
-      g_pool_stats.in_use_bytes = 0;
-    }
-    if (g_pool_stats.in_use_blocks > 0) {
-      g_pool_stats.in_use_blocks--;
-    }
+  MemoryPool* pool = CpuDevicePool();
+  if (!pool) {
+    return Status::Internal("cpu device pool unavailable");
   }
-  if (*info.pre_guard != kCanary || *info.post_guard != kCanary) {
-    return Status::Internal("memory canary corrupted");
-  }
-#if !defined(_MSC_VER)
-  if (info.bytes > 0) {
-    std::memset(info.user_ptr, 0, info.bytes);  // scrub before free (best-effort)
-    g_pool_stats.scrubbed_bytes += info.bytes;
-  }
-#endif
-  if (info.from_pool && info.bytes <= kPoolMaxSize && info.alignment <= kDefaultAlignment) {
-    std::lock_guard<std::mutex> lock(g_alloc_mu);
-    g_pool[info.bytes].push_back(info.raw_ptr);
-    g_pool_stats.cached_bytes += info.bytes;
-    g_pool_stats.cached_blocks++;
-  } else {
-#if defined(_MSC_VER)
-    _aligned_free(info.raw_ptr);
-#else
-    free(info.raw_ptr);
-#endif
-  }
-  return Status::OK();
+  return pool->Release(reinterpret_cast<uintptr_t>(alloc.ptr));
 }
 
 StatusOr<Allocation> CpuBackend::AllocatePinned(size_t bytes, size_t alignment) const {
-  auto alloc_or = Allocate(bytes, alignment);
-  if (!alloc_or.ok()) return alloc_or;
-  auto alloc = alloc_or.value();
-  alloc.kind = AllocationKind::kPinnedHost;
-  return alloc;
+  return CpuAllocateFromPool(CpuPinnedPool(), AllocationKind::kPinnedHost, bytes, alignment,
+                             preferred_numa_node_);
 }
 
 Status CpuBackend::DeallocatePinned(const Allocation& alloc) const {
-  return Deallocate(alloc);
+  if (!alloc.ptr) return Status::OK();
+  MemoryPool* pool = CpuPinnedPool();
+  if (!pool) {
+    return Status::Internal("cpu pinned pool unavailable");
+  }
+  return pool->Release(reinterpret_cast<uintptr_t>(alloc.ptr));
 }
 
 int CpuBackend::NumThreads() const {
@@ -454,15 +497,59 @@ int CpuBackend::NumThreads() const {
 }
 
 size_t CpuBackend::OutstandingAllocs() const {
-  std::lock_guard<std::mutex> lock(g_alloc_mu);
-  return g_allocs.size();
+  size_t total = 0;
+  if (auto* pool = CpuDevicePool()) {
+    total += pool->Outstanding();
+  }
+  if (auto* pool = CpuPinnedPool()) {
+    total += pool->Outstanding();
+  }
+  return total;
 }
 
 BackendMemoryStats CpuBackend::MemoryStats() const {
   BackendMemoryStats stats;
-  std::lock_guard<std::mutex> lock(g_alloc_mu);
-  stats.device = g_pool_stats;
+  if (auto* pool = CpuDevicePool()) {
+    stats.device = pool->Stats();
+  }
+  if (auto* pool = CpuPinnedPool()) {
+    stats.pinned = pool->Stats();
+  }
   return stats;
+}
+
+ExecutionConfig CpuBackend::GetExecutionConfig() const {
+  std::lock_guard<std::mutex> lock(config_mu_);
+  return exec_config_;
+}
+
+Status CpuBackend::SetExecutionConfig(const ExecutionConfig& config) {
+  std::lock_guard<std::mutex> lock(config_mu_);
+  exec_config_ = config;
+  return Status::OK();
+}
+
+StatusOr<uint64_t> CpuBackend::ElapsedNs(const std::shared_ptr<Event>& start,
+                                         const std::shared_ptr<Event>& end) const {
+  if (!start || !end) {
+    return Status::Invalid("Missing events for elapsed time");
+  }
+  ExecutionConfig config = GetExecutionConfig();
+  if (!config.enable_profiling) {
+    return Status::Unavailable("CPU profiling disabled");
+  }
+  auto* start_ev = dynamic_cast<CpuEvent*>(start.get());
+  auto* end_ev = dynamic_cast<CpuEvent*>(end.get());
+  if (!start_ev || !end_ev) {
+    return Status::Invalid("Events do not belong to CPU backend");
+  }
+  if (!start_ev->HasTimestamp() || !end_ev->HasTimestamp()) {
+    return Status::Invalid("Events have not been recorded");
+  }
+  auto delta = end_ev->Timestamp() - start_ev->Timestamp();
+  auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(delta).count();
+  if (ns < 0) ns = 0;
+  return static_cast<uint64_t>(ns);
 }
 
 void CpuBackend::SetDefaultPriority(int priority) {

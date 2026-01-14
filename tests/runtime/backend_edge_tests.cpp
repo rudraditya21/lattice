@@ -8,7 +8,7 @@
 namespace test {
 
 void RunBackendEdgeTests(TestContext* ctx) {
-  const auto* backend = rt::GetCpuBackend();
+  auto* backend = const_cast<rt::Backend*>(rt::GetCpuBackend());
   // Alignment and pool reuse behavior.
   auto aligned_or = backend->Allocate(64, 128);
   ExpectTrue(aligned_or.ok(), "cpu_alloc_aligned_status", ctx);
@@ -63,6 +63,37 @@ void RunBackendEdgeTests(TestContext* ctx) {
   stream->Submit([&]() { ran = true; });
   stream->Synchronize();
   ExpectTrue(ran, "cpu_stream_dependency_runs", ctx);
+
+  auto original_config = backend->GetExecutionConfig();
+  rt::ExecutionConfig config = original_config;
+  config.sync_on_launch = false;
+  config.enable_profiling = true;
+  auto set_status = backend->SetExecutionConfig(config);
+  ExpectTrue(set_status.ok(), "cpu_exec_config_set", ctx);
+  auto roundtrip = backend->GetExecutionConfig();
+  ExpectTrue(!roundtrip.sync_on_launch, "cpu_exec_config_sync", ctx);
+  ExpectTrue(roundtrip.enable_profiling, "cpu_exec_config_profile", ctx);
+
+  auto start_or = backend->CreateEvent();
+  auto end_or = backend->CreateEvent();
+  ExpectTrue(start_or.ok() && end_or.ok(), "cpu_exec_event_create", ctx);
+  if (start_or.ok() && end_or.ok()) {
+    start_or.value()->Record();
+    end_or.value()->Record();
+    auto elapsed_or = backend->ElapsedNs(start_or.value(), end_or.value());
+    ExpectTrue(elapsed_or.ok(), "cpu_elapsed_enabled", ctx);
+  }
+
+  config.enable_profiling = false;
+  backend->SetExecutionConfig(config);
+  if (start_or.ok() && end_or.ok()) {
+    start_or.value()->Record();
+    end_or.value()->Record();
+    auto elapsed_or = backend->ElapsedNs(start_or.value(), end_or.value());
+    ExpectTrue(elapsed_or.status().code == rt::StatusCode::kUnavailable, "cpu_elapsed_disabled",
+               ctx);
+  }
+  backend->SetExecutionConfig(original_config);
 
   const std::array<rt::BackendType, 4> gpu_types = {
       rt::BackendType::kOpenCL, rt::BackendType::kCUDA, rt::BackendType::kHIP,

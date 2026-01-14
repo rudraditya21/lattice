@@ -33,6 +33,7 @@ struct PoolBlock {
   uintptr_t handle = 0;
   void* host_ptr = nullptr;
   size_t bytes = 0;
+  size_t requested_bytes = 0;
   size_t alignment = 0;
   bool from_pool = false;
 };

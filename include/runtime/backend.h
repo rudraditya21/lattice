@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -58,6 +59,7 @@ struct BackendCapabilities {
   bool supports_conv = false;
   bool supports_rng = true;
   bool supports_events = true;
+  bool supports_profiling = false;
   std::vector<DType> supported_dtypes;
 };
 
@@ -91,6 +93,11 @@ struct MemoryPoolStats {
 struct BackendMemoryStats {
   MemoryPoolStats device;
   MemoryPoolStats pinned;
+};
+
+struct ExecutionConfig {
+  bool sync_on_launch = true;
+  bool enable_profiling = false;
 };
 
 class Event {
@@ -149,6 +156,10 @@ class Backend {
   virtual int NumThreads() const = 0;
   virtual size_t OutstandingAllocs() const = 0;
   virtual BackendMemoryStats MemoryStats() const = 0;
+  virtual ExecutionConfig GetExecutionConfig() const = 0;
+  virtual Status SetExecutionConfig(const ExecutionConfig& config) = 0;
+  virtual StatusOr<uint64_t> ElapsedNs(const std::shared_ptr<Event>& start,
+                                       const std::shared_ptr<Event>& end) const = 0;
   virtual void SetDefaultPriority(int priority) = 0;
   virtual void SetDeterministic(bool deterministic) = 0;
 };
@@ -168,12 +179,18 @@ class CpuBackend final : public Backend {
   int NumThreads() const override;
   size_t OutstandingAllocs() const override;
   BackendMemoryStats MemoryStats() const override;
+  ExecutionConfig GetExecutionConfig() const override;
+  Status SetExecutionConfig(const ExecutionConfig& config) override;
+  StatusOr<uint64_t> ElapsedNs(const std::shared_ptr<Event>& start,
+                               const std::shared_ptr<Event>& end) const override;
   void SetDefaultPriority(int priority) override;
   void SetDeterministic(bool deterministic) override;
 
  private:
   int preferred_numa_node_ = -1;  // -1 means default OS policy
   int default_priority_ = 0;
+  mutable ExecutionConfig exec_config_{};
+  mutable std::mutex config_mu_;
 };
 
 // Returns a singleton CPU backend instance.

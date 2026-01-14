@@ -22,6 +22,7 @@
 #include "runtime/backends/cuda_abi.h"
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
+#include "runtime/backends/kernel_build.h"
 #include "runtime/backends/memory_pool.h"
 
 namespace lattice::runtime {
@@ -148,6 +149,7 @@ CacheStore& CudaCacheStore() {
 }
 
 constexpr unsigned int kCuMemHostAllocPortable = 0x01;
+constexpr unsigned int kCuEventDisableTiming = 0x02;
 
 MemoryPoolConfig CudaDevicePoolConfig() {
   static MemoryPoolConfig config = [] {
@@ -171,8 +173,8 @@ MemoryPoolConfig CudaPinnedPoolConfig() {
 
 class CudaEvent final : public Event {
  public:
-  CudaEvent(const gpu::CudaLoader* loader, gpu::CUstream stream)
-      : loader_(loader), stream_(stream) {}
+  CudaEvent(const gpu::CudaLoader* loader, gpu::CUstream stream, bool timing_enabled)
+      : loader_(loader), stream_(stream), timing_enabled_(timing_enabled) {}
   ~CudaEvent() override {
     if (event_ && loader_ && loader_->cuEventDestroy) {
       loader_->cuEventDestroy(event_);
@@ -186,7 +188,8 @@ class CudaEvent final : public Event {
       return;
     }
     if (!event_ && loader_->cuEventCreate) {
-      if (loader_->cuEventCreate(&event_, 0) != gpu::CUDA_SUCCESS) {
+      unsigned int flags = timing_enabled_ ? 0u : kCuEventDisableTiming;
+      if (loader_->cuEventCreate(&event_, flags) != gpu::CUDA_SUCCESS) {
         event_ = nullptr;
       }
     }
@@ -220,12 +223,14 @@ class CudaEvent final : public Event {
   }
 
   gpu::CUevent handle() const { return event_; }
+  bool TimingEnabled() const { return timing_enabled_; }
 
  private:
   const gpu::CudaLoader* loader_ = nullptr;
   gpu::CUstream stream_ = nullptr;
   gpu::CUevent event_ = nullptr;
   std::atomic<bool> ready_{false};
+  bool timing_enabled_ = false;
 };
 
 class CudaStream final : public Stream {
@@ -333,6 +338,7 @@ BackendCapabilities CudaBackend::Capabilities() const {
   caps.supports_conv = true;
   caps.supports_rng = true;
   caps.supports_events = true;
+  caps.supports_profiling = true;
   caps.supported_dtypes = {DType::kF32, DType::kF64, DType::kI32, DType::kU32};
   return caps;
 }
@@ -354,7 +360,8 @@ StatusOr<std::shared_ptr<Event>> CudaBackend::CreateEvent() const {
     return CudaStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
                       "No CUDA devices available");
   }
-  return std::make_shared<CudaEvent>(&loader_, devices_[0].stream);
+  ExecutionConfig config = GetExecutionConfig();
+  return std::make_shared<CudaEvent>(&loader_, devices_[0].stream, config.enable_profiling);
 }
 
 StatusOr<Allocation> CudaBackend::Allocate(size_t bytes, size_t alignment) const {
@@ -465,6 +472,49 @@ BackendMemoryStats CudaBackend::MemoryStats() const {
     AccumulateMemoryPoolStats(&stats.pinned, pinned_pool_->Stats());
   }
   return stats;
+}
+
+ExecutionConfig CudaBackend::GetExecutionConfig() const {
+  std::lock_guard<std::mutex> lock(config_mu_);
+  return exec_config_;
+}
+
+Status CudaBackend::SetExecutionConfig(const ExecutionConfig& config) {
+  std::lock_guard<std::mutex> lock(config_mu_);
+  exec_config_ = config;
+  return Status::OK();
+}
+
+StatusOr<uint64_t> CudaBackend::ElapsedNs(const std::shared_ptr<Event>& start,
+                                          const std::shared_ptr<Event>& end) const {
+  if (!start || !end) {
+    return Status::Invalid("Missing events for elapsed time");
+  }
+  ExecutionConfig config = GetExecutionConfig();
+  if (!config.enable_profiling) {
+    return Status::Unavailable("CUDA profiling disabled");
+  }
+  auto* start_ev = dynamic_cast<CudaEvent*>(start.get());
+  auto* end_ev = dynamic_cast<CudaEvent*>(end.get());
+  if (!start_ev || !end_ev) {
+    return Status::Invalid("Events do not belong to CUDA backend");
+  }
+  if (!start_ev->TimingEnabled() || !end_ev->TimingEnabled()) {
+    return Status::Unavailable("CUDA events created without timing");
+  }
+  if (!loader_.cuEventElapsedTime) {
+    return Status::Unavailable("CUDA event timing not available");
+  }
+  if (loader_.cuEventSynchronize && end_ev->handle()) {
+    loader_.cuEventSynchronize(end_ev->handle());
+  }
+  float ms = 0.0f;
+  gpu::CUresult err = loader_.cuEventElapsedTime(&ms, start_ev->handle(), end_ev->handle());
+  if (err != gpu::CUDA_SUCCESS) {
+    return CudaStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                      "cuEventElapsedTime failed: " + gpu::CudaErrorString(err, &loader_));
+  }
+  return static_cast<uint64_t>(ms * 1e6f);
 }
 
 void CudaBackend::SetDefaultPriority(int priority) {
@@ -697,7 +747,8 @@ Status CudaBackend::LaunchKernel(const CudaKernel& kernel, const CudaLaunchConfi
     return CudaStatus(StatusCode::kInternal, BackendErrorKind::kLaunch,
                       "cuLaunchKernel failed: " + gpu::CudaErrorString(err, &loader_));
   }
-  if (loader_.cuStreamSynchronize) {
+  ExecutionConfig exec_config = GetExecutionConfig();
+  if (exec_config.sync_on_launch && loader_.cuStreamSynchronize) {
     err = loader_.cuStreamSynchronize(dev.stream);
     if (err != gpu::CUDA_SUCCESS) {
       return CudaStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
@@ -1122,19 +1173,20 @@ std::string CudaBackend::BuildOptions(const DeviceContext& dev, const std::strin
   if (!kernel_dir.empty()) {
     opts << " -I" << kernel_dir;
   }
-  opts << " -DLATTICE_DEVICE_INDEX=" << dev.desc.index;
-  opts << " -DLATTICE_ABI_VERSION=" << cuda::kAbiVersion;
-  opts << " -DLATTICE_ABI_VERSION_MIN=" << cuda::kAbiVersionMin;
-  if (dev.caps.fp16 == CapabilityStatus::kYes) {
-    opts << " -DLATTICE_HAS_FP16=1";
+  KernelBuildDefines defs;
+  defs.backend = BackendType::kCUDA;
+  defs.device_index = dev.desc.index;
+  defs.abi_version = cuda::kAbiVersion;
+  defs.abi_version_min = cuda::kAbiVersionMin;
+  defs.has_fp16 = dev.caps.fp16 == CapabilityStatus::kYes;
+  defs.has_fp64 = dev.caps.fp64 == CapabilityStatus::kYes;
+  std::string defines = KernelDefineString(defs, "-D");
+  if (!defines.empty()) {
+    opts << " " << defines;
   }
-  if (dev.caps.fp64 == CapabilityStatus::kYes) {
-    opts << " -DLATTICE_HAS_FP64=1";
-  }
-  if (const char* env = std::getenv("LATTICE_CUDA_BUILD_OPTIONS")) {
-    if (env[0] != '\0') {
-      opts << " " << env;
-    }
+  std::string env_opts = LoadBuildOptionsEnv("LATTICE_CUDA_BUILD_OPTIONS");
+  if (!env_opts.empty()) {
+    opts << " " << env_opts;
   }
   if (!extra.empty()) {
     opts << " " << extra;
@@ -1202,6 +1254,7 @@ StatusOr<gpu::CUmodule> CudaBackend::BuildOrLoadModule(
     if (store.ReadBinary(store_key, &cached, &error)) {
       auto module_or = load_module(cached);
       if (module_or.ok()) return module_or;
+      store.Invalidate(store_key);
     }
   }
 

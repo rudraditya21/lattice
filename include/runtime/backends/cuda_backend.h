@@ -89,6 +89,10 @@ class CudaBackend final : public Backend {
   int NumThreads() const override;
   size_t OutstandingAllocs() const override;
   BackendMemoryStats MemoryStats() const override;
+  ExecutionConfig GetExecutionConfig() const override;
+  Status SetExecutionConfig(const ExecutionConfig& config) override;
+  StatusOr<uint64_t> ElapsedNs(const std::shared_ptr<Event>& start,
+                               const std::shared_ptr<Event>& end) const override;
   void SetDefaultPriority(int priority) override;
   void SetDeterministic(bool deterministic) override;
 
@@ -134,9 +138,11 @@ class CudaBackend final : public Backend {
   mutable bool initialized_ = false;
   mutable Status init_status_ = Status::OK();
   mutable std::mutex mu_;
+  mutable std::mutex config_mu_;
   mutable std::unique_ptr<MemoryPool> pinned_pool_;
   int default_priority_ = 0;
   bool deterministic_ = false;
+  mutable ExecutionConfig exec_config_{};
 };
 
 const Backend* GetCudaBackend();

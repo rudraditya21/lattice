@@ -25,6 +25,7 @@
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
 #include "runtime/backends/gpu/opencl_loader.h"
+#include "runtime/backends/kernel_build.h"
 #include "runtime/backends/memory_pool.h"
 #include "runtime/backends/opencl_abi.h"
 
@@ -311,6 +312,7 @@ struct OpenCLBackend::DeviceContext {
   cl_device_id device = nullptr;
   cl_context context = nullptr;
   cl_command_queue queue = nullptr;
+  bool queue_profiling = false;
   OpenCLDeviceDesc desc;
   DeviceCapabilities caps;
   std::string fingerprint;
@@ -371,6 +373,7 @@ BackendCapabilities OpenCLBackend::Capabilities() const {
   caps.supports_conv = true;
   caps.supports_rng = false;
   caps.supports_events = true;
+  caps.supports_profiling = true;
   caps.supported_dtypes = {DType::kF16, DType::kBF16, DType::kF32,
                            DType::kF64, DType::kI32,  DType::kU32};
   return caps;
@@ -512,6 +515,86 @@ BackendMemoryStats OpenCLBackend::MemoryStats() const {
     }
   }
   return stats;
+}
+
+ExecutionConfig OpenCLBackend::GetExecutionConfig() const {
+  std::lock_guard<std::mutex> lock(config_mu_);
+  return exec_config_;
+}
+
+Status OpenCLBackend::SetExecutionConfig(const ExecutionConfig& config) {
+  bool profiling_changed = false;
+  {
+    std::lock_guard<std::mutex> lock(config_mu_);
+    profiling_changed = exec_config_.enable_profiling != config.enable_profiling;
+    exec_config_ = config;
+  }
+  if (!profiling_changed) return Status::OK();
+  Status status = EnsureInitialized();
+  if (!status.ok()) return status;
+  std::lock_guard<std::mutex> lock(mu_);
+  cl_command_queue_properties props = config.enable_profiling ? CL_QUEUE_PROFILING_ENABLE : 0;
+  for (auto& dev : devices_) {
+    if (dev.queue && loader_.clReleaseCommandQueue) {
+      loader_.clReleaseCommandQueue(dev.queue);
+      dev.queue = nullptr;
+    }
+    cl_int err = CL_SUCCESS;
+    dev.queue = loader_.clCreateCommandQueue(dev.context, dev.device, props, &err);
+    if (err != CL_SUCCESS || !dev.queue) {
+      dev.queue = nullptr;
+      return OpenclStatus(StatusCode::kUnavailable, BackendErrorKind::kContext,
+                          "queue reinit failed: " + gpu::OpenCLErrorString(err));
+    }
+    dev.queue_profiling = config.enable_profiling;
+  }
+  return Status::OK();
+}
+
+StatusOr<uint64_t> OpenCLBackend::ElapsedNs(const std::shared_ptr<Event>& start,
+                                            const std::shared_ptr<Event>& end) const {
+  if (!start || !end) {
+    return Status::Invalid("Missing events for elapsed time");
+  }
+  ExecutionConfig config = GetExecutionConfig();
+  if (!config.enable_profiling) {
+    return Status::Unavailable("OpenCL profiling disabled");
+  }
+  auto* start_ev = dynamic_cast<OpenCLEvent*>(start.get());
+  auto* end_ev = dynamic_cast<OpenCLEvent*>(end.get());
+  if (!start_ev || !end_ev) {
+    return Status::Invalid("Events do not belong to OpenCL backend");
+  }
+  if (!loader_.clGetEventProfilingInfo) {
+    return Status::Unavailable("OpenCL profiling info not available");
+  }
+  cl_event start_handle = start_ev->handle();
+  cl_event end_handle = end_ev->handle();
+  if (!start_handle || !end_handle) {
+    return Status::Invalid("Events have no OpenCL handles");
+  }
+  if (loader_.clWaitForEvents) {
+    loader_.clWaitForEvents(1, &end_handle);
+  }
+  cl_ulong start_time = 0;
+  cl_ulong end_time = 0;
+  cl_int err = loader_.clGetEventProfilingInfo(start_handle, CL_PROFILING_COMMAND_START,
+                                               sizeof(start_time), &start_time, nullptr);
+  if (err != CL_SUCCESS) {
+    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                        "clGetEventProfilingInfo start failed: " +
+                            gpu::OpenCLErrorString(err));
+  }
+  err = loader_.clGetEventProfilingInfo(end_handle, CL_PROFILING_COMMAND_END, sizeof(end_time),
+                                        &end_time, nullptr);
+  if (err != CL_SUCCESS) {
+    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                        "clGetEventProfilingInfo end failed: " + gpu::OpenCLErrorString(err));
+  }
+  if (end_time < start_time) {
+    return Status::Invalid("OpenCL event timestamps invalid");
+  }
+  return static_cast<uint64_t>(end_time - start_time);
 }
 
 void OpenCLBackend::SetDefaultPriority(int priority) {
@@ -754,10 +837,15 @@ Status OpenCLBackend::LaunchKernel(const OpenCLKernel& kernel, const OpenCLLaunc
     return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kLaunch,
                         "clEnqueueNDRangeKernel failed: " + gpu::OpenCLErrorString(err));
   }
-  err = loader_.clFinish(devices_[kernel.device_index].queue);
-  if (err != CL_SUCCESS) {
-    return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
-                        "clFinish failed: " + gpu::OpenCLErrorString(err));
+  ExecutionConfig exec_config = GetExecutionConfig();
+  if (exec_config.sync_on_launch) {
+    err = loader_.clFinish(devices_[kernel.device_index].queue);
+    if (err != CL_SUCCESS) {
+      return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                          "clFinish failed: " + gpu::OpenCLErrorString(err));
+    }
+  } else if (loader_.clFlush) {
+    loader_.clFlush(devices_[kernel.device_index].queue);
   }
   return Status::OK();
 }
@@ -995,6 +1083,10 @@ Status OpenCLBackend::EnsureInitialized() const {
     return init_status_;
   }
 
+  ExecutionConfig exec_config = GetExecutionConfig();
+  cl_command_queue_properties queue_props =
+      exec_config.enable_profiling ? CL_QUEUE_PROFILING_ENABLE : 0;
+
   for (int idx : selected.indices) {
     if (idx < 0 || idx >= static_cast<int>(candidates.size())) continue;
     DeviceContext ctx = std::move(candidates[static_cast<size_t>(idx)]);
@@ -1012,7 +1104,7 @@ Status OpenCLBackend::EnsureInitialized() const {
                   gpu::OpenCLErrorString(create_err)});
       continue;
     }
-    ctx.queue = loader_.clCreateCommandQueue(ctx.context, ctx.device, 0, &create_err);
+    ctx.queue = loader_.clCreateCommandQueue(ctx.context, ctx.device, queue_props, &create_err);
     if (create_err != CL_SUCCESS || !ctx.queue) {
       loader_.clReleaseContext(ctx.context);
       ctx.context = nullptr;
@@ -1021,6 +1113,7 @@ Status OpenCLBackend::EnsureInitialized() const {
                   gpu::OpenCLErrorString(create_err)});
       continue;
     }
+    ctx.queue_profiling = exec_config.enable_profiling;
     devices_.push_back(std::move(ctx));
   }
 
@@ -1224,9 +1317,10 @@ std::string OpenCLBackend::BuildOptions(const DeviceContext& dev, const std::str
     options += NormalizePathArg(kernel_dir);
   }
 
-  if (const char* env = std::getenv("LATTICE_OPENCL_BUILD_OPTIONS")) {
+  std::string env_opts = LoadBuildOptionsEnv("LATTICE_OPENCL_BUILD_OPTIONS");
+  if (!env_opts.empty()) {
     if (!options.empty()) options.push_back(' ');
-    options += env;
+    options += env_opts;
   }
 
   if (!extra.empty()) {
@@ -1241,19 +1335,24 @@ std::string OpenCLBackend::BuildOptions(const DeviceContext& dev, const std::str
     options += std_opt;
   }
 
-  if (!options.empty()) options.push_back(' ');
-  options += "-D LATTICE_DEVICE_TYPE=" + std::to_string(static_cast<uint64_t>(dev.desc.type));
-  options += " -D LATTICE_VENDOR_ID=" + std::to_string(dev.desc.vendor_id);
-  options += " -D LATTICE_DEVICE_INDEX=" + std::to_string(dev.desc.index);
-  options += " -D LATTICE_ABI_VERSION=" + std::to_string(opencl::kAbiVersion);
-  options += " -D LATTICE_ABI_VERSION_MIN=" + std::to_string(opencl::kAbiVersionMin);
-
+  KernelBuildDefines defs;
+  defs.backend = BackendType::kOpenCL;
+  defs.device_index = dev.desc.index;
+  defs.abi_version = opencl::kAbiVersion;
+  defs.abi_version_min = opencl::kAbiVersionMin;
+  defs.device_type = static_cast<uint64_t>(dev.desc.type);
+  defs.vendor_id = static_cast<uint64_t>(dev.desc.vendor_id);
   std::string extensions = DeviceInfoString(dev.device, CL_DEVICE_EXTENSIONS);
   if (extensions.find("cl_khr_fp64") != std::string::npos) {
-    options += " -D LATTICE_HAS_FP64";
+    defs.has_fp64 = true;
   }
   if (extensions.find("cl_khr_fp16") != std::string::npos) {
-    options += " -D LATTICE_HAS_FP16";
+    defs.has_fp16 = true;
+  }
+  std::string defines = KernelDefineString(defs, "-D");
+  if (!defines.empty()) {
+    if (!options.empty()) options.push_back(' ');
+    options += defines;
   }
 
   LogBackend({LogLevel::kDebug, BackendType::kOpenCL, BackendErrorKind::kBuild,
@@ -1315,6 +1414,7 @@ StatusOr<cl_program> OpenCLBackend::BuildOrLoadProgram(DeviceContext& dev,
       }
       loader_.clReleaseProgram(program);
     }
+    store.Invalidate(store_key);
   }
 
   const char* src = source.c_str();

@@ -17,15 +17,19 @@
 #include "runtime/backends/backend_error.h"
 #include "runtime/backends/backend_log.h"
 #include "runtime/backends/cuda_abi.h"
+#include "runtime/backends/hip_abi.h"
 #include "runtime/backends/cuda_backend.h"
 #include "runtime/backends/device_caps.h"
 #include "runtime/backends/hip_backend.h"
+#include "runtime/backends/kernel_registry.h"
 #include "runtime/backends/opencl_backend.h"
+#include "runtime/backends/opencl_abi.h"
 #include "runtime/ops.h"
 #include "runtime/tensor_utils.h"
 #include "util/error.h"
 
 #if defined(__APPLE__)
+#include "runtime/backends/metal_abi.h"
 #include "runtime/backends/metal_backend.h"
 #endif
 
@@ -52,19 +56,18 @@ using RegressionParams = cuda::RegressionParams;
 
 struct KernelSpec {
   const char* name = nullptr;
-  const char* file = nullptr;
 };
 
 KernelSpec ElemwiseKernel(parser::BinaryOp op) {
   switch (op) {
     case parser::BinaryOp::kAdd:
-      return {"lattice_elemwise_add", "tensor_elemwise_add"};
+      return {"lattice_elemwise_add"};
     case parser::BinaryOp::kSub:
-      return {"lattice_elemwise_sub", "tensor_elemwise_sub"};
+      return {"lattice_elemwise_sub"};
     case parser::BinaryOp::kMul:
-      return {"lattice_elemwise_mul", "tensor_elemwise_mul"};
+      return {"lattice_elemwise_mul"};
     case parser::BinaryOp::kDiv:
-      return {"lattice_elemwise_div", "tensor_elemwise_div"};
+      return {"lattice_elemwise_div"};
     default:
       return {};
   }
@@ -73,13 +76,13 @@ KernelSpec ElemwiseKernel(parser::BinaryOp op) {
 KernelSpec ReduceKernel(ReduceKind kind) {
   switch (kind) {
     case ReduceKind::kSum:
-      return {"lattice_reduce_sum", "tensor_reduce_sum"};
+      return {"lattice_reduce_sum"};
     case ReduceKind::kMean:
-      return {"lattice_reduce_mean", "tensor_reduce_mean"};
+      return {"lattice_reduce_mean"};
     case ReduceKind::kVar:
-      return {"lattice_reduce_var", "tensor_reduce_var"};
+      return {"lattice_reduce_var"};
     case ReduceKind::kStd:
-      return {"lattice_reduce_std", "tensor_reduce_std"};
+      return {"lattice_reduce_std"};
   }
   return {};
 }
@@ -225,6 +228,37 @@ class GpuExecutor {
       case BackendType::kCPU:
         init_status_ = Status::Unavailable("GPU backend not selected");
         return init_status_;
+    }
+
+    switch (backend_type_) {
+      case BackendType::kOpenCL:
+        if (!opencl::IsAbiCompatible(opencl::kAbiVersion)) {
+          init_status_ = Status::Invalid("OpenCL ABI incompatible");
+          return init_status_;
+        }
+        break;
+      case BackendType::kCUDA:
+        if (!cuda::IsAbiCompatible(cuda::kAbiVersion)) {
+          init_status_ = Status::Invalid("CUDA ABI incompatible");
+          return init_status_;
+        }
+        break;
+      case BackendType::kHIP:
+        if (!hip::IsAbiCompatible(hip::kAbiVersion)) {
+          init_status_ = Status::Invalid("HIP ABI incompatible");
+          return init_status_;
+        }
+        break;
+      case BackendType::kMetal:
+#if defined(__APPLE__)
+        if (!metal::IsAbiCompatible(metal::kAbiVersion)) {
+          init_status_ = Status::Invalid("Metal ABI incompatible");
+          return init_status_;
+        }
+#endif
+        break;
+      case BackendType::kCPU:
+        break;
     }
 
     if (device_count_ <= 0) {
@@ -418,8 +452,12 @@ class GpuExecutor {
   StatusOr<GpuKernel> GetKernel(const KernelSpec& spec) {
     Status status = EnsureInitialized();
     if (!status.ok()) return status;
-    if (!spec.name || !spec.file) {
+    if (!spec.name) {
       return Status::Invalid("Kernel spec is missing");
+    }
+    const KernelDefinition* def = FindKernelDefinition(spec.name);
+    if (!def) {
+      return Status::Invalid("Unknown kernel: " + std::string(spec.name));
     }
     const std::string key = KernelCacheKey(spec.name);
     {
@@ -428,7 +466,7 @@ class GpuExecutor {
       if (it != kernel_cache_.end()) return it->second;
     }
 
-    const std::string path = KernelPath(spec.file);
+    const std::string path = KernelPath(std::string(def->file));
     if (path.empty()) {
       return Status::Unavailable("Kernel path not found");
     }
@@ -1116,7 +1154,7 @@ std::optional<Value> TryGpuTranspose(const Value& v, int line, int column, std::
     throw util::Error("transpose supports only 2D tensors", line, column);
   }
 
-  auto kernel_or = exec.GetKernel({"lattice_transpose", "tensor_transpose"});
+  auto kernel_or = exec.GetKernel({"lattice_transpose"});
   if (!kernel_or.ok()) {
     LogGpuError(exec.Type(), kernel_or.status(), "transpose");
     if (error) *error = kernel_or.status().message;
@@ -1204,7 +1242,7 @@ std::optional<Value> TryGpuMatmul(const Value& lhs, const Value& rhs, int line, 
     throw util::Error("matmul shape mismatch", line, column);
   }
 
-  auto kernel_or = exec.GetKernel({"lattice_matmul", "tensor_matmul"});
+  auto kernel_or = exec.GetKernel({"lattice_matmul"});
   if (!kernel_or.ok()) {
     LogGpuError(exec.Type(), kernel_or.status(), "matmul");
     if (error) *error = kernel_or.status().message;
@@ -1315,7 +1353,7 @@ std::optional<Value> TryGpuConv2d(const Value& input, const Value& kernel, int l
   int64_t oh = h - kh + 1;
   int64_t ow = w - kw + 1;
 
-  auto kernel_or = exec.GetKernel({"lattice_conv2d", "tensor_conv2d"});
+  auto kernel_or = exec.GetKernel({"lattice_conv2d"});
   if (!kernel_or.ok()) {
     LogGpuError(exec.Type(), kernel_or.status(), "conv2d");
     if (error) *error = kernel_or.status().message;
@@ -1418,7 +1456,7 @@ std::optional<Value> TryGpuMaxPool2d(const Value& input, int64_t k_h, int64_t k_
   int64_t oh = h / k_h;
   int64_t ow = w / k_w;
 
-  auto kernel_or = exec.GetKernel({"lattice_max_pool2d", "tensor_max_pool2d"});
+  auto kernel_or = exec.GetKernel({"lattice_max_pool2d"});
   if (!kernel_or.ok()) {
     LogGpuError(exec.Type(), kernel_or.status(), "max_pool2d");
     if (error) *error = kernel_or.status().message;
@@ -1497,7 +1535,7 @@ std::optional<Value> TryGpuFft1d(const Value& input, int line, int column, std::
   }
   int64_t n = in.tensor.shape[0];
 
-  auto kernel_or = exec.GetKernel({"lattice_fft1d", "tensor_fft1d"});
+  auto kernel_or = exec.GetKernel({"lattice_fft1d"});
   if (!kernel_or.ok()) {
     LogGpuError(exec.Type(), kernel_or.status(), "fft1d");
     if (error) *error = kernel_or.status().message;
@@ -1611,7 +1649,7 @@ std::optional<Value> TryGpuSolve(const Value& a, const Value& b, int line, int c
     throw util::Error("solve rhs must be 1D or 2D tensor", line, column);
   }
 
-  auto kernel_or = exec.GetKernel({"lattice_solve", "tensor_solve"});
+  auto kernel_or = exec.GetKernel({"lattice_solve"});
   if (!kernel_or.ok()) {
     LogGpuError(exec.Type(), kernel_or.status(), "solve");
     if (error) *error = kernel_or.status().message;
@@ -1745,7 +1783,7 @@ std::optional<Value> TryGpuLu(const Value& a, int line, int column, std::string*
   }
   int64_t n = A.tensor.shape[0];
 
-  auto kernel_or = exec.GetKernel({"lattice_lu", "tensor_lu"});
+  auto kernel_or = exec.GetKernel({"lattice_lu"});
   if (!kernel_or.ok()) {
     LogGpuError(exec.Type(), kernel_or.status(), "lu");
     if (error) *error = kernel_or.status().message;
@@ -1863,7 +1901,7 @@ std::optional<Value> TryGpuQr(const Value& a, int line, int column, std::string*
   int64_t m = A.tensor.shape[0];
   int64_t n = A.tensor.shape[1];
 
-  auto kernel_or = exec.GetKernel({"lattice_qr", "tensor_qr"});
+  auto kernel_or = exec.GetKernel({"lattice_qr"});
   if (!kernel_or.ok()) {
     LogGpuError(exec.Type(), kernel_or.status(), "qr");
     if (error) *error = kernel_or.status().message;
@@ -1986,7 +2024,7 @@ std::optional<Value> TryGpuSvd(const Value& a, int line, int column, std::string
     throw util::Error("svd currently supports 2x2 matrices only", line, column);
   }
 
-  auto kernel_or = exec.GetKernel({"lattice_svd", "tensor_svd"});
+  auto kernel_or = exec.GetKernel({"lattice_svd"});
   if (!kernel_or.ok()) {
     LogGpuError(exec.Type(), kernel_or.status(), "svd");
     if (error) *error = kernel_or.status().message;
@@ -2101,7 +2139,7 @@ std::optional<Value> TryGpuQuantile(const Value& data, double q, int line, int c
     throw util::Error("quantile of empty data", line, column);
   }
 
-  auto kernel_or = exec.GetKernel({"lattice_quantile", "tensor_quantile"});
+  auto kernel_or = exec.GetKernel({"lattice_quantile"});
   if (!kernel_or.ok()) {
     LogGpuError(exec.Type(), kernel_or.status(), "quantile");
     if (error) *error = kernel_or.status().message;
@@ -2189,7 +2227,7 @@ std::optional<Value> TryGpuCorrelation(const Value& x, const Value& y, int line,
   }
   size_t count = static_cast<size_t>(dx.tensor.shape[0]);
 
-  auto kernel_or = exec.GetKernel({"lattice_correlation", "tensor_correlation"});
+  auto kernel_or = exec.GetKernel({"lattice_correlation"});
   if (!kernel_or.ok()) {
     LogGpuError(exec.Type(), kernel_or.status(), "correlation");
     if (error) *error = kernel_or.status().message;
@@ -2306,7 +2344,7 @@ std::optional<Value> TryGpuRegression(const Value& x, const Value& y, int line, 
   }
   size_t count = static_cast<size_t>(dx.tensor.shape[0]);
 
-  auto kernel_or = exec.GetKernel({"lattice_regression", "tensor_regression"});
+  auto kernel_or = exec.GetKernel({"lattice_regression"});
   if (!kernel_or.ok()) {
     LogGpuError(exec.Type(), kernel_or.status(), "regression");
     if (error) *error = kernel_or.status().message;

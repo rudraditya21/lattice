@@ -22,6 +22,7 @@
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
 #include "runtime/backends/hip_abi.h"
+#include "runtime/backends/kernel_build.h"
 #include "runtime/backends/memory_pool.h"
 
 namespace lattice::runtime {
@@ -163,10 +164,12 @@ MemoryPoolConfig HipPinnedPoolConfig() {
   return config;
 }
 
+constexpr unsigned int kHipEventDisableTiming = 0x02;
+
 class HipEvent final : public Event {
  public:
-  HipEvent(const gpu::HipLoader* loader, gpu::hipStream_t stream)
-      : loader_(loader), stream_(stream) {}
+  HipEvent(const gpu::HipLoader* loader, gpu::hipStream_t stream, bool timing_enabled)
+      : loader_(loader), stream_(stream), timing_enabled_(timing_enabled) {}
   ~HipEvent() override {
     if (event_ && loader_ && loader_->hipEventDestroy) {
       loader_->hipEventDestroy(event_);
@@ -179,8 +182,17 @@ class HipEvent final : public Event {
       ready_.store(true, std::memory_order_relaxed);
       return;
     }
-    if (!event_ && loader_->hipEventCreate) {
-      if (loader_->hipEventCreate(&event_) != gpu::hipSuccess) {
+    if (!event_) {
+      unsigned int flags = timing_enabled_ ? 0u : kHipEventDisableTiming;
+      if (loader_->hipEventCreateWithFlags) {
+        if (loader_->hipEventCreateWithFlags(&event_, flags) != gpu::hipSuccess) {
+          event_ = nullptr;
+        }
+      } else if (loader_->hipEventCreate) {
+        if (loader_->hipEventCreate(&event_) != gpu::hipSuccess) {
+          event_ = nullptr;
+        }
+      } else {
         event_ = nullptr;
       }
     }
@@ -214,12 +226,14 @@ class HipEvent final : public Event {
   }
 
   gpu::hipEvent_t handle() const { return event_; }
+  bool TimingEnabled() const { return timing_enabled_; }
 
  private:
   const gpu::HipLoader* loader_ = nullptr;
   gpu::hipStream_t stream_ = nullptr;
   gpu::hipEvent_t event_ = nullptr;
   std::atomic<bool> ready_{false};
+  bool timing_enabled_ = false;
 };
 
 class HipStream final : public Stream {
@@ -327,6 +341,7 @@ BackendCapabilities HipBackend::Capabilities() const {
   caps.supports_conv = true;
   caps.supports_rng = true;
   caps.supports_events = true;
+  caps.supports_profiling = true;
   caps.supported_dtypes = {DType::kF32, DType::kF64, DType::kI32, DType::kU32};
   return caps;
 }
@@ -348,7 +363,8 @@ StatusOr<std::shared_ptr<Event>> HipBackend::CreateEvent() const {
     return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
                      "No HIP devices available");
   }
-  return std::make_shared<HipEvent>(&loader_, devices_[0].stream);
+  ExecutionConfig config = GetExecutionConfig();
+  return std::make_shared<HipEvent>(&loader_, devices_[0].stream, config.enable_profiling);
 }
 
 StatusOr<Allocation> HipBackend::Allocate(size_t bytes, size_t alignment) const {
@@ -459,6 +475,49 @@ BackendMemoryStats HipBackend::MemoryStats() const {
     AccumulateMemoryPoolStats(&stats.pinned, pinned_pool_->Stats());
   }
   return stats;
+}
+
+ExecutionConfig HipBackend::GetExecutionConfig() const {
+  std::lock_guard<std::mutex> lock(config_mu_);
+  return exec_config_;
+}
+
+Status HipBackend::SetExecutionConfig(const ExecutionConfig& config) {
+  std::lock_guard<std::mutex> lock(config_mu_);
+  exec_config_ = config;
+  return Status::OK();
+}
+
+StatusOr<uint64_t> HipBackend::ElapsedNs(const std::shared_ptr<Event>& start,
+                                         const std::shared_ptr<Event>& end) const {
+  if (!start || !end) {
+    return Status::Invalid("Missing events for elapsed time");
+  }
+  ExecutionConfig config = GetExecutionConfig();
+  if (!config.enable_profiling) {
+    return Status::Unavailable("HIP profiling disabled");
+  }
+  auto* start_ev = dynamic_cast<HipEvent*>(start.get());
+  auto* end_ev = dynamic_cast<HipEvent*>(end.get());
+  if (!start_ev || !end_ev) {
+    return Status::Invalid("Events do not belong to HIP backend");
+  }
+  if (!start_ev->TimingEnabled() || !end_ev->TimingEnabled()) {
+    return Status::Unavailable("HIP events created without timing");
+  }
+  if (!loader_.hipEventElapsedTime) {
+    return Status::Unavailable("HIP event timing not available");
+  }
+  if (loader_.hipEventSynchronize && end_ev->handle()) {
+    loader_.hipEventSynchronize(end_ev->handle());
+  }
+  float ms = 0.0f;
+  gpu::hipError_t err = loader_.hipEventElapsedTime(&ms, start_ev->handle(), end_ev->handle());
+  if (err != gpu::hipSuccess) {
+    return HipStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                     "hipEventElapsedTime failed: " + gpu::HipErrorString(err, &loader_));
+  }
+  return static_cast<uint64_t>(ms * 1e6f);
 }
 
 void HipBackend::SetDefaultPriority(int priority) {
@@ -702,7 +761,8 @@ Status HipBackend::LaunchKernel(const HipKernel& kernel, const HipLaunchConfig& 
     return HipStatus(StatusCode::kInternal, BackendErrorKind::kLaunch,
                      "hipModuleLaunchKernel failed: " + gpu::HipErrorString(err, &loader_));
   }
-  if (loader_.hipStreamSynchronize) {
+  ExecutionConfig exec_config = GetExecutionConfig();
+  if (exec_config.sync_on_launch && loader_.hipStreamSynchronize) {
     err = loader_.hipStreamSynchronize(dev.stream);
     if (err != gpu::hipSuccess) {
       return HipStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
@@ -1095,31 +1155,31 @@ std::string HipBackend::KernelDir() const {
 }
 
 std::string HipBackend::BuildOptions(const DeviceContext& dev, const std::string& extra) const {
-  (void)dev;
   std::ostringstream opts;
   opts << "--std=c++11";
   const std::string kernel_dir = KernelDir();
   if (!kernel_dir.empty()) {
     opts << " -I" << kernel_dir;
   }
-  opts << " -DLATTICE_DEVICE_INDEX=" << dev.desc.index;
-  opts << " -DLATTICE_ABI_VERSION=" << hip::kAbiVersion;
-  opts << " -DLATTICE_ABI_VERSION_MIN=" << hip::kAbiVersionMin;
-  if (dev.caps.fp16 == CapabilityStatus::kYes) {
-    opts << " -DLATTICE_HAS_FP16=1";
-  }
-  if (dev.caps.fp64 == CapabilityStatus::kYes) {
-    opts << " -DLATTICE_HAS_FP64=1";
+  KernelBuildDefines defs;
+  defs.backend = BackendType::kHIP;
+  defs.device_index = dev.desc.index;
+  defs.abi_version = hip::kAbiVersion;
+  defs.abi_version_min = hip::kAbiVersionMin;
+  defs.has_fp16 = dev.caps.fp16 == CapabilityStatus::kYes;
+  defs.has_fp64 = dev.caps.fp64 == CapabilityStatus::kYes;
+  std::string defines = KernelDefineString(defs, "-D");
+  if (!defines.empty()) {
+    opts << " " << defines;
   }
   if (const char* arch = std::getenv("LATTICE_HIP_ARCH")) {
     if (arch[0] != '\0') {
       opts << " --gpu-architecture=" << arch;
     }
   }
-  if (const char* env = std::getenv("LATTICE_HIP_BUILD_OPTIONS")) {
-    if (env[0] != '\0') {
-      opts << " " << env;
-    }
+  std::string env_opts = LoadBuildOptionsEnv("LATTICE_HIP_BUILD_OPTIONS");
+  if (!env_opts.empty()) {
+    opts << " " << env_opts;
   }
   if (!extra.empty()) {
     opts << " " << extra;
@@ -1185,6 +1245,7 @@ StatusOr<gpu::hipModule_t> HipBackend::BuildOrLoadModule(
     if (store.ReadBinary(store_key, &cached, &error)) {
       auto module_or = load_module(cached);
       if (module_or.ok()) return module_or;
+      store.Invalidate(store_key);
     }
   }
 

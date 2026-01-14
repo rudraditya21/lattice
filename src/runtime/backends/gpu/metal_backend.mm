@@ -27,6 +27,7 @@
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
 #include "runtime/backends/memory_pool.h"
+#include "runtime/backends/kernel_build.h"
 #include "runtime/backends/metal_abi.h"
 
 namespace lattice::runtime {
@@ -75,6 +76,24 @@ bool ReadFile(const std::filesystem::path& path, std::string* out, std::string* 
   ss << in.rdbuf();
   *out = ss.str();
   return true;
+}
+
+std::unordered_map<std::string, std::string> ParseDefineOptions(const std::string& options) {
+  std::unordered_map<std::string, std::string> out;
+  std::istringstream in(options);
+  std::string token;
+  while (in >> token) {
+    if (token.rfind("-D", 0) != 0) continue;
+    std::string def = token.substr(2);
+    if (def.empty()) continue;
+    const size_t eq = def.find('=');
+    if (eq == std::string::npos) {
+      out[def] = "1";
+    } else {
+      out[def.substr(0, eq)] = def.substr(eq + 1);
+    }
+  }
+  return out;
 }
 
 class MetalEvent final : public Event {
@@ -251,6 +270,7 @@ BackendCapabilities MetalBackend::Capabilities() const {
   caps.supports_conv = true;
   caps.supports_rng = true;
   caps.supports_events = true;
+  caps.supports_profiling = true;
   caps.supported_dtypes = {DType::kF32, DType::kF64, DType::kI32, DType::kU32};
   return caps;
 }
@@ -387,6 +407,52 @@ BackendMemoryStats MetalBackend::MemoryStats() const {
     }
   }
   return stats;
+}
+
+ExecutionConfig MetalBackend::GetExecutionConfig() const {
+  std::lock_guard<std::mutex> lock(config_mu_);
+  return exec_config_;
+}
+
+Status MetalBackend::SetExecutionConfig(const ExecutionConfig& config) {
+  std::lock_guard<std::mutex> lock(config_mu_);
+  exec_config_ = config;
+  return Status::OK();
+}
+
+StatusOr<uint64_t> MetalBackend::ElapsedNs(const std::shared_ptr<Event>& start,
+                                           const std::shared_ptr<Event>& end) const {
+  if (!start || !end) {
+    return Status::Invalid("Missing events for elapsed time");
+  }
+  ExecutionConfig config = GetExecutionConfig();
+  if (!config.enable_profiling) {
+    return Status::Unavailable("Metal profiling disabled");
+  }
+  auto* start_ev = dynamic_cast<MetalEvent*>(start.get());
+  auto* end_ev = dynamic_cast<MetalEvent*>(end.get());
+  if (!start_ev || !end_ev) {
+    return Status::Invalid("Events do not belong to Metal backend");
+  }
+  id<MTLCommandBuffer> start_cmd = start_ev->handle();
+  id<MTLCommandBuffer> end_cmd = end_ev->handle();
+  if (!start_cmd || !end_cmd) {
+    return Status::Invalid("Events have no Metal command buffer");
+  }
+  if ([end_cmd status] != MTLCommandBufferStatusCompleted) {
+    [end_cmd waitUntilCompleted];
+  }
+  if (![start_cmd respondsToSelector:@selector(GPUStartTime)] ||
+      ![end_cmd respondsToSelector:@selector(GPUEndTime)]) {
+    return Status::Unavailable("Metal GPU timing not available");
+  }
+  const double start_time = start_cmd.GPUStartTime;
+  const double end_time = end_cmd.GPUEndTime;
+  if (end_time < start_time) {
+    return Status::Invalid("Metal event timestamps invalid");
+  }
+  double elapsed_sec = end_time - start_time;
+  return static_cast<uint64_t>(elapsed_sec * 1e9);
 }
 
 void MetalBackend::SetDefaultPriority(int priority) {
@@ -529,7 +595,27 @@ StatusOr<std::vector<MetalKernel>> MetalBackend::BuildKernelsFromFile(
   std::string last_error;
   for (size_t i = 0; i < devices_.size(); ++i) {
     auto& dev = devices_[i];
-    std::string build_options = extra_build_options;
+    std::string build_options;
+    if (!extra_build_options.empty()) {
+      build_options = extra_build_options;
+    }
+    std::string env_opts = LoadBuildOptionsEnv("LATTICE_METAL_BUILD_OPTIONS");
+    if (!env_opts.empty()) {
+      if (!build_options.empty()) build_options.push_back(' ');
+      build_options += env_opts;
+    }
+    KernelBuildDefines defs;
+    defs.backend = BackendType::kMetal;
+    defs.device_index = dev.desc.index;
+    defs.abi_version = metal::kAbiVersion;
+    defs.abi_version_min = metal::kAbiVersionMin;
+    defs.has_fp16 = dev.caps.fp16 == CapabilityStatus::kYes;
+    defs.has_fp64 = dev.caps.fp64 == CapabilityStatus::kYes;
+    std::string defines = KernelDefineString(defs, "-D");
+    if (!defines.empty()) {
+      if (!build_options.empty()) build_options.push_back(' ');
+      build_options += defines;
+    }
     std::string cache_key = CacheKey(dev, kernel_name, build_options, source);
     auto cache_it = dev.pipeline_cache.find(cache_key);
     id<MTLComputePipelineState> pipeline = nil;
@@ -551,17 +637,15 @@ StatusOr<std::vector<MetalKernel>> MetalBackend::BuildKernelsFromFile(
       }
 
       MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
-      const uint32_t device_index = static_cast<uint32_t>(dev.desc.index);
-      NSMutableDictionary<NSString*, NSObject*>* macros = [@{
-        @"LATTICE_ABI_VERSION" : [NSString stringWithFormat:@"%u", metal::kAbiVersion],
-        @"LATTICE_ABI_VERSION_MIN" : [NSString stringWithFormat:@"%u", metal::kAbiVersionMin],
-        @"LATTICE_DEVICE_INDEX" : [NSString stringWithFormat:@"%u", device_index],
-      } mutableCopy];
-      if (dev.caps.fp16 == CapabilityStatus::kYes) {
-        macros[@"LATTICE_HAS_FP16"] = @"1";
-      }
-      if (dev.caps.fp64 == CapabilityStatus::kYes) {
-        macros[@"LATTICE_HAS_FP64"] = @"1";
+      auto macro_defs = ParseDefineOptions(build_options);
+      NSMutableDictionary<NSString*, NSObject*>* macros =
+          [NSMutableDictionary dictionaryWithCapacity:macro_defs.size()];
+      for (const auto& kv : macro_defs) {
+        NSString* key = [NSString stringWithUTF8String:kv.first.c_str()];
+        NSString* value = kv.second.empty() ? @"1" : [NSString stringWithUTF8String:kv.second.c_str()];
+        if (key) {
+          macros[key] = value;
+        }
       }
       options.preprocessorMacros = macros;
       NSError* ns_error = nil;
@@ -657,10 +741,13 @@ Status MetalBackend::LaunchKernel(const MetalKernel& kernel, const MetalLaunchCo
 
   [enc endEncoding];
   [cmd commit];
-  [cmd waitUntilCompleted];
-  if (cmd.error) {
-    return MetalStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
-                       cmd.error.localizedDescription.UTF8String);
+  ExecutionConfig exec_config = GetExecutionConfig();
+  if (exec_config.sync_on_launch) {
+    [cmd waitUntilCompleted];
+    if (cmd.error) {
+      return MetalStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                         cmd.error.localizedDescription.UTF8String);
+    }
   }
   return Status::OK();
 }

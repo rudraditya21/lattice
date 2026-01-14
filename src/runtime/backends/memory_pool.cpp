@@ -200,6 +200,7 @@ StatusOr<PoolBlock> MemoryPool::Acquire(size_t bytes, size_t alignment) {
   if (block.bytes == 0) {
     block.bytes = bucket;
   }
+  block.requested_bytes = request_bytes;
 
   if (config_.scrub_on_alloc && block.from_pool && scrub_fn_) {
     Status scrub_status = scrub_fn_(block);

@@ -34,6 +34,7 @@ class CacheStore {
   bool Enabled() const { return policy_.enabled; }
   bool ReadBinary(const CacheKey& key, std::string* out, std::string* error);
   bool WriteBinary(const CacheKey& key, const void* data, size_t size, std::string* error);
+  void Invalidate(const CacheKey& key);
   void Prune();
 
  private:

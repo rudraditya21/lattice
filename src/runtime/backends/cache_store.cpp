@@ -243,6 +243,25 @@ bool CacheStore::WriteBinary(const CacheKey& key, const void* data, size_t size,
   return true;
 }
 
+void CacheStore::Invalidate(const CacheKey& key) {
+  if (!policy_.enabled) return;
+  std::lock_guard<std::mutex> lock(mu_);
+  EnsureLoaded();
+  auto it = entries_.find(key.key);
+  if (it != entries_.end()) {
+    if (!key.fingerprint.empty() && it->second.fingerprint != key.fingerprint) {
+      RemoveEntry(key.key);
+      FlushIndex(nullptr);
+      return;
+    }
+    RemoveEntry(key.key);
+    FlushIndex(nullptr);
+    return;
+  }
+  std::error_code ec;
+  std::filesystem::remove(EntryPath(key.key), ec);
+}
+
 void CacheStore::Prune() {
   if (!policy_.enabled) return;
   std::lock_guard<std::mutex> lock(mu_);

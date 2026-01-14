@@ -104,6 +104,7 @@ bool CudaLoader::Load(std::string* error) {
   LoadOptional(driver, "cuEventRecord", &cuEventRecord);
   LoadOptional(driver, "cuEventSynchronize", &cuEventSynchronize);
   LoadOptional(driver, "cuEventQuery", &cuEventQuery);
+  LoadOptional(driver, "cuEventElapsedTime", &cuEventElapsedTime);
   if (!LoadOptional(driver, "cuMemAlloc_v2", &cuMemAlloc)) {
     ok &= LoadSymbol(driver, "cuMemAlloc", &cuMemAlloc, error);
   }

@@ -41,6 +41,7 @@ using CuEventDestroy = CUresult (*)(CUevent);
 using CuEventRecord = CUresult (*)(CUevent, CUstream);
 using CuEventSynchronize = CUresult (*)(CUevent);
 using CuEventQuery = CUresult (*)(CUevent);
+using CuEventElapsedTime = CUresult (*)(float*, CUevent, CUevent);
 using CuMemAlloc = CUresult (*)(CUdeviceptr*, size_t);
 using CuMemFree = CUresult (*)(CUdeviceptr);
 using CuMemHostAlloc = CUresult (*)(void**, size_t, unsigned int);
@@ -96,6 +97,7 @@ struct CudaLoader {
   CuEventRecord cuEventRecord = nullptr;
   CuEventSynchronize cuEventSynchronize = nullptr;
   CuEventQuery cuEventQuery = nullptr;
+  CuEventElapsedTime cuEventElapsedTime = nullptr;
   CuMemAlloc cuMemAlloc = nullptr;
   CuMemFree cuMemFree = nullptr;
   CuMemHostAlloc cuMemHostAlloc = nullptr;
