@@ -261,6 +261,18 @@ bool KernelDebugEnabled(const std::string& backend_env) {
     return false;
 }
 
+bool KernelRebuildOnFailureEnabled(const std::string& backend_env) {
+    if (!backend_env.empty()) {
+        const char* backend = std::getenv(backend_env.c_str());
+        if (backend && backend[0] != '\0')
+            return IsTrueEnvValue(backend);
+    }
+    const char* global = std::getenv("LATTICE_REBUILD_ON_FAILURE");
+    if (global && global[0] != '\0')
+        return IsTrueEnvValue(global);
+    return true;
+}
+
 std::string KernelDebugOptions(BackendType backend) {
     switch (backend) {
         case BackendType::kOpenCL:

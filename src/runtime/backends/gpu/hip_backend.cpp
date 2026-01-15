@@ -1344,6 +1344,8 @@ StatusOr<gpu::hipModule_t> HipBackend::BuildOrLoadModule(
 
     CacheStore& store = HipCacheStore();
     ::lattice::runtime::CacheKey store_key{cache_key, dev.fingerprint};
+    const bool rebuild_on_failure =
+        KernelRebuildOnFailureEnabled("LATTICE_HIP_REBUILD_ON_FAILURE");
 
     KernelTrace trace;
     trace.backend = BackendType::kHIP;
@@ -1388,6 +1390,15 @@ StatusOr<gpu::hipModule_t> HipBackend::BuildOrLoadModule(
             if (module_or.ok())
                 return module_or;
             store.Invalidate(store_key);
+            if (!rebuild_on_failure) {
+                std::string detail = module_or.status().message;
+                if (detail.empty())
+                    detail = "cached module load failed";
+                return HipStatus(
+                    StatusCode::kInternal, BackendErrorKind::kCompile,
+                    "cached module load failed and rebuild disabled: " +
+                        detail);
+            }
         }
     }
 

@@ -14,6 +14,7 @@
 - `LATTICE_CACHE_MAX_ENTRIES=<count>` caps number of cached binaries (default 4096).
 - `LATTICE_CACHE_MAX_AGE_DAYS=<days>` evicts entries older than the age threshold (default 30).
 - `LATTICE_CACHE_UPDATE_ATIME=0` disables access-time updates on cache hits.
+- `LATTICE_REBUILD_ON_FAILURE=0` disables rebuild attempts after cached binaries fail to load/build (per-backend overrides: `LATTICE_OPENCL_REBUILD_ON_FAILURE`, `LATTICE_CUDA_REBUILD_ON_FAILURE`, `LATTICE_HIP_REBUILD_ON_FAILURE`).
 - `LATTICE_BUILD_DEBUG=1` appends backend debug flags to kernel builds (OpenCL `-g -cl-opt-disable`, CUDA `-G`, HIP `-g -O0`).
 - Kernel cache is on by default (per-device, per-build-options). Metal uses an in-memory pipeline cache per run.
 - Device metadata is persisted under `LATTICE_CACHE_DIR/devices` as key/value text files keyed by a device fingerprint.

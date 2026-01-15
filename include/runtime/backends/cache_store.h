@@ -57,7 +57,7 @@ class CacheStore {
     bool LoadIndex(std::string* error);
     bool FlushIndex(std::string* error);
     void ResetCache();
-    void EvictIfNeeded();
+    bool EvictIfNeeded();
     std::filesystem::path EntryPath(const std::string& key) const;
     void RemoveEntry(const std::string& key);
 

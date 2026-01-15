@@ -306,6 +306,14 @@ bool CacheStore::ReadBinary(const CacheKey& key,
         FlushIndex(nullptr);
         return false;
     }
+    if (policy_.max_age_seconds > 0) {
+        const uint64_t now = NowSeconds();
+        if (now - it->second.accessed > policy_.max_age_seconds) {
+            RemoveEntry(key.key);
+            FlushIndex(nullptr);
+            return false;
+        }
+    }
     const std::filesystem::path path = EntryPath(key.key);
     if (!std::filesystem::exists(path)) {
         RemoveEntry(key.key);
@@ -414,6 +422,8 @@ void CacheStore::EnsureLoaded() {
     if (!LoadIndex(&error)) {
         ResetCache();
     }
+    if (EvictIfNeeded())
+        FlushIndex(nullptr);
     loaded_ = true;
 }
 
@@ -515,9 +525,10 @@ void CacheStore::ResetCache() {
     entries_.clear();
 }
 
-void CacheStore::EvictIfNeeded() {
+bool CacheStore::EvictIfNeeded() {
     if (entries_.empty())
-        return;
+        return false;
+    bool evicted = false;
     const uint64_t now = NowSeconds();
     std::vector<Entry> entries;
     entries.reserve(entries_.size());
@@ -529,6 +540,7 @@ void CacheStore::EvictIfNeeded() {
         for (const auto& entry : entries) {
             if (now - entry.accessed > policy_.max_age_seconds) {
                 RemoveEntry(entry.key);
+                evicted = true;
             }
         }
     }
@@ -558,8 +570,10 @@ void CacheStore::EvictIfNeeded() {
             const Entry& victim = candidates[idx++];
             total_bytes -= victim.size;
             RemoveEntry(victim.key);
+            evicted = true;
         }
     }
+    return evicted;
 }
 
 std::filesystem::path CacheStore::EntryPath(const std::string& key) const {

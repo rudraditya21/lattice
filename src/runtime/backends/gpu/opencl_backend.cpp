@@ -88,6 +88,22 @@ std::string DeviceTypeString(cl_device_type type) {
     return "UNKNOWN";
 }
 
+std::string ProgramBuildLog(const OpenCLLoader& loader,
+                            cl_program program,
+                            cl_device_id device) {
+    size_t log_size = 0;
+    loader.clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0,
+                                 nullptr, &log_size);
+    if (log_size <= 1)
+        return "";
+    std::string log(log_size, '\0');
+    loader.clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG,
+                                 log_size, log.data(), nullptr);
+    if (!log.empty() && log.back() == '\0')
+        log.pop_back();
+    return log;
+}
+
 Status OpenclStatus(StatusCode code,
                     BackendErrorKind kind,
                     const std::string& message) {
@@ -1550,6 +1566,8 @@ StatusOr<cl_program> OpenCLBackend::BuildOrLoadProgram(
     }
     CacheStore& store = OpenclCacheStore();
     ::lattice::runtime::CacheKey store_key{cache_key, dev.fingerprint};
+    const bool rebuild_on_failure =
+        KernelRebuildOnFailureEnabled("LATTICE_OPENCL_REBUILD_ON_FAILURE");
 
     KernelTrace trace;
     trace.backend = BackendType::kOpenCL;
@@ -1581,9 +1599,23 @@ StatusOr<cl_program> OpenCLBackend::BuildOrLoadProgram(
                 dev.program_cache[cache_key] = program;
                 return program;
             }
+            std::string log = ProgramBuildLog(loader_, program, dev.device);
             loader_.clReleaseProgram(program);
+            if (!rebuild_on_failure) {
+                std::string message = "cached OpenCL binary build failed";
+                if (!log.empty())
+                    message += ": " + log;
+                return OpenclStatus(StatusCode::kInternal,
+                                    BackendErrorKind::kBuild, message);
+            }
         }
         store.Invalidate(store_key);
+        if (!rebuild_on_failure) {
+            return OpenclStatus(StatusCode::kInternal,
+                                BackendErrorKind::kCompile,
+                                "cached OpenCL binary load failed: " +
+                                    gpu::OpenCLErrorString(status));
+        }
     }
 
     const char* src = source.c_str();
@@ -1599,17 +1631,7 @@ StatusOr<cl_program> OpenCLBackend::BuildOrLoadProgram(
     err = loader_.clBuildProgram(program, 1, &dev.device, build_options.c_str(),
                                  nullptr, nullptr);
     if (err != CL_SUCCESS) {
-        size_t log_size = 0;
-        loader_.clGetProgramBuildInfo(program, dev.device, CL_PROGRAM_BUILD_LOG,
-                                      0, nullptr, &log_size);
-        std::string log(log_size, '\0');
-        if (log_size > 1) {
-            loader_.clGetProgramBuildInfo(program, dev.device,
-                                          CL_PROGRAM_BUILD_LOG, log_size,
-                                          log.data(), nullptr);
-            if (!log.empty() && log.back() == '\0')
-                log.pop_back();
-        }
+        std::string log = ProgramBuildLog(loader_, program, dev.device);
         LogBackend({LogLevel::kWarn, BackendType::kOpenCL,
                     BackendErrorKind::kBuild, "OpenCL build failed", "build",
                     dev.desc.index, dev.desc.name, err,

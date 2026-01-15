@@ -1362,6 +1362,8 @@ StatusOr<gpu::CUmodule> CudaBackend::BuildOrLoadModule(
 
     CacheStore& store = CudaCacheStore();
     ::lattice::runtime::CacheKey store_key{cache_key, dev.fingerprint};
+    const bool rebuild_on_failure =
+        KernelRebuildOnFailureEnabled("LATTICE_CUDA_REBUILD_ON_FAILURE");
 
     KernelTrace trace;
     trace.backend = BackendType::kCUDA;
@@ -1407,6 +1409,15 @@ StatusOr<gpu::CUmodule> CudaBackend::BuildOrLoadModule(
             if (module_or.ok())
                 return module_or;
             store.Invalidate(store_key);
+            if (!rebuild_on_failure) {
+                std::string detail = module_or.status().message;
+                if (detail.empty())
+                    detail = "cached module load failed";
+                return CudaStatus(
+                    StatusCode::kInternal, BackendErrorKind::kCompile,
+                    "cached module load failed and rebuild disabled: " +
+                        detail);
+            }
         }
     }
 

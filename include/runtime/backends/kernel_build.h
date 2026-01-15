@@ -24,6 +24,7 @@ std::string KernelDefineString(const KernelBuildDefines& defs,
                                const std::string& prefix = "-D");
 std::string LoadBuildOptionsEnv(const std::string& backend_env);
 bool KernelDebugEnabled(const std::string& backend_env);
+bool KernelRebuildOnFailureEnabled(const std::string& backend_env);
 std::string KernelDebugOptions(BackendType backend);
 std::string Sha256Hex(const void* data, size_t size);
 std::string Sha256Hex(const std::string& data);
