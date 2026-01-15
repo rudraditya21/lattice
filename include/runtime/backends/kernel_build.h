@@ -1,6 +1,7 @@
 #ifndef LATTICE_RUNTIME_BACKENDS_KERNEL_BUILD_H_
 #define LATTICE_RUNTIME_BACKENDS_KERNEL_BUILD_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -24,6 +25,8 @@ std::string KernelDefineString(const KernelBuildDefines& defs,
 std::string LoadBuildOptionsEnv(const std::string& backend_env);
 bool KernelDebugEnabled(const std::string& backend_env);
 std::string KernelDebugOptions(BackendType backend);
+std::string Sha256Hex(const void* data, size_t size);
+std::string Sha256Hex(const std::string& data);
 std::string NormalizePathArg(const std::string& path);
 std::string BuildIncludeOption(const std::string& include_dir,
                                const std::string& prefix = "-I");

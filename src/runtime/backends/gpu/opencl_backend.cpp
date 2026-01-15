@@ -51,21 +51,6 @@ DeviceKind DeviceKindFromType(cl_device_type type) {
     return DeviceKind::kAny;
 }
 
-uint64_t Fnv1a64(const std::string& data) {
-    uint64_t hash = 14695981039346656037ull;
-    for (unsigned char c : data) {
-        hash ^= static_cast<uint64_t>(c);
-        hash *= 1099511628211ull;
-    }
-    return hash;
-}
-
-std::string Hex64(uint64_t value) {
-    std::ostringstream out;
-    out << std::hex << std::setw(16) << std::setfill('0') << value;
-    return out.str();
-}
-
 int CapabilityToInt(CapabilityStatus status) {
     switch (status) {
         case CapabilityStatus::kYes:
@@ -1538,14 +1523,14 @@ std::string OpenCLBackend::CacheKey(const DeviceContext& dev,
                                     const std::string& kernel_name,
                                     const std::string& build_options,
                                     const std::string& source) const {
-    std::ostringstream ss;
-    ss << dev.desc.name << "|" << dev.desc.vendor << "|"
-       << dev.desc.driver_version << "|";
-    ss << build_options << "|" << kernel_name;
-    const std::string meta = ss.str();
-    uint64_t meta_hash = Fnv1a64(meta);
-    uint64_t src_hash = Fnv1a64(source);
-    return "opencl_" + Hex64(meta_hash) + "_" + Hex64(src_hash);
+    std::string meta = dev.fingerprint;
+    meta += "|";
+    meta += kernel_name;
+    meta += "|";
+    meta += build_options;
+    const std::string meta_hash = Sha256Hex(meta);
+    const std::string src_hash = Sha256Hex(source);
+    return "opencl_" + meta_hash + "_" + src_hash;
 }
 
 StatusOr<cl_program> OpenCLBackend::BuildOrLoadProgram(
