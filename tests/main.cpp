@@ -26,6 +26,7 @@ void RunDeviceSelectorTests(TestContext* ctx);
 void RunDeviceQuirksTests(TestContext* ctx);
 void RunCacheStoreTests(TestContext* ctx);
 void RunMemoryPoolTests(TestContext* ctx);
+void RunKernelBuildTests(TestContext* ctx);
 void RunKernelRegistryTests(TestContext* ctx);
 void RunIntegrationTests(TestContext* ctx);
 }  // namespace test
@@ -55,6 +56,7 @@ int main() {
   test::RunDeviceQuirksTests(&ctx);
   test::RunCacheStoreTests(&ctx);
   test::RunMemoryPoolTests(&ctx);
+  test::RunKernelBuildTests(&ctx);
   test::RunKernelRegistryTests(&ctx);
   test::RunIntegrationTests(&ctx);
 

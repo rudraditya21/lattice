@@ -90,6 +90,7 @@ add_executable(lattice_tests
     tests/runtime/device_quirks_tests.cpp
     tests/runtime/cache_store_tests.cpp
     tests/runtime/memory_pool_tests.cpp
+    tests/runtime/kernel_build_tests.cpp
     tests/runtime/kernel_registry_tests.cpp
     tests/runtime/destructuring_tests.cpp
     tests/runtime/error_location_tests.cpp

@@ -1,5 +1,6 @@
 #include "test_util.h"
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -159,6 +160,29 @@ void RunCacheStoreTests(TestContext* ctx) {
     rt::CacheStore age_store("cuda", age_policy, root);
     age_store.Prune();
     ExpectTrue(!std::filesystem::exists(backend_dir / "old.bin"), "cache_age_eviction", ctx);
+  }
+
+  {
+    const std::filesystem::path backend_dir = root / "cuda_read_age";
+    std::filesystem::create_directories(backend_dir);
+    const auto now = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    const uint64_t stale_time = now > 10 ? now - 10 : 0;
+    WriteIndexFile(backend_dir / "index.txt", "cuda_read_age", "stale", "fp", stale_time,
+                   stale_time);
+    std::ofstream bin(backend_dir / "stale.bin", std::ios::binary);
+    bin << "abc";
+    bin.close();
+    rt::CachePolicy age_policy = policy;
+    age_policy.max_age_seconds = 1;
+    rt::CacheStore read_store("cuda_read_age", age_policy, root);
+    std::string out_value;
+    bool hit = read_store.ReadBinary({"stale", "fp"}, &out_value, &error);
+    ExpectTrue(!hit, "cache_age_read_eviction", ctx);
+    ExpectTrue(!std::filesystem::exists(backend_dir / "stale.bin"),
+               "cache_age_read_removes_file", ctx);
   }
 
   rt::DeviceMetadata meta;
