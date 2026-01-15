@@ -20,6 +20,7 @@
 
 #include "runtime/backends/backend_log.h"
 #include "runtime/backends/memory_pool.h"
+#include "runtime/backends/memory_utils.h"
 
 #ifdef __linux__
 #include <numaif.h>
@@ -56,6 +57,7 @@ MemoryPoolConfig CpuDevicePoolConfig() {
     static MemoryPoolConfig config = [] {
         MemoryPoolConfig base = DefaultDevicePoolConfig();
         base.scrub_on_free = true;
+        base.zero_on_alloc = true;
         base.bucket_bytes = kDefaultAlignment;
         base = LoadMemoryPoolConfig("LATTICE_DEVICE_POOL", base);
         base = LoadMemoryPoolConfig("LATTICE_CPU_DEVICE_POOL", base);
@@ -68,6 +70,7 @@ MemoryPoolConfig CpuPinnedPoolConfig() {
     static MemoryPoolConfig config = [] {
         MemoryPoolConfig base = DefaultPinnedPoolConfig();
         base.scrub_on_free = true;
+        base.zero_on_alloc = true;
         base.bucket_bytes = kDefaultAlignment;
         base = LoadMemoryPoolConfig("LATTICE_PINNED_POOL", base);
         base = LoadMemoryPoolConfig("LATTICE_CPU_PINNED_POOL", base);
@@ -96,6 +99,8 @@ StatusOr<PoolBlock> CpuPoolAlloc(size_t bytes, size_t alignment) {
     }
 #endif
     void* user_ptr = static_cast<char*>(raw) + kCanaryBytes;
+    WriteCanary(raw);
+    WriteCanary(static_cast<char*>(user_ptr) + bytes);
     block.key = reinterpret_cast<uintptr_t>(user_ptr);
     block.handle = reinterpret_cast<uintptr_t>(raw);
     block.host_ptr = user_ptr;
@@ -116,7 +121,7 @@ Status CpuPoolFree(const PoolBlock& block) {
     return Status::OK();
 }
 
-Status CpuPoolScrub(const PoolBlock& block) {
+Status CpuPoolScrub(const PoolBlock& block, bool secure) {
     if (block.handle == 0)
         return Status::OK();
     size_t requested =
@@ -129,10 +134,16 @@ Status CpuPoolScrub(const PoolBlock& block) {
     auto* user = block.host_ptr
                      ? static_cast<unsigned char*>(block.host_ptr)
                      : raw + static_cast<std::ptrdiff_t>(kCanaryBytes);
-    if (!CheckCanary(raw) || !CheckCanary(user + requested)) {
-        return Status::Internal("memory canary corrupted");
+    if (!block.scrub_on_alloc) {
+        if (!CheckCanary(raw) || !CheckCanary(user + requested)) {
+            return Status::Internal("memory canary corrupted");
+        }
     }
-    std::memset(user, 0, requested);
+    if (secure) {
+        SecureZero(user, requested);
+    } else {
+        std::memset(user, 0, requested);
+    }
     WriteCanary(raw);
     WriteCanary(user + requested);
     return Status::OK();
@@ -147,9 +158,12 @@ MemoryPool* CpuDevicePool() {
     auto& state = CpuPools();
     std::lock_guard<std::mutex> lock(state.mu);
     if (!state.device_pool) {
+        MemoryPoolConfig config = CpuDevicePoolConfig();
+        auto scrub_fn = [secure = config.secure_scrub](const PoolBlock& block) {
+            return CpuPoolScrub(block, secure);
+        };
         state.device_pool = std::make_unique<MemoryPool>(
-            "cpu_device_pool", CpuDevicePoolConfig(), CpuPoolAlloc, CpuPoolFree,
-            CpuPoolScrub);
+            "cpu_device_pool", config, CpuPoolAlloc, CpuPoolFree, scrub_fn);
     }
     return state.device_pool.get();
 }
@@ -158,9 +172,12 @@ MemoryPool* CpuPinnedPool() {
     auto& state = CpuPools();
     std::lock_guard<std::mutex> lock(state.mu);
     if (!state.pinned_pool) {
+        MemoryPoolConfig config = CpuPinnedPoolConfig();
+        auto scrub_fn = [secure = config.secure_scrub](const PoolBlock& block) {
+            return CpuPoolScrub(block, secure);
+        };
         state.pinned_pool = std::make_unique<MemoryPool>(
-            "cpu_pinned_pool", CpuPinnedPoolConfig(), CpuPoolAlloc, CpuPoolFree,
-            CpuPoolScrub);
+            "cpu_pinned_pool", config, CpuPoolAlloc, CpuPoolFree, scrub_fn);
     }
     return state.pinned_pool.get();
 }
@@ -192,7 +209,6 @@ StatusOr<Allocation> CpuAllocateFromPool(MemoryPool* pool,
     if (user_ptr && bytes > 0 && raw) {
         WriteCanary(raw);
         WriteCanary(static_cast<char*>(user_ptr) + bytes);
-        std::memset(user_ptr, 0, bytes);
     }
     alloc.ptr = user_ptr;
     alloc.device_handle = raw;

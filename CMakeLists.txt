@@ -23,6 +23,7 @@ set(LATTICE_SOURCES
     src/runtime/backends/backend_error.cpp
     src/runtime/backends/backend_log.cpp
     src/runtime/backends/memory_pool.cpp
+    src/runtime/backends/memory_utils.cpp
     src/runtime/backends/kernel_registry.cpp
     src/runtime/backends/kernel_build.cpp
     src/runtime/backends/gpu/cuda_loader.cpp

@@ -17,6 +17,8 @@ struct MemoryPoolConfig {
     bool enabled = true;
     bool scrub_on_free = false;
     bool scrub_on_alloc = false;
+    bool zero_on_alloc = false;
+    bool secure_scrub = false;
     size_t max_pool_bytes = 256 * 1024 * 1024;
     size_t max_pool_entries = 4096;
     size_t max_entry_bytes = 64 * 1024 * 1024;
@@ -38,6 +40,7 @@ struct PoolBlock {
     size_t requested_bytes = 0;
     size_t alignment = 0;
     bool from_pool = false;
+    bool scrub_on_alloc = false;
 };
 
 class MemoryPool {

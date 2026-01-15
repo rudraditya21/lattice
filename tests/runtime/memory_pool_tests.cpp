@@ -149,6 +149,44 @@ void RunMemoryPoolTests(TestContext* ctx) {
     ExpectTrue(stats.evictions >= 1, "pool_evict_count", ctx);
     ExpectTrue(stats.cached_blocks == 0, "pool_evict_cache_empty", ctx);
   }
+
+  {
+    FakeAllocator alloc;
+    rt::MemoryPoolConfig config = rt::DefaultDevicePoolConfig();
+    config.zero_on_alloc = true;
+    config.scrub_on_alloc = false;
+    config.scrub_on_free = false;
+    rt::MemoryPool pool(
+        "pool_zero_on_alloc", config,
+        [&alloc](size_t bytes, size_t alignment) { return alloc.Allocate(bytes, alignment); },
+        [&alloc](const rt::PoolBlock& block) { return alloc.Free(block); },
+        [&alloc](const rt::PoolBlock& block) { return alloc.Scrub(block); });
+
+    auto block_or = pool.Acquire(128, 64);
+    ExpectTrue(block_or.ok(), "pool_zero_alloc_status", ctx);
+    ExpectTrue(alloc.scrub_calls == 1, "pool_zero_alloc_scrubbed", ctx);
+    ExpectTrue(pool.Release(block_or.value().key).ok(), "pool_zero_alloc_release", ctx);
+    ExpectTrue(alloc.scrub_calls == 1, "pool_zero_alloc_release_no_scrub", ctx);
+  }
+
+  {
+    FakeAllocator alloc;
+    rt::MemoryPoolConfig config = rt::DefaultDevicePoolConfig();
+    config.secure_scrub = true;
+    config.scrub_on_alloc = false;
+    config.scrub_on_free = false;
+    rt::MemoryPool pool(
+        "pool_secure_scrub", config,
+        [&alloc](size_t bytes, size_t alignment) { return alloc.Allocate(bytes, alignment); },
+        [&alloc](const rt::PoolBlock& block) { return alloc.Free(block); },
+        [&alloc](const rt::PoolBlock& block) { return alloc.Scrub(block); });
+
+    auto block_or = pool.Acquire(64, 64);
+    ExpectTrue(block_or.ok(), "pool_secure_alloc_status", ctx);
+    ExpectTrue(alloc.scrub_calls == 0, "pool_secure_alloc_no_scrub", ctx);
+    ExpectTrue(pool.Release(block_or.value().key).ok(), "pool_secure_release", ctx);
+    ExpectTrue(alloc.scrub_calls == 1, "pool_secure_scrubbed", ctx);
+  }
 }
 
 }  // namespace test

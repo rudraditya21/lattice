@@ -403,6 +403,12 @@ class GpuExecutor {
     Status WriteBuffer(const GpuBuffer& buffer,
                        const void* data,
                        size_t bytes) {
+        if (bytes > buffer.bytes) {
+            return Status::Invalid("Write exceeds buffer size");
+        }
+        if (bytes > 0 && !data) {
+            return Status::Invalid("Write data pointer is null");
+        }
         switch (buffer.backend) {
             case BackendType::kOpenCL:
                 return opencl_->WriteBuffer(buffer.device_index, buffer.opencl,
@@ -428,6 +434,12 @@ class GpuExecutor {
     }
 
     Status ReadBuffer(const GpuBuffer& buffer, void* data, size_t bytes) {
+        if (bytes > buffer.bytes) {
+            return Status::Invalid("Read exceeds buffer size");
+        }
+        if (bytes > 0 && !data) {
+            return Status::Invalid("Read data pointer is null");
+        }
         switch (buffer.backend) {
             case BackendType::kOpenCL:
                 return opencl_->ReadBuffer(buffer.device_index, buffer.opencl,

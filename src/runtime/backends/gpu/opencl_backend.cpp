@@ -27,6 +27,7 @@
 #include "runtime/backends/gpu/opencl_loader.h"
 #include "runtime/backends/kernel_build.h"
 #include "runtime/backends/memory_pool.h"
+#include "runtime/backends/memory_utils.h"
 #include "runtime/backends/opencl_abi.h"
 
 namespace lattice::runtime {
@@ -755,6 +756,11 @@ Status OpenCLBackend::WriteBuffer(int device_index,
                             BackendErrorKind::kInvalidArgument,
                             "Invalid buffer handle");
     }
+    if (bytes + offset > buffer.bytes) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "Write exceeds buffer size");
+    }
     cl_int err = loader_.clEnqueueWriteBuffer(devices_[device_index].queue,
                                               buffer.mem, CL_TRUE, offset,
                                               bytes, data, 0, nullptr, nullptr);
@@ -783,6 +789,11 @@ Status OpenCLBackend::ReadBuffer(int device_index,
         return OpenclStatus(StatusCode::kInvalidArgument,
                             BackendErrorKind::kInvalidArgument,
                             "Invalid buffer handle");
+    }
+    if (bytes + offset > buffer.bytes) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "Read exceeds buffer size");
     }
     cl_int err = loader_.clEnqueueReadBuffer(devices_[device_index].queue,
                                              buffer.mem, CL_TRUE, offset, bytes,
@@ -1442,9 +1453,14 @@ MemoryPool* OpenCLBackend::PinnedPool(int device_index) const {
         }
         return Status::OK();
     };
-    auto scrub_fn = [](const PoolBlock& block) -> Status {
+    auto scrub_fn =
+        [secure = config.secure_scrub](const PoolBlock& block) -> Status {
         if (block.host_ptr && block.bytes > 0) {
-            std::memset(block.host_ptr, 0, block.bytes);
+            if (secure) {
+                SecureZero(block.host_ptr, block.bytes);
+            } else {
+                std::memset(block.host_ptr, 0, block.bytes);
+            }
         }
         return Status::OK();
     };

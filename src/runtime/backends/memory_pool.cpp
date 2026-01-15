@@ -89,6 +89,8 @@ MemoryPoolConfig DefaultDevicePoolConfig() {
     config.enabled = true;
     config.scrub_on_free = false;
     config.scrub_on_alloc = false;
+    config.zero_on_alloc = false;
+    config.secure_scrub = false;
     config.max_pool_bytes = 256ull * 1024ull * 1024ull;
     config.max_pool_entries = 4096;
     config.max_entry_bytes = 64ull * 1024ull * 1024ull;
@@ -101,6 +103,8 @@ MemoryPoolConfig DefaultPinnedPoolConfig() {
     config.enabled = true;
     config.scrub_on_free = true;
     config.scrub_on_alloc = false;
+    config.zero_on_alloc = false;
+    config.secure_scrub = false;
     config.max_pool_bytes = 128ull * 1024ull * 1024ull;
     config.max_pool_entries = 2048;
     config.max_entry_bytes = 32ull * 1024ull * 1024ull;
@@ -120,8 +124,22 @@ MemoryPoolConfig LoadMemoryPoolConfig(const std::string& prefix,
         base.scrub_on_free = IsTrueEnvValue(env);
     }
     if (const char* env =
+            std::getenv(EnvKey(prefix, "SCRUB_ON_FREE").c_str())) {
+        base.scrub_on_free = IsTrueEnvValue(env);
+    }
+    if (const char* env = std::getenv(EnvKey(prefix, "SECURE_SCRUB").c_str())) {
+        base.secure_scrub = IsTrueEnvValue(env);
+    }
+    if (const char* env =
             std::getenv(EnvKey(prefix, "SCRUB_ON_ALLOC").c_str())) {
         base.scrub_on_alloc = IsTrueEnvValue(env);
+    }
+    if (const char* env =
+            std::getenv(EnvKey(prefix, "ZERO_ON_ALLOC").c_str())) {
+        base.zero_on_alloc = IsTrueEnvValue(env);
+    }
+    if (const char* env = std::getenv(EnvKey(prefix, "ZERO_FILL").c_str())) {
+        base.zero_on_alloc = IsTrueEnvValue(env);
     }
     size_t parsed = 0;
     if (ParseSizeValue(std::getenv(EnvKey(prefix, "MAX_BYTES").c_str()),
@@ -232,8 +250,15 @@ StatusOr<PoolBlock> MemoryPool::Acquire(size_t bytes, size_t alignment) {
     }
     block.requested_bytes = request_bytes;
 
-    if (config_.scrub_on_alloc && block.from_pool && scrub_fn_) {
+    const bool scrub_on_alloc =
+        config_.zero_on_alloc || (config_.scrub_on_alloc && block.from_pool);
+    if (scrub_on_alloc && !scrub_fn_) {
+        return Status::Unavailable(label_ + " pool scrub unavailable");
+    }
+    if (scrub_on_alloc && scrub_fn_) {
+        block.scrub_on_alloc = true;
         Status scrub_status = scrub_fn_(block);
+        block.scrub_on_alloc = false;
         if (!scrub_status.ok()) {
             free_fn_(block);
             return scrub_status;
@@ -281,7 +306,7 @@ Status MemoryPool::Release(uintptr_t key) {
         }
     }
 
-    if (config_.scrub_on_free && scrub_fn_) {
+    if ((config_.scrub_on_free || config_.secure_scrub) && scrub_fn_) {
         Status scrub_status = scrub_fn_(info.block);
         if (!scrub_status.ok()) {
             free_fn_(info.block);

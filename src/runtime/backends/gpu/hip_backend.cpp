@@ -24,6 +24,7 @@
 #include "runtime/backends/hip_abi.h"
 #include "runtime/backends/kernel_build.h"
 #include "runtime/backends/memory_pool.h"
+#include "runtime/backends/memory_utils.h"
 
 namespace lattice::runtime {
 
@@ -1260,9 +1261,14 @@ MemoryPool* HipBackend::PinnedPool() const {
         }
         return Status::OK();
     };
-    auto scrub_fn = [](const PoolBlock& block) -> Status {
+    auto scrub_fn =
+        [secure = config.secure_scrub](const PoolBlock& block) -> Status {
         if (block.host_ptr && block.bytes > 0) {
-            std::memset(block.host_ptr, 0, block.bytes);
+            if (secure) {
+                SecureZero(block.host_ptr, block.bytes);
+            } else {
+                std::memset(block.host_ptr, 0, block.bytes);
+            }
         }
         return Status::OK();
     };

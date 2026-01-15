@@ -37,6 +37,8 @@
   - `LATTICE_DEVICE_POOL_MAX_ENTRY_BYTES=<bytes|K|M|G>` skips pooling for larger buffers (default 64M).
   - `LATTICE_DEVICE_POOL_BUCKET_BYTES=<bytes|K|M|G>` rounds device buffers to bucket size (default 256B).
   - `LATTICE_DEVICE_POOL_SCRUB=1` zeros device buffers on release.
+  - `LATTICE_DEVICE_POOL_SECURE_SCRUB=1` enforces scrub-on-release (alias for secure scrub policy).
+  - `LATTICE_DEVICE_POOL_ZERO_ON_ALLOC=1` zeros device buffers on allocation (fresh or reused).
   - `LATTICE_DEVICE_POOL_SCRUB_ON_ALLOC=1` zeros pooled device buffers on reuse.
   - `LATTICE_PINNED_POOL_DISABLE=1` disables pinned host pooling (default enabled).
   - `LATTICE_PINNED_POOL_MAX_BYTES=<bytes|K|M|G>` caps cached pinned bytes (default 128M).
@@ -44,6 +46,8 @@
   - `LATTICE_PINNED_POOL_MAX_ENTRY_BYTES=<bytes|K|M|G>` skips pooling for larger pinned buffers (default 32M).
   - `LATTICE_PINNED_POOL_BUCKET_BYTES=<bytes|K|M|G>` rounds pinned buffers to bucket size (default 256B).
   - `LATTICE_PINNED_POOL_SCRUB=1` zeros pinned buffers on release (default enabled).
+  - `LATTICE_PINNED_POOL_SECURE_SCRUB=1` zeros pinned buffers on release using secure wiping.
+  - `LATTICE_PINNED_POOL_ZERO_ON_ALLOC=1` zeros pinned buffers on allocation (fresh or reused).
   - `LATTICE_PINNED_POOL_SCRUB_ON_ALLOC=1` zeros pooled pinned buffers on reuse.
   - Per-backend overrides: `LATTICE_OPENCL_DEVICE_POOL_*`, `LATTICE_CUDA_DEVICE_POOL_*`,
     `LATTICE_HIP_DEVICE_POOL_*`, `LATTICE_METAL_DEVICE_POOL_*` and `LATTICE_OPENCL_PINNED_POOL_*`,
