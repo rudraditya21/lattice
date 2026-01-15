@@ -19,14 +19,17 @@ void RunBackendLogTests(TestContext* ctx) {
   rec.error_code = 7;
   rec.error_name = "ERR";
   rec.trace_path = "/tmp/trace";
+  rec.build_log = "compiler said nope";
 
   std::string text = rt::FormatLogLine(rec, rt::LogFormat::kText);
   ExpectTrue(text.find("backend=cuda") != std::string::npos, "log_text_backend", ctx);
   ExpectTrue(text.find("trace_path") != std::string::npos, "log_text_trace", ctx);
+  ExpectTrue(text.find("build_log") != std::string::npos, "log_text_build_log", ctx);
 
   std::string json = rt::FormatLogLine(rec, rt::LogFormat::kJson);
   ExpectTrue(json.find("\"backend\":\"cuda\"") != std::string::npos, "log_json_backend", ctx);
   ExpectTrue(json.find("\"trace_path\"") != std::string::npos, "log_json_trace", ctx);
+  ExpectTrue(json.find("\"build_log\"") != std::string::npos, "log_json_build_log", ctx);
 
   const std::filesystem::path trace_root = MakeTempDir("lattice_trace_test_");
   ScopedEnvVar trace_env("LATTICE_TRACE_KERNELS", "1");

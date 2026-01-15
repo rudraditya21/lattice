@@ -1620,6 +1620,10 @@ StatusOr<cl_program> OpenCLBackend::BuildOrLoadProgram(
             if (!log.empty() && log.back() == '\0')
                 log.pop_back();
         }
+        LogBackend({LogLevel::kWarn, BackendType::kOpenCL,
+                    BackendErrorKind::kBuild, "OpenCL build failed", "build",
+                    dev.desc.index, dev.desc.name, err,
+                    gpu::OpenCLErrorString(err), "", log});
         loader_.clReleaseProgram(program);
         return OpenclStatus(StatusCode::kInternal, BackendErrorKind::kBuild,
                             "OpenCL build failed: " + log);

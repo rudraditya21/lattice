@@ -1452,6 +1452,10 @@ StatusOr<gpu::CUmodule> CudaBackend::BuildOrLoadModule(
             if (log_size > 0) {
                 loader_.nvrtcGetProgramLog(prog, log.data());
             }
+            LogBackend({LogLevel::kWarn, BackendType::kCUDA,
+                        BackendErrorKind::kBuild, "NVRTC compile failed",
+                        "build", dev.desc.index, dev.desc.name, rc,
+                        gpu::NvrtcErrorString(rc, &loader_), "", log});
             loader_.nvrtcDestroyProgram(&prog);
             return CudaStatus(StatusCode::kInternal, BackendErrorKind::kBuild,
                               "NVRTC compile failed: " + log);

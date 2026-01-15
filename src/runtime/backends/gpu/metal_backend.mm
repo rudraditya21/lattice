@@ -706,11 +706,26 @@ StatusOr<std::vector<MetalKernel>> MetalBackend::BuildKernelsFromFile(
                              options:options
                                error:&ns_error];
             if (!library) {
-                last_error = ns_error ? ns_error.localizedDescription.UTF8String
-                                      : "Metal library compilation failed";
+                std::string build_log;
+                int64_t error_code = 0;
+                std::string error_name;
+                if (ns_error) {
+                    error_code = static_cast<int64_t>(ns_error.code);
+                    if (ns_error.domain) {
+                        error_name = ns_error.domain.UTF8String;
+                    }
+                    if (ns_error.localizedDescription) {
+                        build_log = ns_error.localizedDescription.UTF8String;
+                    }
+                }
+                last_error = build_log.empty()
+                                 ? "Metal library compilation failed"
+                                 : build_log;
                 LogBackend({LogLevel::kWarn, BackendType::kMetal,
-                            BackendErrorKind::kBuild, last_error, "build",
-                            dev.desc.index, dev.desc.name});
+                            BackendErrorKind::kBuild,
+                            "Metal library compilation failed", "build",
+                            dev.desc.index, dev.desc.name, error_code,
+                            error_name, "", build_log});
                 continue;
             }
             id<MTLFunction> function = [library

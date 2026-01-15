@@ -1430,6 +1430,10 @@ StatusOr<gpu::hipModule_t> HipBackend::BuildOrLoadModule(
             if (log_size > 0) {
                 loader_.hiprtcGetProgramLog(prog, log.data());
             }
+            LogBackend({LogLevel::kWarn, BackendType::kHIP,
+                        BackendErrorKind::kBuild, "HIPRTC compile failed",
+                        "build", dev.desc.index, dev.desc.name, rc,
+                        gpu::HiprtcErrorString(rc, &loader_), "", log});
             loader_.hiprtcDestroyProgram(&prog);
             return HipStatus(StatusCode::kInternal, BackendErrorKind::kBuild,
                              "HIPRTC compile failed: " + log);

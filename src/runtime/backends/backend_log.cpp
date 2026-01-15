@@ -238,6 +238,9 @@ std::string FormatLogLine(const LogRecord& record, LogFormat format) {
             out << ",\"trace_path\":\"" << JsonEscape(record.trace_path)
                 << "\"";
         }
+        if (!record.build_log.empty()) {
+            out << ",\"build_log\":\"" << JsonEscape(record.build_log) << "\"";
+        }
         out << ",\"message\":\"" << JsonEscape(record.message) << "\"";
         out << "}";
         return out.str();
@@ -259,6 +262,8 @@ std::string FormatLogLine(const LogRecord& record, LogFormat format) {
         out << " error_name=" << record.error_name;
     if (!record.trace_path.empty())
         out << " trace_path=" << record.trace_path;
+    if (!record.build_log.empty())
+        out << " build_log=\"" << TextEscape(record.build_log) << "\"";
     out << " message=\"" << TextEscape(record.message) << "\"";
     return out.str();
 }

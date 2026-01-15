@@ -23,6 +23,7 @@ struct LogRecord {
     int64_t error_code = 0;
     std::string error_name;
     std::string trace_path;
+    std::string build_log;
 };
 
 struct KernelTrace {
