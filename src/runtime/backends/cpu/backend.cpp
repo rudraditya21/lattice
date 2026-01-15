@@ -211,7 +211,8 @@ StatusOr<Allocation> CpuAllocateFromPool(MemoryPool* pool,
         WriteCanary(static_cast<char*>(user_ptr) + bytes);
     }
     alloc.ptr = user_ptr;
-    alloc.device_handle = raw;
+    alloc.device_handle = reinterpret_cast<void*>(
+        block.device_ptr ? block.device_ptr : block.handle);
     alloc.from_pool = block.from_pool;
 #ifdef __linux__
     if (numa_node >= 0 && raw && block.bytes > 0) {

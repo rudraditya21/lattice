@@ -98,6 +98,7 @@ bool HipLoader::Load(std::string* error) {
     ok &= LoadSymbol(driver, "hipMalloc", &hipMalloc, error);
     ok &= LoadSymbol(driver, "hipFree", &hipFree, error);
     LoadOptional(driver, "hipHostMalloc", &hipHostMalloc);
+    LoadOptional(driver, "hipHostGetDevicePointer", &hipHostGetDevicePointer);
     LoadOptional(driver, "hipHostFree", &hipHostFree);
     LoadOptional(driver, "hipMemset", &hipMemset);
     ok &= LoadSymbol(driver, "hipMemcpy", &hipMemcpy, error);

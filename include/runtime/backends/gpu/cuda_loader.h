@@ -45,6 +45,9 @@ using CuEventElapsedTime = CUresult (*)(float*, CUevent, CUevent);
 using CuMemAlloc = CUresult (*)(CUdeviceptr*, size_t);
 using CuMemFree = CUresult (*)(CUdeviceptr);
 using CuMemHostAlloc = CUresult (*)(void**, size_t, unsigned int);
+using CuMemHostGetDevicePointer = CUresult (*)(CUdeviceptr*,
+                                               void*,
+                                               unsigned int);
 using CuMemFreeHost = CUresult (*)(void*);
 using CuMemsetD8 = CUresult (*)(CUdeviceptr, unsigned char, size_t);
 using CuMemcpyHtoD = CUresult (*)(CUdeviceptr, const void*, size_t);
@@ -115,6 +118,7 @@ struct CudaLoader {
     CuMemAlloc cuMemAlloc = nullptr;
     CuMemFree cuMemFree = nullptr;
     CuMemHostAlloc cuMemHostAlloc = nullptr;
+    CuMemHostGetDevicePointer cuMemHostGetDevicePointer = nullptr;
     CuMemFreeHost cuMemFreeHost = nullptr;
     CuMemsetD8 cuMemsetD8 = nullptr;
     CuMemcpyHtoD cuMemcpyHtoD = nullptr;

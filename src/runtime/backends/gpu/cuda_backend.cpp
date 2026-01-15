@@ -117,6 +117,26 @@ std::vector<std::string> SplitOptions(const std::string& options) {
     return out;
 }
 
+bool IsTrueEnvValue(const char* value) {
+    if (!value)
+        return false;
+    std::string v(value);
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return v == "1" || v == "true" || v == "yes" || v == "on";
+}
+
+bool UseUnifiedPinnedMemory() {
+    if (const char* env = std::getenv("LATTICE_CUDA_PINNED_POOL_UNIFIED")) {
+        return IsTrueEnvValue(env);
+    }
+    if (const char* env = std::getenv("LATTICE_PINNED_POOL_UNIFIED")) {
+        return IsTrueEnvValue(env);
+    }
+    return true;
+}
+
 DeviceMetadata BuildDeviceMetadata(const CudaDeviceDesc& desc,
                                    const DeviceCapabilities& caps) {
     DeviceMetadata meta;
@@ -145,6 +165,7 @@ CacheStore& CudaCacheStore() {
 }
 
 constexpr unsigned int kCuMemHostAllocPortable = 0x01;
+constexpr unsigned int kCuMemHostAllocDevicemap = 0x02;
 constexpr unsigned int kCuEventDisableTiming = 0x02;
 
 MemoryPoolConfig CudaDevicePoolConfig() {
@@ -442,7 +463,8 @@ StatusOr<Allocation> CudaBackend::AllocatePinned(size_t bytes,
     auto block = block_or.value();
     Allocation alloc;
     alloc.ptr = block.host_ptr;
-    alloc.device_handle = reinterpret_cast<void*>(block.handle);
+    alloc.device_handle = reinterpret_cast<void*>(
+        block.device_ptr ? block.device_ptr : block.handle);
     alloc.bytes = bytes;
     alloc.alignment = alignment;
     alloc.from_pool = block.from_pool;
@@ -1249,16 +1271,33 @@ MemoryPool* CudaBackend::PinnedPool() const {
                               "cuMemHostAlloc unavailable");
         }
         void* host = nullptr;
+        const bool want_unified = UseUnifiedPinnedMemory();
+        const bool can_map = want_unified && loader_.cuMemHostGetDevicePointer;
         unsigned int flags = kCuMemHostAllocPortable;
+        if (can_map)
+            flags |= kCuMemHostAllocDevicemap;
         gpu::CUresult err = loader_.cuMemHostAlloc(&host, bytes, flags);
+        if ((err != gpu::CUDA_SUCCESS || !host) && can_map) {
+            flags = kCuMemHostAllocPortable;
+            err = loader_.cuMemHostAlloc(&host, bytes, flags);
+        }
         if (err != gpu::CUDA_SUCCESS || !host) {
             return CudaStatus(StatusCode::kInternal, BackendErrorKind::kMemory,
                               "cuMemHostAlloc failed: " +
                                   gpu::CudaErrorString(err, &loader_));
         }
+        gpu::CUdeviceptr device_ptr = 0;
+        if (can_map && loader_.cuMemHostGetDevicePointer) {
+            gpu::CUresult dev_err =
+                loader_.cuMemHostGetDevicePointer(&device_ptr, host, 0);
+            if (dev_err != gpu::CUDA_SUCCESS) {
+                device_ptr = 0;
+            }
+        }
         PoolBlock block;
         block.key = reinterpret_cast<uintptr_t>(host);
         block.handle = reinterpret_cast<uintptr_t>(host);
+        block.device_ptr = static_cast<uintptr_t>(device_ptr);
         block.host_ptr = host;
         block.bytes = bytes;
         block.alignment = alignment;

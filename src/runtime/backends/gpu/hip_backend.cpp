@@ -113,6 +113,26 @@ std::vector<std::string> SplitOptions(const std::string& options) {
     return out;
 }
 
+bool IsTrueEnvValue(const char* value) {
+    if (!value)
+        return false;
+    std::string v(value);
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return v == "1" || v == "true" || v == "yes" || v == "on";
+}
+
+bool UseUnifiedPinnedMemory() {
+    if (const char* env = std::getenv("LATTICE_HIP_PINNED_POOL_UNIFIED")) {
+        return IsTrueEnvValue(env);
+    }
+    if (const char* env = std::getenv("LATTICE_PINNED_POOL_UNIFIED")) {
+        return IsTrueEnvValue(env);
+    }
+    return true;
+}
+
 DeviceMetadata BuildDeviceMetadata(const HipDeviceDesc& desc,
                                    const DeviceCapabilities& caps) {
     DeviceMetadata meta;
@@ -159,6 +179,7 @@ MemoryPoolConfig HipPinnedPoolConfig() {
 }
 
 constexpr unsigned int kHipEventDisableTiming = 0x02;
+constexpr unsigned int kHipHostMallocMapped = 0x02;
 
 class HipEvent final : public Event {
    public:
@@ -441,7 +462,8 @@ StatusOr<Allocation> HipBackend::AllocatePinned(size_t bytes,
     auto block = block_or.value();
     Allocation alloc;
     alloc.ptr = block.host_ptr;
-    alloc.device_handle = reinterpret_cast<void*>(block.handle);
+    alloc.device_handle = reinterpret_cast<void*>(
+        block.device_ptr ? block.device_ptr : block.handle);
     alloc.bytes = bytes;
     alloc.alignment = alignment;
     alloc.from_pool = block.from_pool;
@@ -1232,15 +1254,30 @@ MemoryPool* HipBackend::PinnedPool() const {
                              "hipHostMalloc unavailable");
         }
         void* host = nullptr;
-        gpu::hipError_t err = loader_.hipHostMalloc(&host, bytes, 0);
+        const bool want_unified = UseUnifiedPinnedMemory();
+        const bool can_map = want_unified && loader_.hipHostGetDevicePointer;
+        unsigned int flags = can_map ? kHipHostMallocMapped : 0u;
+        gpu::hipError_t err = loader_.hipHostMalloc(&host, bytes, flags);
+        if ((err != gpu::hipSuccess || !host) && can_map) {
+            err = loader_.hipHostMalloc(&host, bytes, 0);
+        }
         if (err != gpu::hipSuccess || !host) {
             return HipStatus(
                 StatusCode::kInternal, BackendErrorKind::kMemory,
                 "hipHostMalloc failed: " + gpu::HipErrorString(err, &loader_));
         }
+        void* device_ptr = nullptr;
+        if (can_map && loader_.hipHostGetDevicePointer) {
+            gpu::hipError_t dev_err =
+                loader_.hipHostGetDevicePointer(&device_ptr, host, 0);
+            if (dev_err != gpu::hipSuccess) {
+                device_ptr = nullptr;
+            }
+        }
         PoolBlock block;
         block.key = reinterpret_cast<uintptr_t>(host);
         block.handle = reinterpret_cast<uintptr_t>(host);
+        block.device_ptr = reinterpret_cast<uintptr_t>(device_ptr);
         block.host_ptr = host;
         block.bytes = bytes;
         block.alignment = alignment;

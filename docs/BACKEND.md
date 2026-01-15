@@ -49,9 +49,11 @@
   - `LATTICE_PINNED_POOL_SECURE_SCRUB=1` zeros pinned buffers on release using secure wiping.
   - `LATTICE_PINNED_POOL_ZERO_ON_ALLOC=1` zeros pinned buffers on allocation (fresh or reused).
   - `LATTICE_PINNED_POOL_SCRUB_ON_ALLOC=1` zeros pooled pinned buffers on reuse.
+  - `LATTICE_PINNED_POOL_UNIFIED=1` attempts device-mapped unified pinned memory when supported.
   - Per-backend overrides: `LATTICE_OPENCL_DEVICE_POOL_*`, `LATTICE_CUDA_DEVICE_POOL_*`,
     `LATTICE_HIP_DEVICE_POOL_*`, `LATTICE_METAL_DEVICE_POOL_*` and `LATTICE_OPENCL_PINNED_POOL_*`,
-    `LATTICE_CUDA_PINNED_POOL_*`, `LATTICE_HIP_PINNED_POOL_*`, `LATTICE_METAL_PINNED_POOL_*`.
+    `LATTICE_CUDA_PINNED_POOL_*`, `LATTICE_HIP_PINNED_POOL_*`, `LATTICE_METAL_PINNED_POOL_*`,
+    `LATTICE_CUDA_PINNED_POOL_UNIFIED`, `LATTICE_HIP_PINNED_POOL_UNIFIED`.
 - Structured logging is available via:
   - `LATTICE_LOG_LEVEL=error|warn|info|debug|trace` (enables structured logs).
   - `LATTICE_LOG_FORMAT=text|json` (default `text`).

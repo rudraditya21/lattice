@@ -373,7 +373,8 @@ StatusOr<Allocation> MetalBackend::AllocatePinned(size_t bytes,
     auto block = block_or.value();
     Allocation alloc;
     alloc.ptr = block.host_ptr;
-    alloc.device_handle = reinterpret_cast<void*>(block.handle);
+    alloc.device_handle = reinterpret_cast<void*>(
+        block.device_ptr ? block.device_ptr : block.handle);
     alloc.bytes = bytes;
     alloc.alignment = alignment;
     alloc.from_pool = block.from_pool;

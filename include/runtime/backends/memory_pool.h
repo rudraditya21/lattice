@@ -35,6 +35,7 @@ void AccumulateMemoryPoolStats(MemoryPoolStats* dst,
 struct PoolBlock {
     uintptr_t key = 0;
     uintptr_t handle = 0;
+    uintptr_t device_ptr = 0;
     void* host_ptr = nullptr;
     size_t bytes = 0;
     size_t requested_bytes = 0;

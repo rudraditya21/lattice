@@ -51,6 +51,7 @@ using HipEventElapsedTime = hipError_t (*)(float*, hipEvent_t, hipEvent_t);
 using HipMalloc = hipError_t (*)(void**, size_t);
 using HipFree = hipError_t (*)(void*);
 using HipHostMalloc = hipError_t (*)(void**, size_t, unsigned int);
+using HipHostGetDevicePointer = hipError_t (*)(void**, void*, unsigned int);
 using HipHostFree = hipError_t (*)(void*);
 using HipMemset = hipError_t (*)(void*, int, size_t);
 using HipMemcpy = hipError_t (*)(void*, const void*, size_t, hipMemcpyKind);
@@ -119,6 +120,7 @@ struct HipLoader {
     HipMalloc hipMalloc = nullptr;
     HipFree hipFree = nullptr;
     HipHostMalloc hipHostMalloc = nullptr;
+    HipHostGetDevicePointer hipHostGetDevicePointer = nullptr;
     HipHostFree hipHostFree = nullptr;
     HipMemset hipMemset = nullptr;
     HipMemcpy hipMemcpy = nullptr;
