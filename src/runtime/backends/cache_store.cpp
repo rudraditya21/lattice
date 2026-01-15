@@ -13,7 +13,9 @@ namespace lattice::runtime {
 namespace {
 
 constexpr int kCacheIndexVersion = 1;
+constexpr uint32_t kCacheBinaryVersion = 1;
 constexpr int kDeviceMetaVersion = 1;
+constexpr int kDeviceIndexVersion = 1;
 
 uint64_t NowSeconds() {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -170,6 +172,66 @@ bool WriteFileAtomically(const std::filesystem::path& path,
     return true;
 }
 
+std::string DeviceIdentityKey(const DeviceMetadata& meta) {
+    std::ostringstream ss;
+    ss << meta.backend << "|" << meta.vendor << "|" << meta.name << "|"
+       << meta.platform_name << "|" << meta.platform_vendor << "|"
+       << meta.index;
+    return Hex64(Fnv1a64(ss.str()));
+}
+
+bool ReadDeviceIndex(const std::filesystem::path& path,
+                     std::unordered_map<std::string, std::string>* out,
+                     std::string* error) {
+    if (!out)
+        return false;
+    out->clear();
+    if (!std::filesystem::exists(path))
+        return true;
+    std::ifstream in(path);
+    if (!in) {
+        if (error)
+            *error = "Failed to open device index: " + path.string();
+        return false;
+    }
+    std::string line;
+    if (!std::getline(in, line))
+        return false;
+    const auto header = SplitTokens(line);
+    if (header.size() < 2 || header[0] != "lattice-device-index")
+        return false;
+    const std::string expected_version =
+        "v" + std::to_string(kDeviceIndexVersion);
+    if (header[1] != expected_version)
+        return false;
+    while (std::getline(in, line)) {
+        if (line.empty())
+            continue;
+        if (line.rfind("device", 0) != 0)
+            continue;
+        const auto kv = ParseKeyValueTokens(line);
+        const auto id_it = kv.find("id");
+        const auto fp_it = kv.find("fingerprint");
+        if (id_it == kv.end() || fp_it == kv.end())
+            continue;
+        (*out)[id_it->second] = fp_it->second;
+    }
+    return true;
+}
+
+bool WriteDeviceIndex(
+    const std::filesystem::path& path,
+    const std::unordered_map<std::string, std::string>& entries,
+    std::string* error) {
+    std::ostringstream out;
+    out << "lattice-device-index v" << kDeviceIndexVersion << "\n";
+    for (const auto& kv : entries) {
+        out << "device id=" << kv.first << " fingerprint=" << kv.second << "\n";
+    }
+    const std::string content = out.str();
+    return WriteFileAtomically(path, content.data(), content.size(), error);
+}
+
 }  // namespace
 
 CachePolicy LoadCachePolicyFromEnv() {
@@ -206,14 +268,26 @@ std::filesystem::path DefaultCacheRoot() {
     return std::filesystem::current_path() / ".lattice_cache";
 }
 
+uint32_t DefaultCacheVersion() {
+    if (const char* env = std::getenv("LATTICE_CACHE_VERSION")) {
+        uint64_t value = 0;
+        if (ParseUint64(env, &value)) {
+            return static_cast<uint32_t>(value);
+        }
+    }
+    return kCacheBinaryVersion;
+}
+
 CacheStore::CacheStore(const std::string& backend,
                        CachePolicy policy,
-                       std::filesystem::path root)
+                       std::filesystem::path root,
+                       uint32_t cache_version)
     : backend_(backend),
       policy_(policy),
       root_(std::move(root)),
       backend_dir_(root_ / backend_),
-      index_path_(backend_dir_ / "index.txt") {}
+      index_path_(backend_dir_ / "index.txt"),
+      cache_version_(cache_version) {}
 
 bool CacheStore::ReadBinary(const CacheKey& key,
                             std::string* out,
@@ -302,6 +376,28 @@ void CacheStore::Invalidate(const CacheKey& key) {
     std::filesystem::remove(EntryPath(key.key), ec);
 }
 
+void CacheStore::InvalidateFingerprint(const std::string& fingerprint) {
+    if (!policy_.enabled)
+        return;
+    if (fingerprint.empty())
+        return;
+    std::lock_guard<std::mutex> lock(mu_);
+    EnsureLoaded();
+    bool removed = false;
+    for (auto it = entries_.begin(); it != entries_.end();) {
+        if (it->second.fingerprint == fingerprint) {
+            std::error_code ec;
+            std::filesystem::remove(EntryPath(it->first), ec);
+            it = entries_.erase(it);
+            removed = true;
+            continue;
+        }
+        ++it;
+    }
+    if (removed)
+        FlushIndex(nullptr);
+}
+
 void CacheStore::Prune() {
     if (!policy_.enabled)
         return;
@@ -342,11 +438,18 @@ bool CacheStore::LoadIndex(std::string* error) {
         "v" + std::to_string(kCacheIndexVersion);
     if (header[1] != expected_version)
         return false;
-    if (header[2].rfind("backend=", 0) != 0)
+    const auto header_kv = ParseKeyValueTokens(line);
+    auto it = header_kv.find("backend");
+    if (it == header_kv.end())
         return false;
-    const std::string backend =
-        header[2].substr(std::string("backend=").size());
+    const std::string backend = it->second;
     if (backend != backend_)
+        return false;
+    it = header_kv.find("cache_version");
+    if (it == header_kv.end())
+        return false;
+    const uint64_t version = ParseUint64Value(it->second, 0);
+    if (version != cache_version_)
         return false;
     while (std::getline(in, line)) {
         if (line.empty())
@@ -391,7 +494,8 @@ bool CacheStore::FlushIndex(std::string* error) {
     }
     std::ostringstream out;
     out << "lattice-cache-index v" << kCacheIndexVersion
-        << " backend=" << backend_ << "\n";
+        << " backend=" << backend_ << " cache_version=" << cache_version_
+        << "\n";
     for (const auto& kv : entries_) {
         const Entry& entry = kv.second;
         out << "entry"
@@ -481,13 +585,37 @@ std::string DeviceFingerprint(const DeviceMetadata& meta) {
 }
 
 DeviceMetadataStore::DeviceMetadataStore(std::filesystem::path root)
-    : root_(std::move(root)), device_dir_(root_ / "devices") {}
+    : root_(std::move(root)),
+      device_dir_(root_ / "devices"),
+      index_path_(device_dir_ / "index.txt") {}
 
 bool DeviceMetadataStore::Write(const DeviceMetadata& meta,
-                                std::string* error) {
+                                std::string* error,
+                                std::string* previous_fingerprint) {
     if (!EnsureDir(error))
         return false;
+    if (previous_fingerprint)
+        previous_fingerprint->clear();
+
+    const std::string identity = DeviceIdentityKey(meta);
     const std::string fingerprint = DeviceFingerprint(meta);
+
+    std::unordered_map<std::string, std::string> index;
+    std::string index_error;
+    if (!ReadDeviceIndex(index_path_, &index, &index_error)) {
+        index.clear();
+    }
+
+    std::string old_fingerprint;
+    auto it = index.find(identity);
+    if (it != index.end())
+        old_fingerprint = it->second;
+    if (previous_fingerprint && !old_fingerprint.empty() &&
+        old_fingerprint != fingerprint) {
+        *previous_fingerprint = old_fingerprint;
+    }
+    index[identity] = fingerprint;
+
     const std::filesystem::path path = MetaPath(fingerprint);
     std::ostringstream out;
     out << "lattice-device-meta v" << kDeviceMetaVersion << "\n";
@@ -510,7 +638,25 @@ bool DeviceMetadataStore::Write(const DeviceMetadata& meta,
     out << "fp16=" << meta.fp16 << "\n";
     out << "fp64=" << meta.fp64 << "\n";
     const std::string content = out.str();
-    return WriteFileAtomically(path, content.data(), content.size(), error);
+    if (!WriteFileAtomically(path, content.data(), content.size(), error))
+        return false;
+    if (!WriteDeviceIndex(index_path_, index, error))
+        return false;
+
+    if (!old_fingerprint.empty() && old_fingerprint != fingerprint) {
+        bool still_used = false;
+        for (const auto& kv : index) {
+            if (kv.second == old_fingerprint) {
+                still_used = true;
+                break;
+            }
+        }
+        if (!still_used) {
+            std::error_code ec;
+            std::filesystem::remove(MetaPath(old_fingerprint), ec);
+        }
+    }
+    return true;
 }
 
 bool DeviceMetadataStore::Read(const std::string& fingerprint,

@@ -1270,14 +1270,19 @@ Status OpenCLBackend::EnsureInitialized() const {
     {
         DeviceMetadataStore meta_store;
         std::string meta_error;
+        CacheStore& cache_store = OpenclCacheStore();
         for (const auto& dev : devices_) {
             const DeviceMetadata meta = BuildDeviceMetadata(dev.desc, dev.caps);
-            if (!meta_store.Write(meta, &meta_error)) {
+            std::string previous_fingerprint;
+            if (!meta_store.Write(meta, &meta_error, &previous_fingerprint)) {
                 LogBackend({LogLevel::kWarn, BackendType::kOpenCL,
                             BackendErrorKind::kIo,
                             "metadata persist failed: " + meta_error,
                             "metadata", dev.desc.index, dev.desc.name});
                 meta_error.clear();
+            } else if (!previous_fingerprint.empty() &&
+                       previous_fingerprint != dev.fingerprint) {
+                cache_store.InvalidateFingerprint(previous_fingerprint);
             }
         }
     }

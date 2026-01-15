@@ -20,6 +20,7 @@ struct CachePolicy {
 
 CachePolicy LoadCachePolicyFromEnv();
 std::filesystem::path DefaultCacheRoot();
+uint32_t DefaultCacheVersion();
 
 struct CacheKey {
     std::string key;
@@ -30,7 +31,8 @@ class CacheStore {
    public:
     CacheStore(const std::string& backend,
                CachePolicy policy = LoadCachePolicyFromEnv(),
-               std::filesystem::path root = DefaultCacheRoot());
+               std::filesystem::path root = DefaultCacheRoot(),
+               uint32_t cache_version = DefaultCacheVersion());
 
     bool Enabled() const { return policy_.enabled; }
     bool ReadBinary(const CacheKey& key, std::string* out, std::string* error);
@@ -39,6 +41,7 @@ class CacheStore {
                      size_t size,
                      std::string* error);
     void Invalidate(const CacheKey& key);
+    void InvalidateFingerprint(const std::string& fingerprint);
     void Prune();
 
    private:
@@ -63,6 +66,7 @@ class CacheStore {
     std::filesystem::path root_;
     std::filesystem::path backend_dir_;
     std::filesystem::path index_path_;
+    uint32_t cache_version_ = 0;
     bool loaded_ = false;
     std::unordered_map<std::string, Entry> entries_;
     std::mutex mu_;
@@ -96,7 +100,9 @@ class DeviceMetadataStore {
     explicit DeviceMetadataStore(
         std::filesystem::path root = DefaultCacheRoot());
 
-    bool Write(const DeviceMetadata& meta, std::string* error);
+    bool Write(const DeviceMetadata& meta,
+               std::string* error,
+               std::string* previous_fingerprint = nullptr);
     bool Read(const std::string& fingerprint,
               DeviceMetadata* meta,
               std::string* error);
@@ -107,6 +113,7 @@ class DeviceMetadataStore {
 
     std::filesystem::path root_;
     std::filesystem::path device_dir_;
+    std::filesystem::path index_path_;
 };
 
 }  // namespace lattice::runtime

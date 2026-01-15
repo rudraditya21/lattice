@@ -1045,7 +1045,8 @@ Status MetalBackend::EnsureInitialized() const {
         std::string meta_error;
         for (const auto& dev : devices_) {
             const DeviceMetadata meta = BuildDeviceMetadata(dev.desc, dev.caps);
-            if (!meta_store.Write(meta, &meta_error)) {
+            std::string previous_fingerprint;
+            if (!meta_store.Write(meta, &meta_error, &previous_fingerprint)) {
                 LogBackend({LogLevel::kWarn, BackendType::kMetal,
                             BackendErrorKind::kIo,
                             "metadata persist failed: " + meta_error,

@@ -41,7 +41,8 @@ void WriteIndexFile(const std::filesystem::path& path, const std::string& backen
                     const std::string& key, const std::string& fingerprint, uint64_t accessed,
                     uint64_t created = 0, uint64_t size = 3) {
   std::ofstream out(path);
-  out << "lattice-cache-index v1 backend=" << backend << "\n";
+  out << "lattice-cache-index v1 backend=" << backend
+      << " cache_version=" << rt::DefaultCacheVersion() << "\n";
   out << "entry key=" << key << " fingerprint=" << fingerprint << " size=" << size
       << " created=" << created << " accessed=" << accessed << "\n";
 }
@@ -70,6 +71,13 @@ void RunCacheStoreTests(TestContext* ctx) {
   std::string out_miss;
   bool miss = store.ReadBinary(mismatch, &out_miss, &error);
   ExpectTrue(!miss, "cache_store_fingerprint_miss", ctx);
+
+  rt::CacheKey old_key{"old_key", "old_fp"};
+  store.WriteBinary(old_key, "xyz", 3, &error);
+  store.InvalidateFingerprint("old_fp");
+  std::string out_invalidate;
+  bool invalidated = store.ReadBinary(old_key, &out_invalidate, &error);
+  ExpectTrue(!invalidated, "cache_store_invalidate_fingerprint", ctx);
 
   rt::CachePolicy env_policy = rt::LoadCachePolicyFromEnv();
   ExpectTrue(env_policy.enabled, "cache_policy_default_enabled", ctx);
@@ -179,6 +187,13 @@ void RunCacheStoreTests(TestContext* ctx) {
   bool read = meta_store.Read(fingerprint, &loaded, &meta_error);
   ExpectTrue(wrote && read, "device_meta_roundtrip", ctx);
   ExpectTrue(loaded.name == meta.name && loaded.vendor == meta.vendor, "device_meta_fields", ctx);
+
+  rt::DeviceMetadata meta_update = meta;
+  meta_update.driver_version = "2.0";
+  std::string previous_fingerprint;
+  bool wrote_update = meta_store.Write(meta_update, &meta_error, &previous_fingerprint);
+  ExpectTrue(wrote_update, "device_meta_update_write", ctx);
+  ExpectTrue(previous_fingerprint == fingerprint, "device_meta_previous_fingerprint", ctx);
 
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
