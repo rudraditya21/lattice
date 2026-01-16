@@ -127,6 +127,8 @@ class Stream {
     virtual void Submit(std::function<void()> fn) = 0;
     virtual void Synchronize() = 0;
     virtual void AddDependency(const std::shared_ptr<Event>& ev) = 0;
+    virtual StatusOr<std::shared_ptr<Event>> CreateEvent() const = 0;
+    virtual void RecordEvent(const std::shared_ptr<Event>& ev) = 0;
     virtual void SetPriority(int priority) = 0;  // higher means higher priority
 };
 

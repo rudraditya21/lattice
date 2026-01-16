@@ -413,32 +413,6 @@ class ThreadPool {
     }
 };
 
-class CpuStream final : public Stream {
-   public:
-    void Submit(std::function<void()> fn) override {
-        for (auto& dep : deps_) {
-            dep->Wait();
-        }
-        // Tag task with stream priority to guide scheduler.
-        futures_.emplace_back(ThreadPool::Instance().Submit(std::move(fn)));
-    }
-    void Synchronize() override {
-        for (auto& f : futures_)
-            f.get();
-        futures_.clear();
-        deps_.clear();
-    }
-    void AddDependency(const std::shared_ptr<Event>& ev) override {
-        deps_.push_back(ev);
-    }
-    void SetPriority(int priority) override { priority_ = priority; }
-
-   private:
-    std::vector<std::future<void>> futures_;
-    std::vector<std::shared_ptr<Event>> deps_;
-    int priority_ = 0;
-};
-
 class CpuEvent final : public Event {
    public:
     void Record() override {
@@ -467,6 +441,64 @@ class CpuEvent final : public Event {
     std::future<void> future_;
     std::chrono::steady_clock::time_point timestamp_{};
     bool has_timestamp_ = false;
+};
+
+class CpuStream final : public Stream {
+   public:
+    void Submit(std::function<void()> fn) override {
+        std::vector<std::shared_ptr<Event>> deps;
+        std::shared_future<void> prev;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            deps.swap(deps_);
+            prev = tail_;
+        }
+        for (auto& dep : deps) {
+            dep->Wait();
+        }
+        if (prev.valid()) {
+            prev.wait();
+        }
+        // Tag task with stream priority to guide scheduler.
+        std::shared_future<void> fut =
+            ThreadPool::Instance().Submit(std::move(fn)).share();
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            tail_ = fut;
+        }
+    }
+    void Synchronize() override {
+        std::shared_future<void> tail;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            tail = tail_;
+            deps_.clear();
+        }
+        if (tail.valid()) {
+            tail.wait();
+        }
+    }
+    void AddDependency(const std::shared_ptr<Event>& ev) override {
+        if (!ev)
+            return;
+        std::lock_guard<std::mutex> lock(mu_);
+        deps_.push_back(ev);
+    }
+    StatusOr<std::shared_ptr<Event>> CreateEvent() const override {
+        return std::make_shared<CpuEvent>();
+    }
+    void RecordEvent(const std::shared_ptr<Event>& ev) override {
+        if (!ev)
+            return;
+        Submit([ev]() { ev->Record(); });
+    }
+    void SetPriority(int priority) override { priority_ = priority; }
+
+   private:
+    mutable std::mutex mu_;
+    std::vector<std::shared_ptr<Event>> deps_;
+    std::shared_future<void> tail_;
+    int priority_ = 0;
 };
 
 BackendCapabilities CpuCaps() {

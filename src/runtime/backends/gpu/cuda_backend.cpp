@@ -255,8 +255,19 @@ class CudaEvent final : public Event {
 
 class CudaStream final : public Stream {
    public:
-    CudaStream(const gpu::CudaLoader* loader, gpu::CUstream stream)
-        : loader_(loader), stream_(stream) {}
+    CudaStream(const gpu::CudaLoader* loader,
+               gpu::CUstream stream,
+               bool timing_enabled,
+               bool owns_stream)
+        : loader_(loader),
+          stream_(stream),
+          timing_enabled_(timing_enabled),
+          owns_stream_(owns_stream) {}
+    ~CudaStream() override {
+        if (owns_stream_ && loader_ && loader_->cuStreamDestroy && stream_) {
+            loader_->cuStreamDestroy(stream_);
+        }
+    }
 
     void Submit(std::function<void()> fn) override {
         for (auto& dep : deps_) {
@@ -284,12 +295,27 @@ class CudaStream final : public Stream {
         }
         deps_.push_back(ev);
     }
+    StatusOr<std::shared_ptr<Event>> CreateEvent() const override {
+        if (!stream_) {
+            return CudaStatus(StatusCode::kUnavailable,
+                              BackendErrorKind::kContext,
+                              "CUDA stream unavailable");
+        }
+        return std::make_shared<CudaEvent>(loader_, stream_, timing_enabled_);
+    }
+    void RecordEvent(const std::shared_ptr<Event>& ev) override {
+        if (!ev)
+            return;
+        Submit([ev]() { ev->Record(); });
+    }
 
     void SetPriority(int priority) override { priority_ = priority; }
 
    private:
     const gpu::CudaLoader* loader_ = nullptr;
     gpu::CUstream stream_ = nullptr;
+    bool timing_enabled_ = false;
+    bool owns_stream_ = false;
     int priority_ = 0;
     std::vector<std::shared_ptr<Event>> deps_;
 };
@@ -382,7 +408,24 @@ StatusOr<std::shared_ptr<Stream>> CudaBackend::CreateStream() const {
                           BackendErrorKind::kDiscovery,
                           "No CUDA devices available");
     }
-    return std::make_shared<CudaStream>(&loader_, devices_[0].stream);
+    const auto& dev = devices_[0];
+    if (loader_.cuCtxSetCurrent && dev.context) {
+        loader_.cuCtxSetCurrent(dev.context);
+    }
+    gpu::CUstream stream = nullptr;
+    bool owns_stream = false;
+    if (loader_.cuStreamCreate) {
+        if (loader_.cuStreamCreate(&stream, 0) == gpu::CUDA_SUCCESS) {
+            owns_stream = true;
+        }
+    }
+    if (!stream) {
+        stream = dev.stream;
+        owns_stream = false;
+    }
+    ExecutionConfig config = GetExecutionConfig();
+    return std::make_shared<CudaStream>(&loader_, stream,
+                                        config.enable_profiling, owns_stream);
 }
 
 StatusOr<std::shared_ptr<Event>> CudaBackend::CreateEvent() const {

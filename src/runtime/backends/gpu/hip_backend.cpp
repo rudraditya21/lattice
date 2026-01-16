@@ -257,8 +257,19 @@ class HipEvent final : public Event {
 
 class HipStream final : public Stream {
    public:
-    HipStream(const gpu::HipLoader* loader, gpu::hipStream_t stream)
-        : loader_(loader), stream_(stream) {}
+    HipStream(const gpu::HipLoader* loader,
+              gpu::hipStream_t stream,
+              bool timing_enabled,
+              bool owns_stream)
+        : loader_(loader),
+          stream_(stream),
+          timing_enabled_(timing_enabled),
+          owns_stream_(owns_stream) {}
+    ~HipStream() override {
+        if (owns_stream_ && loader_ && loader_->hipStreamDestroy && stream_) {
+            loader_->hipStreamDestroy(stream_);
+        }
+    }
 
     void Submit(std::function<void()> fn) override {
         for (auto& dep : deps_) {
@@ -286,12 +297,27 @@ class HipStream final : public Stream {
         }
         deps_.push_back(ev);
     }
+    StatusOr<std::shared_ptr<Event>> CreateEvent() const override {
+        if (!stream_) {
+            return HipStatus(StatusCode::kUnavailable,
+                             BackendErrorKind::kContext,
+                             "HIP stream unavailable");
+        }
+        return std::make_shared<HipEvent>(loader_, stream_, timing_enabled_);
+    }
+    void RecordEvent(const std::shared_ptr<Event>& ev) override {
+        if (!ev)
+            return;
+        Submit([ev]() { ev->Record(); });
+    }
 
     void SetPriority(int priority) override { priority_ = priority; }
 
    private:
     const gpu::HipLoader* loader_ = nullptr;
     gpu::hipStream_t stream_ = nullptr;
+    bool timing_enabled_ = false;
+    bool owns_stream_ = false;
     int priority_ = 0;
     std::vector<std::shared_ptr<Event>> deps_;
 };
@@ -383,7 +409,24 @@ StatusOr<std::shared_ptr<Stream>> HipBackend::CreateStream() const {
         return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
                          "No HIP devices available");
     }
-    return std::make_shared<HipStream>(&loader_, devices_[0].stream);
+    const auto& dev = devices_[0];
+    if (loader_.hipCtxSetCurrent && dev.context) {
+        loader_.hipCtxSetCurrent(dev.context);
+    }
+    gpu::hipStream_t stream = nullptr;
+    bool owns_stream = false;
+    if (loader_.hipStreamCreate) {
+        if (loader_.hipStreamCreate(&stream) == gpu::hipSuccess) {
+            owns_stream = true;
+        }
+    }
+    if (!stream) {
+        stream = dev.stream;
+        owns_stream = false;
+    }
+    ExecutionConfig config = GetExecutionConfig();
+    return std::make_shared<HipStream>(&loader_, stream,
+                                       config.enable_profiling, owns_stream);
 }
 
 StatusOr<std::shared_ptr<Event>> HipBackend::CreateEvent() const {

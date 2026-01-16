@@ -290,8 +290,16 @@ class OpenCLEvent final : public Event {
 
 class OpenCLStream final : public Stream {
    public:
-    explicit OpenCLStream(const OpenCLLoader* loader, cl_command_queue queue)
-        : loader_(loader), queue_(queue) {}
+    OpenCLStream(const OpenCLLoader* loader,
+                 cl_command_queue queue,
+                 bool owns_queue)
+        : loader_(loader), queue_(queue), owns_queue_(owns_queue) {}
+    ~OpenCLStream() override {
+        if (owns_queue_ && loader_ && loader_->clReleaseCommandQueue &&
+            queue_) {
+            loader_->clReleaseCommandQueue(queue_);
+        }
+    }
     void Submit(std::function<void()> fn) override {
         for (auto& dep : deps_) {
             dep->Wait();
@@ -322,11 +330,25 @@ class OpenCLStream final : public Stream {
         }
         deps_.push_back(ev);
     }
+    StatusOr<std::shared_ptr<Event>> CreateEvent() const override {
+        if (!queue_) {
+            return OpenclStatus(StatusCode::kUnavailable,
+                                BackendErrorKind::kContext,
+                                "OpenCL queue unavailable");
+        }
+        return std::make_shared<OpenCLEvent>(loader_, queue_);
+    }
+    void RecordEvent(const std::shared_ptr<Event>& ev) override {
+        if (!ev)
+            return;
+        Submit([ev]() { ev->Record(); });
+    }
     void SetPriority(int priority) override { priority_ = priority; }
 
    private:
     const OpenCLLoader* loader_ = nullptr;
     cl_command_queue queue_ = nullptr;
+    bool owns_queue_ = false;
     int priority_ = 0;
     std::vector<std::shared_ptr<Event>> deps_;
 };
@@ -426,7 +448,32 @@ StatusOr<std::shared_ptr<Stream>> OpenCLBackend::CreateStream() const {
                             BackendErrorKind::kDiscovery,
                             "No OpenCL devices available");
     }
-    return std::make_shared<OpenCLStream>(&loader_, devices_[0].queue);
+    const auto& dev = devices_[0];
+    cl_command_queue queue = nullptr;
+    bool owns_queue = false;
+    ExecutionConfig config = GetExecutionConfig();
+    cl_command_queue_properties props =
+        config.enable_profiling ? CL_QUEUE_PROFILING_ENABLE : 0;
+    if (loader_.clCreateCommandQueue) {
+        cl_int err = CL_SUCCESS;
+        queue =
+            loader_.clCreateCommandQueue(dev.context, dev.device, props, &err);
+        if (err == CL_SUCCESS && queue) {
+            owns_queue = true;
+        } else {
+            queue = nullptr;
+        }
+    }
+    if (!queue) {
+        queue = dev.queue;
+        owns_queue = false;
+    }
+    if (!queue) {
+        return OpenclStatus(StatusCode::kUnavailable,
+                            BackendErrorKind::kContext,
+                            "OpenCL queue unavailable");
+    }
+    return std::make_shared<OpenCLStream>(&loader_, queue, owns_queue);
 }
 
 StatusOr<std::shared_ptr<Event>> OpenCLBackend::CreateEvent() const {

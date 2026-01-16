@@ -8,9 +8,9 @@
 ## Stream/Queue Semantics
 - Ordering: each `Stream` is FIFO. Submissions to the same stream are executed in order. There is no implicit ordering between different streams.
 - Async behavior: `Submit` enqueues work and returns immediately. Work may run asynchronously relative to the host. `Stream::Synchronize()` waits for all previously submitted work on that stream to complete.
-- Events: recording an event captures completion of prior work on that stream. `AddDependency` inserts a wait so subsequent work in the stream happens after the event.
+- Events: use `Stream::CreateEvent()` and `Stream::RecordEvent()` to capture completion of prior work on that stream. `AddDependency` inserts a wait so subsequent work in the stream happens after the event.
 - GPU backends: CUDA/HIP/Metal/OpenCL enqueue kernels and copies asynchronously; `ExecutionConfig::sync_on_launch` forces a stream sync after each launch for debugging.
-- Stream instances: backends currently use one stream/queue per active device. `CreateStream()` returns a wrapper around that device stream/queue, so multiple streams may alias the same underlying queue and share ordering.
+- Stream instances: `CreateStream()` creates a backend stream/queue when supported; on failure it falls back to the device default stream/queue.
 
 ## Backend Selection
 - `LATTICE_BACKEND=auto|cpu|opencl|cuda|hip|metal` selects a preferred backend; if unavailable, Lattice falls back to CPU. `auto` probes CUDA → HIP → Metal → OpenCL → CPU.

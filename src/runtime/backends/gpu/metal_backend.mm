@@ -159,6 +159,17 @@ class MetalStream final : public Stream {
             return;
         deps_.push_back(ev);
     }
+    StatusOr<std::shared_ptr<Event>> CreateEvent() const override {
+        if (!queue_) {
+            return Status::Unavailable("Metal queue unavailable");
+        }
+        return std::make_shared<MetalEvent>(queue_);
+    }
+    void RecordEvent(const std::shared_ptr<Event>& ev) override {
+        if (!ev)
+            return;
+        Submit([ev]() { ev->Record(); });
+    }
     void SetPriority(int priority) override { priority_ = priority; }
 
    private:
@@ -289,7 +300,19 @@ StatusOr<std::shared_ptr<Stream>> MetalBackend::CreateStream() const {
                            BackendErrorKind::kDiscovery,
                            "No Metal devices available");
     }
-    return std::make_shared<MetalStream>(devices_[0].queue);
+    const auto& dev = devices_[0];
+    id<MTLCommandQueue> queue = nil;
+    if (dev.device) {
+        queue = [dev.device newCommandQueue];
+    }
+    if (!queue) {
+        queue = dev.queue;
+    }
+    if (!queue) {
+        return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kContext,
+                           "Metal queue unavailable");
+    }
+    return std::make_shared<MetalStream>(queue);
 }
 
 StatusOr<std::shared_ptr<Event>> MetalBackend::CreateEvent() const {

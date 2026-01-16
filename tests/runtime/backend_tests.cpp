@@ -1,6 +1,7 @@
 #include "runtime/backend.h"
 #include "test_util.h"
 
+#include <atomic>
 #include <cstdlib>
 
 namespace test {
@@ -23,6 +24,25 @@ void RunBackendTests(TestContext* ctx) {
   stream->Submit([&]() { ran = true; });
   stream->Synchronize();
   ExpectTrue(ran, "backend_stream_runs_task", ctx);
+
+  auto event_or = stream->CreateEvent();
+  ExpectTrue(event_or.ok(), "backend_event_create", ctx);
+  auto event = event_or.value();
+  std::atomic<int> seq{0};
+  stream->Submit([&]() { seq.store(1); });
+  stream->RecordEvent(event);
+
+  auto stream2_or = backend->CreateStream();
+  ExpectTrue(stream2_or.ok(), "backend_stream2_status", ctx);
+  auto stream2 = stream2_or.value();
+  std::atomic<int> observed{0};
+  stream2->AddDependency(event);
+  stream2->Submit([&]() { observed.store(seq.load()); });
+  stream->Synchronize();
+  stream2->Synchronize();
+  event->Wait();
+  ExpectTrue(event->Ready(), "backend_event_ready", ctx);
+  ExpectTrue(observed.load() == 1, "backend_event_dependency", ctx);
 
   // Allocation/deallocation
   auto alloc_or = backend->Allocate(128, 64);
