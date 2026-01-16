@@ -14,6 +14,8 @@ enum DeviceQuirkFlag : uint32_t {
     kDisableFp16 = 1u << 1,
     kDisableFp64 = 1u << 2,
     kPrefer1DLaunch = 1u << 3,
+    kDisableVectorize = 1u << 4,
+    kPreferSmallTiles = 1u << 5,
 };
 
 struct DeviceQuirkInfo {

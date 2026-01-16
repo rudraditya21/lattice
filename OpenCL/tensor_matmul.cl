@@ -34,5 +34,6 @@
 LATTICE_MATMUL_KERNEL(lattice_matmul, 16)
 LATTICE_MATMUL_KERNEL(lattice_matmul_t16, 16)
 LATTICE_MATMUL_KERNEL(lattice_matmul_t32, 32)
+LATTICE_MATMUL_KERNEL(lattice_matmul_t8, 8)
 
 #undef LATTICE_MATMUL_KERNEL

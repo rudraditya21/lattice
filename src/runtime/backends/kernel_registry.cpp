@@ -18,7 +18,7 @@ struct KernelDispatchEntry {
     std::string_view kernel_name;
 };
 
-constexpr std::array<KernelDefinition, 28> kKernelDefs = {{
+constexpr std::array<KernelDefinition, 30> kKernelDefs = {{
     {"lattice_elemwise_add", "tensor_elemwise_add"},
     {"lattice_elemwise_add_vec4", "tensor_elemwise_add"},
     {"lattice_elemwise_sub", "tensor_elemwise_sub"},
@@ -32,9 +32,11 @@ constexpr std::array<KernelDefinition, 28> kKernelDefs = {{
     {"lattice_reduce_var", "tensor_reduce_var"},
     {"lattice_reduce_std", "tensor_reduce_std"},
     {"lattice_transpose", "tensor_transpose"},
+    {"lattice_transpose_t8", "tensor_transpose"},
     {"lattice_matmul", "tensor_matmul"},
     {"lattice_matmul_t16", "tensor_matmul"},
     {"lattice_matmul_t32", "tensor_matmul"},
+    {"lattice_matmul_t8", "tensor_matmul"},
     {"lattice_conv2d", "tensor_conv2d"},
     {"lattice_conv2d_t8", "tensor_conv2d"},
     {"lattice_conv2d_t16", "tensor_conv2d"},

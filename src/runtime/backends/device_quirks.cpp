@@ -79,6 +79,10 @@ const DeviceQuirkEntry kQuirkTable[] = {
      "OpenCL Mesa llvmpipe (software)"},
     {BackendScope::kOpenCL, "mesa", "lavapipe", "", kSoftwareEmulation, false,
      "OpenCL Mesa lavapipe (software)"},
+    {BackendScope::kOpenCL, "apple", "", "",
+     kDisableVectorize | kPreferSmallTiles, false, "Apple OpenCL quirks"},
+    {BackendScope::kMetal, "apple", "", "", kPreferSmallTiles, false,
+     "Metal prefers smaller threadgroups"},
 };
 
 }  // namespace

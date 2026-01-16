@@ -138,10 +138,71 @@ struct LaunchConfig {
     bool use_local = false;
 };
 
+size_t MaxWorkGroupSize(const DeviceCapabilities& caps) {
+    if (caps.max_work_group_size != 0) {
+        return caps.max_work_group_size;
+    }
+    if (caps.max_threads_per_block != 0) {
+        return caps.max_threads_per_block;
+    }
+    return 256;
+}
+
+size_t MaxWorkItemSize(const DeviceCapabilities& caps, size_t dim) {
+    if (dim >= 3)
+        return 0;
+    return caps.max_work_item_sizes[dim];
+}
+
+size_t LocalMemLimit(const DeviceCapabilities& caps) {
+    if (caps.shared_mem_bytes != 0) {
+        return caps.shared_mem_bytes;
+    }
+    return caps.local_mem_bytes;
+}
+
+uint32_t ClampBlockSize(uint32_t requested, const DeviceCapabilities& caps) {
+    size_t max_block = MaxWorkGroupSize(caps);
+    if (max_block == 0)
+        return requested;
+    return static_cast<uint32_t>(
+        std::max<size_t>(1, std::min<size_t>(requested, max_block)));
+}
+
+bool TileFits(const DeviceCapabilities& caps,
+              uint32_t tile,
+              size_t local_bytes) {
+    size_t max_group = MaxWorkGroupSize(caps);
+    if (max_group != 0 && static_cast<size_t>(tile) * tile > max_group) {
+        return false;
+    }
+    size_t max_x = MaxWorkItemSize(caps, 0);
+    size_t max_y = MaxWorkItemSize(caps, 1);
+    if (max_x != 0 && tile > max_x)
+        return false;
+    if (max_y != 0 && tile > max_y)
+        return false;
+    size_t local_limit = LocalMemLimit(caps);
+    if (local_limit != 0 && local_bytes > local_limit) {
+        return false;
+    }
+    return true;
+}
+
 LaunchConfig Make1DLaunch(uint64_t count) {
     LaunchConfig cfg;
     cfg.dims = 1;
     cfg.block[0] = 256;
+    cfg.grid[0] =
+        static_cast<uint32_t>((count + cfg.block[0] - 1) / cfg.block[0]);
+    cfg.use_local = true;
+    return cfg;
+}
+
+LaunchConfig Make1DLaunch(uint64_t count, const DeviceCapabilities& caps) {
+    LaunchConfig cfg;
+    cfg.dims = 1;
+    cfg.block[0] = ClampBlockSize(256, caps);
     cfg.grid[0] =
         static_cast<uint32_t>((count + cfg.block[0] - 1) / cfg.block[0]);
     cfg.use_local = true;
@@ -172,6 +233,14 @@ LaunchConfig MakeTiled2DLaunch(uint64_t width, uint64_t height, uint32_t tile) {
     return cfg;
 }
 
+LaunchConfig MakeTiled2DLaunch(uint64_t width,
+                               uint64_t height,
+                               uint32_t tile,
+                               const DeviceCapabilities& caps) {
+    (void)caps;
+    return MakeTiled2DLaunch(width, height, tile);
+}
+
 LaunchConfig MakeSingleLaunch() {
     LaunchConfig cfg;
     cfg.dims = 1;
@@ -190,9 +259,25 @@ LaunchConfig MakeReduceLaunch() {
     return cfg;
 }
 
+LaunchConfig MakeReduceLaunch(const DeviceCapabilities& caps) {
+    LaunchConfig cfg;
+    cfg.dims = 1;
+    cfg.block[0] = ClampBlockSize(256, caps);
+    cfg.grid[0] = 1;
+    cfg.use_local = true;
+    return cfg;
+}
+
 LaunchConfig MakeVectorLaunch(uint64_t count, uint32_t vec_width) {
     uint64_t vec_count = (count + vec_width - 1) / vec_width;
     return Make1DLaunch(vec_count);
+}
+
+LaunchConfig MakeVectorLaunch(uint64_t count,
+                              uint32_t vec_width,
+                              const DeviceCapabilities& caps) {
+    uint64_t vec_count = (count + vec_width - 1) / vec_width;
+    return Make1DLaunch(vec_count, caps);
 }
 
 struct GpuBuffer {
@@ -345,6 +430,7 @@ class GpuExecutor {
 
         device_index_ = 0;
         use_fp64_ = false;
+        device_caps_ = {};
         dispatch_key_ = {};
         std::vector<DeviceCapabilities> caps;
         switch (backend_type_) {
@@ -365,13 +451,27 @@ class GpuExecutor {
             case BackendType::kCPU:
                 break;
         }
-        if (!caps.empty() && caps[0].fp64 == CapabilityStatus::kYes) {
+        if (!caps.empty() && device_index_ < static_cast<int>(caps.size())) {
+            device_caps_ = caps[static_cast<size_t>(device_index_)];
+        }
+        if (device_caps_.quirks.disabled) {
+            std::string reason = device_caps_.quirks.reason;
+            if (reason.empty()) {
+                reason = "device disabled by quirks";
+            }
+            init_status_ = Status::Unavailable(reason);
+            return init_status_;
+        }
+        if (device_caps_.fp64 == CapabilityStatus::kYes) {
             use_fp64_ = true;
+        }
+        if (device_caps_.quirks.flags & kDisableFp64) {
+            use_fp64_ = false;
         }
 
         dispatch_key_.backend = backend_type_;
         dispatch_key_.use_fp64 = use_fp64_;
-        dispatch_key_.vectorize = exec_config_.enable_vectorize;
+        dispatch_key_.vectorize = VectorizeEnabled();
         switch (backend_type_) {
             case BackendType::kCUDA: {
                 auto info = cuda_->DeviceInfo();
@@ -427,6 +527,17 @@ class GpuExecutor {
     bool UseFp64() const { return use_fp64_; }
     const KernelDispatchKey& DispatchKey() const { return dispatch_key_; }
     const ExecutionConfig& ExecConfig() const { return exec_config_; }
+    const DeviceCapabilities& DeviceCaps() const { return device_caps_; }
+    bool VectorizeEnabled() const {
+        return exec_config_.enable_vectorize &&
+               (device_caps_.quirks.flags & kDisableVectorize) == 0;
+    }
+    bool PreferSmallTiles() const {
+        return (device_caps_.quirks.flags & kPreferSmallTiles) != 0;
+    }
+    bool Prefer1DLaunch() const {
+        return (device_caps_.quirks.flags & kPrefer1DLaunch) != 0;
+    }
 
     StatusOr<GpuBuffer> AllocateBuffer(size_t bytes) {
         Status status = EnsureInitialized();
@@ -905,6 +1016,7 @@ class GpuExecutor {
     int device_index_ = 0;
     int device_count_ = 0;
     bool use_fp64_ = false;
+    DeviceCapabilities device_caps_{};
     ExecutionConfig exec_config_{};
     KernelDispatchKey dispatch_key_{};
     bool initialized_ = false;
@@ -927,6 +1039,10 @@ uint32_t KernelDType(const GpuExecutor& exec, DType elem_type) {
         return static_cast<uint32_t>(cuda::DTypeCode::kF64);
     }
     return static_cast<uint32_t>(cuda::DTypeCode::kF32);
+}
+
+bool NeedsFp64(DType elem_type) {
+    return elem_type == DType::kF64;
 }
 
 uint32_t KernelFlags(const ExecutionConfig& cfg,
@@ -975,6 +1091,86 @@ uint32_t TileFromKernelName(std::string_view name, uint32_t fallback) {
         return 8;
     }
     return fallback;
+}
+
+uint32_t SelectTile(const DeviceCapabilities& caps,
+                    uint32_t preferred,
+                    size_t elem_bytes,
+                    size_t local_bytes_per_tile,
+                    bool prefer_small,
+                    const std::vector<uint32_t>& candidates) {
+    uint32_t limit = preferred;
+    if (prefer_small && limit > 16) {
+        limit = 16;
+    }
+    auto pick_tile = [&](auto begin, auto end) {
+        for (auto it = begin; it != end; ++it) {
+            uint32_t tile = *it;
+            if (tile > limit)
+                continue;
+            size_t local_bytes =
+                local_bytes_per_tile * tile * tile * elem_bytes;
+            if (TileFits(caps, tile, local_bytes)) {
+                return tile;
+            }
+        }
+        return uint32_t{0};
+    };
+    return prefer_small ? pick_tile(candidates.rbegin(), candidates.rend())
+                        : pick_tile(candidates.begin(), candidates.end());
+}
+
+uint32_t SelectMatmulTile(const DeviceCapabilities& caps,
+                          uint32_t preferred,
+                          size_t elem_bytes,
+                          bool prefer_small) {
+    const std::vector<uint32_t> candidates = {32, 16, 8};
+    return SelectTile(caps, preferred, elem_bytes, 2, prefer_small, candidates);
+}
+
+uint32_t SelectTransposeTile(const DeviceCapabilities& caps,
+                             uint32_t preferred,
+                             size_t elem_bytes,
+                             bool prefer_small) {
+    const std::vector<uint32_t> candidates = {16, 8};
+    uint32_t limit = prefer_small ? std::min(preferred, 16u) : preferred;
+    auto pick_tile = [&](auto begin, auto end) {
+        for (auto it = begin; it != end; ++it) {
+            uint32_t tile = *it;
+            if (tile > limit)
+                continue;
+            size_t local_bytes =
+                static_cast<size_t>(tile) * (tile + 1) * elem_bytes;
+            if (TileFits(caps, tile, local_bytes)) {
+                return tile;
+            }
+        }
+        return uint32_t{0};
+    };
+    return prefer_small ? pick_tile(candidates.rbegin(), candidates.rend())
+                        : pick_tile(candidates.begin(), candidates.end());
+}
+
+uint32_t SelectConv2dTile(const DeviceCapabilities& caps,
+                          uint32_t preferred,
+                          size_t elem_bytes,
+                          bool prefer_small) {
+    (void)elem_bytes;
+    const std::vector<uint32_t> candidates = {16, 8};
+    uint32_t limit = prefer_small ? std::min(preferred, 16u) : preferred;
+    auto pick_tile = [&](auto begin, auto end) {
+        for (auto it = begin; it != end; ++it) {
+            uint32_t tile = *it;
+            if (tile > limit)
+                continue;
+            if (TileFits(caps, tile, 0)) {
+                return tile;
+            }
+        }
+        return uint32_t{0};
+    };
+    return prefer_small ? pick_tile(candidates.rbegin(), candidates.rend())
+                        : pick_tile(candidates.begin(), candidates.end());
 }
 
 bool FillParamArray(uint64_t* dst,
@@ -1120,6 +1316,11 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
 
         DType ragged_elem = PromoteType(lhs.tensor.elem_type,
                                         rhs.tensor.elem_type, line, column);
+        if (NeedsFp64(ragged_elem) && !exec.UseFp64()) {
+            if (error)
+                *error = "fp64 not supported on selected device";
+            return std::nullopt;
+        }
         ElemwiseParams params;
         params.count = static_cast<uint64_t>(count);
         params.op = 0;
@@ -1131,7 +1332,7 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
         params.lhs_strides[0] = 1;
         params.rhs_strides[0] = 1;
 
-        LaunchConfig cfg = Make1DLaunch(params.count);
+        LaunchConfig cfg = Make1DLaunch(params.count, exec.DeviceCaps());
         std::vector<GpuArg> args;
         args.push_back(GpuArg::Buffer(lhs_buf));
         args.push_back(GpuArg::Buffer(rhs_buf));
@@ -1230,6 +1431,11 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
         elem_target =
             PromoteType(rhs_d.tensor.elem_type, lhs_d.type, line, column);
     }
+    if (NeedsFp64(elem_target) && !exec.UseFp64()) {
+        if (error)
+            *error = "fp64 not supported on selected device";
+        return std::nullopt;
+    }
 
     auto out_value = Value::Tensor(out_shape, elem_target, 0.0);
 
@@ -1253,7 +1459,7 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
     }
 
     bool can_vectorize =
-        exec.ExecConfig().enable_vectorize && !exec.UseFp64() &&
+        exec.VectorizeEnabled() && !exec.UseFp64() &&
         lhs_d.type == DType::kTensor && rhs_d.type == DType::kTensor &&
         IsContiguousStrides(out_shape, out_value.tensor.strides) &&
         IsContiguousStrides(out_shape, lhs_bstrides) &&
@@ -1285,7 +1491,6 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
                            : 1;
     size_t out_count = static_cast<size_t>(out_value.tensor.size);
     size_t elem_bytes = exec.UseFp64() ? sizeof(double) : sizeof(float);
-
     auto lhs_buf_or = exec.AllocateBuffer(lhs_count * elem_bytes);
     if (!lhs_buf_or.ok()) {
         LogGpuError(exec.Type(), lhs_buf_or.status(), "elemwise");
@@ -1370,8 +1575,9 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
 
     LaunchConfig cfg =
         use_vector_kernel
-            ? MakeVectorLaunch(params.count, exec.UseFp64() ? 2u : 4u)
-            : Make1DLaunch(params.count);
+            ? MakeVectorLaunch(params.count, exec.UseFp64() ? 2u : 4u,
+                               exec.DeviceCaps())
+            : Make1DLaunch(params.count, exec.DeviceCaps());
     std::vector<GpuArg> args;
     args.push_back(GpuArg::Buffer(lhs_buf));
     args.push_back(GpuArg::Buffer(rhs_buf));
@@ -1423,6 +1629,11 @@ std::optional<Value> TryGpuReduce(const Value& v,
     Value dense = v;
     if (v.tensor.kind != TensorKind::kDense) {
         dense = ToDenseTensor(v, line, column);
+    }
+    if (NeedsFp64(dense.tensor.elem_type) && !exec.UseFp64()) {
+        if (error)
+            *error = "fp64 not supported on selected device";
+        return std::nullopt;
     }
 
     KernelSpec spec = ReduceKernel(exec.DispatchKey(), kind);
@@ -1476,7 +1687,7 @@ std::optional<Value> TryGpuReduce(const Value& v,
     params.flags = KernelFlags(exec.ExecConfig(), false, exec.UseFp64());
     params.stride = 0;
 
-    LaunchConfig cfg = MakeReduceLaunch();
+    LaunchConfig cfg = MakeReduceLaunch(exec.DeviceCaps());
     std::vector<GpuArg> args;
     args.push_back(GpuArg::Buffer(in_buf));
     args.push_back(GpuArg::Buffer(out_buf));
@@ -1516,6 +1727,11 @@ std::optional<Value> TryGpuTranspose(const Value& v,
     if (dense.tensor.shape.size() != 2) {
         throw util::Error("transpose supports only 2D tensors", line, column);
     }
+    if (NeedsFp64(dense.tensor.elem_type) && !exec.UseFp64()) {
+        if (error)
+            *error = "fp64 not supported on selected device";
+        return std::nullopt;
+    }
 
     auto kernel_or = exec.GetKernel(
         DispatchKernel(KernelOp::kTranspose, exec.DispatchKey()));
@@ -1530,6 +1746,26 @@ std::optional<Value> TryGpuTranspose(const Value& v,
     const int64_t cols = dense.tensor.shape[1];
     const size_t count = static_cast<size_t>(dense.tensor.size);
     size_t elem_bytes = exec.UseFp64() ? sizeof(double) : sizeof(float);
+    GpuKernel kernel = kernel_or.value();
+    uint32_t preferred_tile = TileFromKernelName(kernel.name, 16);
+    uint32_t tile = SelectTransposeTile(exec.DeviceCaps(), preferred_tile,
+                                        elem_bytes, exec.PreferSmallTiles());
+    if (tile == 0) {
+        if (error)
+            *error = "transpose tile exceeds device limits";
+        return std::nullopt;
+    }
+    if (tile != preferred_tile) {
+        KernelSpec alt{tile == 8 ? "lattice_transpose_t8"
+                                 : "lattice_transpose"};
+        auto alt_or = exec.GetKernel(alt);
+        if (!alt_or.ok()) {
+            if (error)
+                *error = alt_or.status().message;
+            return std::nullopt;
+        }
+        kernel = alt_or.value();
+    }
 
     BufferCleanup cleanup(exec);
     auto in_buf_or = exec.AllocateBuffer(count * elem_bytes);
@@ -1567,14 +1803,15 @@ std::optional<Value> TryGpuTranspose(const Value& v,
     params.dtype = KernelDType(exec, dense.tensor.elem_type);
     params.flags = KernelFlags(exec.ExecConfig(), false, exec.UseFp64());
 
-    LaunchConfig cfg = MakeTiled2DLaunch(static_cast<uint64_t>(cols),
-                                         static_cast<uint64_t>(rows), 16);
+    LaunchConfig cfg =
+        MakeTiled2DLaunch(static_cast<uint64_t>(cols),
+                          static_cast<uint64_t>(rows), tile, exec.DeviceCaps());
     std::vector<GpuArg> args;
     args.push_back(GpuArg::Buffer(in_buf));
     args.push_back(GpuArg::Buffer(out_buf));
     args.push_back(GpuArg::Value(&params, sizeof(params)));
 
-    status = exec.LaunchKernel(kernel_or.value(), cfg, args);
+    status = exec.LaunchKernel(kernel, cfg, args);
     if (!status.ok()) {
         LogGpuError(exec.Type(), status, "transpose");
         if (error)
@@ -1622,6 +1859,14 @@ std::optional<Value> TryGpuMatmul(const Value& lhs,
         throw util::Error("matmul shape mismatch", line, column);
     }
 
+    DType elem =
+        PromoteType(A.tensor.elem_type, B.tensor.elem_type, line, column);
+    if (NeedsFp64(elem) && !exec.UseFp64()) {
+        if (error)
+            *error = "fp64 not supported on selected device";
+        return std::nullopt;
+    }
+
     auto kernel_or =
         exec.GetKernel(DispatchKernel(KernelOp::kMatmul, exec.DispatchKey()));
     if (!kernel_or.ok()) {
@@ -1632,6 +1877,27 @@ std::optional<Value> TryGpuMatmul(const Value& lhs,
     }
 
     size_t elem_bytes = exec.UseFp64() ? sizeof(double) : sizeof(float);
+    GpuKernel kernel = kernel_or.value();
+    uint32_t preferred_tile = TileFromKernelName(kernel.name, 16);
+    uint32_t tile = SelectMatmulTile(exec.DeviceCaps(), preferred_tile,
+                                     elem_bytes, exec.PreferSmallTiles());
+    if (tile == 0) {
+        if (error)
+            *error = "matmul tile exceeds device limits";
+        return std::nullopt;
+    }
+    if (tile != preferred_tile) {
+        KernelSpec alt{tile == 32  ? "lattice_matmul_t32"
+                       : tile == 8 ? "lattice_matmul_t8"
+                                   : "lattice_matmul_t16"};
+        auto alt_or = exec.GetKernel(alt);
+        if (!alt_or.ok()) {
+            if (error)
+                *error = alt_or.status().message;
+            return std::nullopt;
+        }
+        kernel = alt_or.value();
+    }
     size_t a_count = static_cast<size_t>(A.tensor.size);
     size_t b_count = static_cast<size_t>(B.tensor.size);
     size_t c_count = static_cast<size_t>(m * n);
@@ -1681,9 +1947,6 @@ std::optional<Value> TryGpuMatmul(const Value& lhs,
         return std::nullopt;
     }
 
-    DType elem =
-        PromoteType(A.tensor.elem_type, B.tensor.elem_type, line, column);
-
     MatmulParams params;
     params.m = static_cast<uint64_t>(m);
     params.n = static_cast<uint64_t>(n);
@@ -1694,16 +1957,16 @@ std::optional<Value> TryGpuMatmul(const Value& lhs,
     params.dtype = KernelDType(exec, elem);
     params.flags = KernelFlags(exec.ExecConfig(), false, exec.UseFp64());
 
-    uint32_t tile = TileFromKernelName(kernel_or.value().name, 16);
-    LaunchConfig cfg = MakeTiled2DLaunch(static_cast<uint64_t>(n),
-                                         static_cast<uint64_t>(m), tile);
+    LaunchConfig cfg =
+        MakeTiled2DLaunch(static_cast<uint64_t>(n), static_cast<uint64_t>(m),
+                          tile, exec.DeviceCaps());
     std::vector<GpuArg> args;
     args.push_back(GpuArg::Buffer(a_buf));
     args.push_back(GpuArg::Buffer(b_buf));
     args.push_back(GpuArg::Buffer(c_buf));
     args.push_back(GpuArg::Value(&params, sizeof(params)));
 
-    status = exec.LaunchKernel(kernel_or.value(), cfg, args);
+    status = exec.LaunchKernel(kernel, cfg, args);
     if (!status.ok()) {
         LogGpuError(exec.Type(), status, "matmul");
         if (error)
@@ -1751,6 +2014,14 @@ std::optional<Value> TryGpuConv2d(const Value& input,
     int64_t oh = h - kh + 1;
     int64_t ow = w - kw + 1;
 
+    DType elem =
+        PromoteType(in.tensor.elem_type, k.tensor.elem_type, line, column);
+    if (NeedsFp64(elem) && !exec.UseFp64()) {
+        if (error)
+            *error = "fp64 not supported on selected device";
+        return std::nullopt;
+    }
+
     auto kernel_or =
         exec.GetKernel(DispatchKernel(KernelOp::kConv2d, exec.DispatchKey()));
     if (!kernel_or.ok()) {
@@ -1761,6 +2032,25 @@ std::optional<Value> TryGpuConv2d(const Value& input,
     }
 
     size_t elem_bytes = exec.UseFp64() ? sizeof(double) : sizeof(float);
+    GpuKernel kernel = kernel_or.value();
+    uint32_t preferred_tile = TileFromKernelName(kernel.name, 16);
+    uint32_t tile = SelectConv2dTile(exec.DeviceCaps(), preferred_tile,
+                                     elem_bytes, exec.PreferSmallTiles());
+    if (tile == 0) {
+        if (error)
+            *error = "conv2d tile exceeds device limits";
+        return std::nullopt;
+    }
+    if (tile != preferred_tile) {
+        KernelSpec alt{tile == 8 ? "lattice_conv2d_t8" : "lattice_conv2d_t16"};
+        auto alt_or = exec.GetKernel(alt);
+        if (!alt_or.ok()) {
+            if (error)
+                *error = alt_or.status().message;
+            return std::nullopt;
+        }
+        kernel = alt_or.value();
+    }
     size_t in_count = static_cast<size_t>(in.tensor.size);
     size_t k_count = static_cast<size_t>(k.tensor.size);
     size_t out_count = static_cast<size_t>(oh * ow);
@@ -1811,9 +2101,6 @@ std::optional<Value> TryGpuConv2d(const Value& input,
         return std::nullopt;
     }
 
-    DType elem =
-        PromoteType(in.tensor.elem_type, k.tensor.elem_type, line, column);
-
     Conv2dParams params;
     params.in_h = static_cast<uint64_t>(h);
     params.in_w = static_cast<uint64_t>(w);
@@ -1824,16 +2111,16 @@ std::optional<Value> TryGpuConv2d(const Value& input,
     params.dtype = KernelDType(exec, elem);
     params.flags = KernelFlags(exec.ExecConfig(), false, exec.UseFp64());
 
-    uint32_t tile = TileFromKernelName(kernel_or.value().name, 16);
-    LaunchConfig cfg = MakeTiled2DLaunch(static_cast<uint64_t>(ow),
-                                         static_cast<uint64_t>(oh), tile);
+    LaunchConfig cfg =
+        MakeTiled2DLaunch(static_cast<uint64_t>(ow), static_cast<uint64_t>(oh),
+                          tile, exec.DeviceCaps());
     std::vector<GpuArg> args;
     args.push_back(GpuArg::Buffer(in_buf));
     args.push_back(GpuArg::Buffer(k_buf));
     args.push_back(GpuArg::Buffer(out_buf));
     args.push_back(GpuArg::Value(&params, sizeof(params)));
 
-    status = exec.LaunchKernel(kernel_or.value(), cfg, args);
+    status = exec.LaunchKernel(kernel, cfg, args);
     if (!status.ok()) {
         LogGpuError(exec.Type(), status, "conv2d");
         if (error)
@@ -2022,7 +2309,8 @@ std::optional<Value> TryGpuFft1d(const Value& input,
     FftParams params;
     params.n = static_cast<uint64_t>(n);
 
-    LaunchConfig cfg = Make1DLaunch(static_cast<uint64_t>(n));
+    LaunchConfig cfg =
+        Make1DLaunch(static_cast<uint64_t>(n), exec.DeviceCaps());
     std::vector<GpuArg> args;
     args.push_back(GpuArg::Buffer(in_buf));
     args.push_back(GpuArg::Buffer(real_buf));
