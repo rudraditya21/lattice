@@ -22,6 +22,7 @@
 #include "runtime/backends/cuda_abi.h"
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
+#include "runtime/backends/execution_config.h"
 #include "runtime/backends/kernel_build.h"
 #include "runtime/backends/memory_pool.h"
 #include "runtime/backends/memory_stats.h"
@@ -333,7 +334,10 @@ struct CudaBackend::DeviceContext {
     std::unique_ptr<MemoryPool> device_pool;
 };
 
-CudaBackend::CudaBackend() = default;
+CudaBackend::CudaBackend() {
+    exec_config_ = LoadExecutionConfig("LATTICE", exec_config_);
+    exec_config_ = LoadExecutionConfig("LATTICE_CUDA", exec_config_);
+}
 
 CudaBackend::~CudaBackend() {
     std::lock_guard<std::mutex> lock(mu_);

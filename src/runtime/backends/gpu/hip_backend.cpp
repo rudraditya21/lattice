@@ -21,6 +21,7 @@
 #include "runtime/backends/cache_store.h"
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
+#include "runtime/backends/execution_config.h"
 #include "runtime/backends/hip_abi.h"
 #include "runtime/backends/kernel_build.h"
 #include "runtime/backends/memory_pool.h"
@@ -335,7 +336,10 @@ struct HipBackend::DeviceContext {
     std::unique_ptr<MemoryPool> device_pool;
 };
 
-HipBackend::HipBackend() = default;
+HipBackend::HipBackend() {
+    exec_config_ = LoadExecutionConfig("LATTICE", exec_config_);
+    exec_config_ = LoadExecutionConfig("LATTICE_HIP", exec_config_);
+}
 
 HipBackend::~HipBackend() {
     std::lock_guard<std::mutex> lock(mu_);

@@ -26,6 +26,7 @@
 #include "runtime/backends/cache_store.h"
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
+#include "runtime/backends/execution_config.h"
 #include "runtime/backends/kernel_build.h"
 #include "runtime/backends/memory_pool.h"
 #include "runtime/backends/memory_stats.h"
@@ -236,7 +237,10 @@ struct MetalBackend::DeviceContext {
     std::unique_ptr<MemoryPool> pinned_pool;
 };
 
-MetalBackend::MetalBackend() = default;
+MetalBackend::MetalBackend() {
+    exec_config_ = LoadExecutionConfig("LATTICE", exec_config_);
+    exec_config_ = LoadExecutionConfig("LATTICE_METAL", exec_config_);
+}
 
 MetalBackend::~MetalBackend() {
     std::lock_guard<std::mutex> lock(mu_);

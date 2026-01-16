@@ -24,6 +24,7 @@
 #include "runtime/backends/cache_store.h"
 #include "runtime/backends/device_quirks.h"
 #include "runtime/backends/device_selector.h"
+#include "runtime/backends/execution_config.h"
 #include "runtime/backends/gpu/opencl_loader.h"
 #include "runtime/backends/kernel_build.h"
 #include "runtime/backends/memory_pool.h"
@@ -369,7 +370,10 @@ struct OpenCLBackend::DeviceContext {
     std::unique_ptr<MemoryPool> pinned_pool;
 };
 
-OpenCLBackend::OpenCLBackend() = default;
+OpenCLBackend::OpenCLBackend() {
+    exec_config_ = LoadExecutionConfig("LATTICE", exec_config_);
+    exec_config_ = LoadExecutionConfig("LATTICE_OPENCL", exec_config_);
+}
 
 OpenCLBackend::~OpenCLBackend() {
     if (loader_.Loaded()) {

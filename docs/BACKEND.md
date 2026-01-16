@@ -23,6 +23,8 @@
 - `LATTICE_CACHE_UPDATE_ATIME=0` disables access-time updates on cache hits.
 - `LATTICE_REBUILD_ON_FAILURE=0` disables rebuild attempts after cached binaries fail to load/build (per-backend overrides: `LATTICE_OPENCL_REBUILD_ON_FAILURE`, `LATTICE_CUDA_REBUILD_ON_FAILURE`, `LATTICE_HIP_REBUILD_ON_FAILURE`).
 - `LATTICE_BUILD_DEBUG=1` appends backend debug flags to kernel builds (OpenCL `-g -cl-opt-disable`, CUDA `-G`, HIP `-g -O0`).
+- `LATTICE_SYNC_ON_LAUNCH=1` forces a stream/queue sync after each kernel launch.
+- `LATTICE_ASYNC_LAUNCH=1` disables per-launch syncs (per-backend overrides: `LATTICE_OPENCL_SYNC_ON_LAUNCH`, `LATTICE_CUDA_SYNC_ON_LAUNCH`, `LATTICE_HIP_SYNC_ON_LAUNCH`, `LATTICE_METAL_SYNC_ON_LAUNCH`, and matching `_ASYNC_LAUNCH`).
 - Kernel cache is on by default (per-device, per-build-options). Metal uses an in-memory pipeline cache per run.
 - Device metadata is persisted under `LATTICE_CACHE_DIR/devices` as key/value text files keyed by a device fingerprint.
 - `LATTICE_GPU_SMOKE_TEST=1` runs the vector-add smoke test for the selected GPU backend during `backend_tests`.

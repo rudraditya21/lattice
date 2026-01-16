@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "runtime/backends/backend_log.h"
+#include "runtime/backends/execution_config.h"
 #include "runtime/backends/memory_pool.h"
 #include "runtime/backends/memory_stats.h"
 #include "runtime/backends/memory_utils.h"
@@ -524,6 +525,8 @@ BackendCapabilities CpuCaps() {
 }  // namespace
 
 CpuBackend::CpuBackend() {
+    exec_config_ = LoadExecutionConfig("LATTICE", exec_config_);
+    exec_config_ = LoadExecutionConfig("LATTICE_CPU", exec_config_);
     const char* env = std::getenv("LATTICE_NUMA_NODE");
     if (env) {
         try {
