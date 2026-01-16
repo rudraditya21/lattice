@@ -5,6 +5,13 @@
 - Determinism: CPU backend executes tasks in the order submitted per stream. RNG builtins (`philox`, `threefry`, distribution samplers) are deterministic given the same seed/stream/counter. Parallel kernels may reorder floating-point operations; use a single-threaded stream for strict determinism.
 - Unsupported/not implemented: no device memory pools, no NUMA pinning, no events with external waiting, no advanced scheduling/priorities, no device/host transfers beyond host allocations. Capability flags reflect current support (dense/sparse/ragged tensors, FFT/BLAS/conv are routed through CPU implementations only).
 
+## Stream/Queue Semantics
+- Ordering: each `Stream` is FIFO. Submissions to the same stream are executed in order. There is no implicit ordering between different streams.
+- Async behavior: `Submit` enqueues work and returns immediately. Work may run asynchronously relative to the host. `Stream::Synchronize()` waits for all previously submitted work on that stream to complete.
+- Events: recording an event captures completion of prior work on that stream. `AddDependency` inserts a wait so subsequent work in the stream happens after the event.
+- GPU backends: CUDA/HIP/Metal/OpenCL enqueue kernels and copies asynchronously; `ExecutionConfig::sync_on_launch` forces a stream sync after each launch for debugging.
+- Stream instances: backends currently use one stream/queue per active device. `CreateStream()` returns a wrapper around that device stream/queue, so multiple streams may alias the same underlying queue and share ordering.
+
 ## Backend Selection
 - `LATTICE_BACKEND=auto|cpu|opencl|cuda|hip|metal` selects a preferred backend; if unavailable, Lattice falls back to CPU. `auto` probes CUDA → HIP → Metal → OpenCL → CPU.
 - `LATTICE_KERNEL_DIR=<path>` overrides the kernel search directory (defaults to `./OpenCL`, `./CUDA`, `./HIP`, or `./Metal` depending on backend).
