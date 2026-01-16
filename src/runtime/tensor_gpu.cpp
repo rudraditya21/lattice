@@ -1,6 +1,7 @@
 #include "runtime/tensor_gpu.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -54,35 +55,78 @@ using QuantileParams = cuda::QuantileParams;
 using CorrelationParams = cuda::CorrelationParams;
 using RegressionParams = cuda::RegressionParams;
 
+KernelVendor VendorFromId(uint64_t vendor_id) {
+    switch (vendor_id) {
+        case 0x10DE:
+            return KernelVendor::kNvidia;
+        case 0x1002:
+            return KernelVendor::kAmd;
+        case 0x8086:
+            return KernelVendor::kIntel;
+        case 0x106B:
+            return KernelVendor::kApple;
+        default:
+            return KernelVendor::kAny;
+    }
+}
+
+KernelVendor VendorFromString(std::string_view name) {
+    std::string upper(name);
+    std::transform(
+        upper.begin(), upper.end(), upper.begin(),
+        [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    if (upper.find("NVIDIA") != std::string::npos) {
+        return KernelVendor::kNvidia;
+    }
+    if (upper.find("AMD") != std::string::npos ||
+        upper.find("ADVANCED MICRO DEVICES") != std::string::npos) {
+        return KernelVendor::kAmd;
+    }
+    if (upper.find("INTEL") != std::string::npos) {
+        return KernelVendor::kIntel;
+    }
+    if (upper.find("APPLE") != std::string::npos) {
+        return KernelVendor::kApple;
+    }
+    return KernelVendor::kAny;
+}
+
 struct KernelSpec {
-    const char* name = nullptr;
+    std::string_view name;
 };
 
-KernelSpec ElemwiseKernel(parser::BinaryOp op) {
+KernelSpec DispatchKernel(KernelOp op, const KernelDispatchKey& key) {
+    const KernelDefinition* def = SelectKernelDefinition(op, key);
+    if (!def)
+        return {};
+    return {def->name};
+}
+
+KernelSpec ElemwiseKernel(const KernelDispatchKey& key, parser::BinaryOp op) {
     switch (op) {
         case parser::BinaryOp::kAdd:
-            return {"lattice_elemwise_add"};
+            return DispatchKernel(KernelOp::kElemwiseAdd, key);
         case parser::BinaryOp::kSub:
-            return {"lattice_elemwise_sub"};
+            return DispatchKernel(KernelOp::kElemwiseSub, key);
         case parser::BinaryOp::kMul:
-            return {"lattice_elemwise_mul"};
+            return DispatchKernel(KernelOp::kElemwiseMul, key);
         case parser::BinaryOp::kDiv:
-            return {"lattice_elemwise_div"};
+            return DispatchKernel(KernelOp::kElemwiseDiv, key);
         default:
             return {};
     }
 }
 
-KernelSpec ReduceKernel(ReduceKind kind) {
+KernelSpec ReduceKernel(const KernelDispatchKey& key, ReduceKind kind) {
     switch (kind) {
         case ReduceKind::kSum:
-            return {"lattice_reduce_sum"};
+            return DispatchKernel(KernelOp::kReduceSum, key);
         case ReduceKind::kMean:
-            return {"lattice_reduce_mean"};
+            return DispatchKernel(KernelOp::kReduceMean, key);
         case ReduceKind::kVar:
-            return {"lattice_reduce_var"};
+            return DispatchKernel(KernelOp::kReduceVar, key);
         case ReduceKind::kStd:
-            return {"lattice_reduce_std"};
+            return DispatchKernel(KernelOp::kReduceStd, key);
     }
     return {};
 }
@@ -117,6 +161,17 @@ LaunchConfig Make2DLaunch(uint64_t width, uint64_t height) {
     return cfg;
 }
 
+LaunchConfig MakeTiled2DLaunch(uint64_t width, uint64_t height, uint32_t tile) {
+    LaunchConfig cfg;
+    cfg.dims = 2;
+    cfg.block[0] = tile;
+    cfg.block[1] = tile;
+    cfg.grid[0] = static_cast<uint32_t>((width + tile - 1) / tile);
+    cfg.grid[1] = static_cast<uint32_t>((height + tile - 1) / tile);
+    cfg.use_local = true;
+    return cfg;
+}
+
 LaunchConfig MakeSingleLaunch() {
     LaunchConfig cfg;
     cfg.dims = 1;
@@ -124,6 +179,20 @@ LaunchConfig MakeSingleLaunch() {
     cfg.grid[0] = 1;
     cfg.use_local = false;
     return cfg;
+}
+
+LaunchConfig MakeReduceLaunch() {
+    LaunchConfig cfg;
+    cfg.dims = 1;
+    cfg.block[0] = 256;
+    cfg.grid[0] = 1;
+    cfg.use_local = true;
+    return cfg;
+}
+
+LaunchConfig MakeVectorLaunch(uint64_t count, uint32_t vec_width) {
+    uint64_t vec_count = (count + vec_width - 1) / vec_width;
+    return Make1DLaunch(vec_count);
 }
 
 struct GpuBuffer {
@@ -201,6 +270,8 @@ class GpuExecutor {
             return init_status_;
         }
 
+        exec_config_ = backend->GetExecutionConfig();
+
         auto stream_or = backend->CreateStream();
         if (!stream_or.ok()) {
             init_status_ = stream_or.status();
@@ -274,6 +345,7 @@ class GpuExecutor {
 
         device_index_ = 0;
         use_fp64_ = false;
+        dispatch_key_ = {};
         std::vector<DeviceCapabilities> caps;
         switch (backend_type_) {
             case BackendType::kOpenCL:
@@ -297,6 +369,47 @@ class GpuExecutor {
             use_fp64_ = true;
         }
 
+        dispatch_key_.backend = backend_type_;
+        dispatch_key_.use_fp64 = use_fp64_;
+        dispatch_key_.vectorize = exec_config_.enable_vectorize;
+        switch (backend_type_) {
+            case BackendType::kCUDA: {
+                auto info = cuda_->DeviceInfo();
+                if (!info.empty()) {
+                    const auto& desc = info[device_index_];
+                    dispatch_key_.vendor = KernelVendor::kNvidia;
+                    dispatch_key_.arch_major =
+                        static_cast<uint32_t>(desc.major);
+                    dispatch_key_.arch_minor =
+                        static_cast<uint32_t>(desc.minor);
+                }
+                break;
+            }
+            case BackendType::kHIP: {
+                dispatch_key_.vendor = KernelVendor::kAmd;
+                break;
+            }
+            case BackendType::kMetal: {
+#if defined(__APPLE__)
+                dispatch_key_.vendor = KernelVendor::kApple;
+#endif
+                break;
+            }
+            case BackendType::kOpenCL: {
+                auto info = opencl_->DeviceInfo();
+                if (!info.empty()) {
+                    const auto& desc = info[device_index_];
+                    dispatch_key_.vendor = VendorFromId(desc.vendor_id);
+                    if (dispatch_key_.vendor == KernelVendor::kAny) {
+                        dispatch_key_.vendor = VendorFromString(desc.vendor);
+                    }
+                }
+                break;
+            }
+            case BackendType::kCPU:
+                break;
+        }
+
         kernel_dir_ = FindKernelDir(backend_type_);
         if (kernel_dir_.empty()) {
             init_status_ = Status::Unavailable("Kernel directory not found");
@@ -312,6 +425,8 @@ class GpuExecutor {
     BackendType Type() const { return backend_type_; }
     int DeviceIndex() const { return device_index_; }
     bool UseFp64() const { return use_fp64_; }
+    const KernelDispatchKey& DispatchKey() const { return dispatch_key_; }
+    const ExecutionConfig& ExecConfig() const { return exec_config_; }
 
     StatusOr<GpuBuffer> AllocateBuffer(size_t bytes) {
         Status status = EnsureInitialized();
@@ -499,14 +614,15 @@ class GpuExecutor {
         Status status = EnsureInitialized();
         if (!status.ok())
             return status;
-        if (!spec.name) {
+        if (spec.name.empty()) {
             return Status::Invalid("Kernel spec is missing");
         }
         const KernelDefinition* def = FindKernelDefinition(spec.name);
         if (!def) {
             return Status::Invalid("Unknown kernel: " + std::string(spec.name));
         }
-        const std::string key = KernelCacheKey(spec.name);
+        const std::string kernel_name(spec.name);
+        const std::string key = KernelCacheKey(kernel_name);
         {
             std::lock_guard<std::mutex> lock(cache_mu_);
             auto it = kernel_cache_.find(key);
@@ -523,21 +639,22 @@ class GpuExecutor {
         switch (backend_type_) {
             case BackendType::kOpenCL: {
                 auto kernels_or =
-                    opencl_->BuildKernelsFromFile(path, spec.name);
+                    opencl_->BuildKernelsFromFile(path, kernel_name);
                 if (!kernels_or.ok())
                     return kernels_or.status();
                 kernel = WrapKernel(kernels_or.value());
                 break;
             }
             case BackendType::kCUDA: {
-                auto kernels_or = cuda_->BuildKernelsFromFile(path, spec.name);
+                auto kernels_or =
+                    cuda_->BuildKernelsFromFile(path, kernel_name);
                 if (!kernels_or.ok())
                     return kernels_or.status();
                 kernel = WrapKernel(kernels_or.value());
                 break;
             }
             case BackendType::kHIP: {
-                auto kernels_or = hip_->BuildKernelsFromFile(path, spec.name);
+                auto kernels_or = hip_->BuildKernelsFromFile(path, kernel_name);
                 if (!kernels_or.ok())
                     return kernels_or.status();
                 kernel = WrapKernel(kernels_or.value());
@@ -545,7 +662,8 @@ class GpuExecutor {
             }
             case BackendType::kMetal: {
 #if defined(__APPLE__)
-                auto kernels_or = metal_->BuildKernelsFromFile(path, spec.name);
+                auto kernels_or =
+                    metal_->BuildKernelsFromFile(path, kernel_name);
                 if (!kernels_or.ok())
                     return kernels_or.status();
                 kernel = WrapKernel(kernels_or.value());
@@ -560,7 +678,7 @@ class GpuExecutor {
         }
 
         kernel.backend = backend_type_;
-        kernel.name = spec.name;
+        kernel.name = kernel_name;
         kernel.device_index = device_index_;
 
         {
@@ -787,6 +905,8 @@ class GpuExecutor {
     int device_index_ = 0;
     int device_count_ = 0;
     bool use_fp64_ = false;
+    ExecutionConfig exec_config_{};
+    KernelDispatchKey dispatch_key_{};
     bool initialized_ = false;
     Status init_status_ = Status::OK();
     std::string kernel_dir_;
@@ -799,6 +919,62 @@ BufferCleanup::~BufferCleanup() {
     for (auto* buf : buffers_) {
         exec_.ReleaseBuffer(buf);
     }
+}
+
+uint32_t KernelDType(const GpuExecutor& exec, DType elem_type) {
+    (void)elem_type;
+    if (exec.UseFp64()) {
+        return static_cast<uint32_t>(cuda::DTypeCode::kF64);
+    }
+    return static_cast<uint32_t>(cuda::DTypeCode::kF32);
+}
+
+uint32_t KernelFlags(const ExecutionConfig& cfg,
+                     bool vectorize,
+                     bool use_fp64) {
+    uint32_t flags = 0;
+    if (vectorize && !use_fp64 && cfg.enable_vectorize) {
+        flags |= cuda::kKernelFlagVectorize;
+    }
+    if (cfg.enable_fast_math) {
+        flags |= cuda::kKernelFlagFastMath;
+    }
+    if (cfg.enable_mixed_precision && use_fp64) {
+        flags |= cuda::kKernelFlagMixedPrecision;
+    }
+    return flags;
+}
+
+std::vector<int64_t> RowMajorStrides(const std::vector<int64_t>& shape) {
+    std::vector<int64_t> strides(shape.size(), 1);
+    int64_t stride = 1;
+    for (int64_t i = static_cast<int64_t>(shape.size()) - 1; i >= 0; --i) {
+        strides[static_cast<size_t>(i)] = stride;
+        stride *= shape[static_cast<size_t>(i)];
+    }
+    return strides;
+}
+
+bool IsContiguousStrides(const std::vector<int64_t>& shape,
+                         const std::vector<int64_t>& strides) {
+    if (shape.size() != strides.size()) {
+        return false;
+    }
+    std::vector<int64_t> expected = RowMajorStrides(shape);
+    return expected == strides;
+}
+
+uint32_t TileFromKernelName(std::string_view name, uint32_t fallback) {
+    if (name.find("_t32") != std::string_view::npos) {
+        return 32;
+    }
+    if (name.find("_t16") != std::string_view::npos) {
+        return 16;
+    }
+    if (name.find("_t8") != std::string_view::npos) {
+        return 8;
+    }
+    return fallback;
 }
 
 bool FillParamArray(uint64_t* dst,
@@ -844,13 +1020,12 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
                                     int line,
                                     int column,
                                     std::string* error) {
-    KernelSpec spec = ElemwiseKernel(op);
-    if (!spec.name)
-        return std::nullopt;
-
     auto& exec = GpuExecutor::Instance();
     if (!exec.Enabled())
         return std::nullopt;
+
+    KernelDispatchKey key = exec.DispatchKey();
+    KernelSpec spec{};
 
     if ((lhs.type == DType::kTensor &&
          lhs.tensor.kind == TensorKind::kRagged) ||
@@ -877,6 +1052,10 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
         }
 
         const size_t count = lhs.tensor.ragged_values.size();
+        key.vectorize = false;
+        spec = ElemwiseKernel(key, op);
+        if (!spec.name)
+            return std::nullopt;
         auto kernel_or = exec.GetKernel(spec);
         if (!kernel_or.ok()) {
             LogGpuError(exec.Type(), kernel_or.status(), "elemwise");
@@ -939,12 +1118,14 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
             return std::nullopt;
         }
 
+        DType ragged_elem = PromoteType(lhs.tensor.elem_type,
+                                        rhs.tensor.elem_type, line, column);
         ElemwiseParams params;
         params.count = static_cast<uint64_t>(count);
         params.op = 0;
-        params.dtype = 0;
+        params.dtype = KernelDType(exec, ragged_elem);
         params.ndim = 1;
-        params.flags = 0;
+        params.flags = KernelFlags(exec.ExecConfig(), false, exec.UseFp64());
         params.shape[0] = static_cast<uint64_t>(count);
         params.out_strides[0] = 1;
         params.lhs_strides[0] = 1;
@@ -973,10 +1154,7 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
             return std::nullopt;
         }
 
-        Value out = Value::TensorRagged(
-            lhs.tensor.row_splits, {},
-            PromoteType(lhs.tensor.elem_type, rhs.tensor.elem_type, line,
-                        column));
+        Value out = Value::TensorRagged(lhs.tensor.row_splits, {}, ragged_elem);
         out.tensor.ragged_values = std::move(out_data_or.value());
         return out;
     }
@@ -1074,6 +1252,21 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
         return std::nullopt;
     }
 
+    bool can_vectorize =
+        exec.ExecConfig().enable_vectorize && !exec.UseFp64() &&
+        lhs_d.type == DType::kTensor && rhs_d.type == DType::kTensor &&
+        IsContiguousStrides(out_shape, out_value.tensor.strides) &&
+        IsContiguousStrides(out_shape, lhs_bstrides) &&
+        IsContiguousStrides(out_shape, rhs_bstrides);
+    key.vectorize = can_vectorize;
+    spec = ElemwiseKernel(key, op);
+    if (!spec.name)
+        return std::nullopt;
+    bool use_vector_kernel = can_vectorize && !exec.UseFp64();
+    if (spec.name.find("_vec") == std::string_view::npos) {
+        use_vector_kernel = false;
+    }
+
     auto kernel_or = exec.GetKernel(spec);
     if (!kernel_or.ok()) {
         LogGpuError(exec.Type(), kernel_or.status(), "elemwise");
@@ -1165,16 +1358,20 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
     ElemwiseParams params;
     params.count = static_cast<uint64_t>(out_count);
     params.op = 0;
-    params.dtype = 0;
+    params.dtype = KernelDType(exec, elem_target);
     params.ndim = static_cast<uint32_t>(out_shape.size());
-    params.flags = 0;
+    params.flags =
+        KernelFlags(exec.ExecConfig(), use_vector_kernel, exec.UseFp64());
     FillParamArray(params.shape, kMaxTensorDims, out_shape);
     FillParamArray(params.out_strides, kMaxTensorDims,
                    out_value.tensor.strides);
     FillParamArray(params.lhs_strides, kMaxTensorDims, lhs_bstrides);
     FillParamArray(params.rhs_strides, kMaxTensorDims, rhs_bstrides);
 
-    LaunchConfig cfg = Make1DLaunch(params.count);
+    LaunchConfig cfg =
+        use_vector_kernel
+            ? MakeVectorLaunch(params.count, exec.UseFp64() ? 2u : 4u)
+            : Make1DLaunch(params.count);
     std::vector<GpuArg> args;
     args.push_back(GpuArg::Buffer(lhs_buf));
     args.push_back(GpuArg::Buffer(rhs_buf));
@@ -1228,7 +1425,7 @@ std::optional<Value> TryGpuReduce(const Value& v,
         dense = ToDenseTensor(v, line, column);
     }
 
-    KernelSpec spec = ReduceKernel(kind);
+    KernelSpec spec = ReduceKernel(exec.DispatchKey(), kind);
     if (!spec.name)
         return std::nullopt;
     auto kernel_or = exec.GetKernel(spec);
@@ -1275,10 +1472,11 @@ std::optional<Value> TryGpuReduce(const Value& v,
     ReduceParams params;
     params.count = static_cast<uint64_t>(count);
     params.op = 0;
-    params.dtype = 0;
+    params.dtype = KernelDType(exec, dense.tensor.elem_type);
+    params.flags = KernelFlags(exec.ExecConfig(), false, exec.UseFp64());
     params.stride = 0;
 
-    LaunchConfig cfg = MakeSingleLaunch();
+    LaunchConfig cfg = MakeReduceLaunch();
     std::vector<GpuArg> args;
     args.push_back(GpuArg::Buffer(in_buf));
     args.push_back(GpuArg::Buffer(out_buf));
@@ -1319,7 +1517,8 @@ std::optional<Value> TryGpuTranspose(const Value& v,
         throw util::Error("transpose supports only 2D tensors", line, column);
     }
 
-    auto kernel_or = exec.GetKernel({"lattice_transpose"});
+    auto kernel_or = exec.GetKernel(
+        DispatchKernel(KernelOp::kTranspose, exec.DispatchKey()));
     if (!kernel_or.ok()) {
         LogGpuError(exec.Type(), kernel_or.status(), "transpose");
         if (error)
@@ -1365,9 +1564,11 @@ std::optional<Value> TryGpuTranspose(const Value& v,
     TransposeParams params;
     params.rows = static_cast<uint64_t>(rows);
     params.cols = static_cast<uint64_t>(cols);
+    params.dtype = KernelDType(exec, dense.tensor.elem_type);
+    params.flags = KernelFlags(exec.ExecConfig(), false, exec.UseFp64());
 
-    LaunchConfig cfg =
-        Make2DLaunch(static_cast<uint64_t>(cols), static_cast<uint64_t>(rows));
+    LaunchConfig cfg = MakeTiled2DLaunch(static_cast<uint64_t>(cols),
+                                         static_cast<uint64_t>(rows), 16);
     std::vector<GpuArg> args;
     args.push_back(GpuArg::Buffer(in_buf));
     args.push_back(GpuArg::Buffer(out_buf));
@@ -1421,7 +1622,8 @@ std::optional<Value> TryGpuMatmul(const Value& lhs,
         throw util::Error("matmul shape mismatch", line, column);
     }
 
-    auto kernel_or = exec.GetKernel({"lattice_matmul"});
+    auto kernel_or =
+        exec.GetKernel(DispatchKernel(KernelOp::kMatmul, exec.DispatchKey()));
     if (!kernel_or.ok()) {
         LogGpuError(exec.Type(), kernel_or.status(), "matmul");
         if (error)
@@ -1479,6 +1681,9 @@ std::optional<Value> TryGpuMatmul(const Value& lhs,
         return std::nullopt;
     }
 
+    DType elem =
+        PromoteType(A.tensor.elem_type, B.tensor.elem_type, line, column);
+
     MatmulParams params;
     params.m = static_cast<uint64_t>(m);
     params.n = static_cast<uint64_t>(n);
@@ -1486,11 +1691,12 @@ std::optional<Value> TryGpuMatmul(const Value& lhs,
     params.lda = static_cast<uint64_t>(k);
     params.ldb = static_cast<uint64_t>(n);
     params.ldc = static_cast<uint64_t>(n);
-    params.dtype = 0;
-    params.flags = 0;
+    params.dtype = KernelDType(exec, elem);
+    params.flags = KernelFlags(exec.ExecConfig(), false, exec.UseFp64());
 
-    LaunchConfig cfg =
-        Make2DLaunch(static_cast<uint64_t>(n), static_cast<uint64_t>(m));
+    uint32_t tile = TileFromKernelName(kernel_or.value().name, 16);
+    LaunchConfig cfg = MakeTiled2DLaunch(static_cast<uint64_t>(n),
+                                         static_cast<uint64_t>(m), tile);
     std::vector<GpuArg> args;
     args.push_back(GpuArg::Buffer(a_buf));
     args.push_back(GpuArg::Buffer(b_buf));
@@ -1513,8 +1719,6 @@ std::optional<Value> TryGpuMatmul(const Value& lhs,
         return std::nullopt;
     }
 
-    DType elem =
-        PromoteType(A.tensor.elem_type, B.tensor.elem_type, line, column);
     auto out_dense = BuildDenseTensor({m, n}, elem, out_data_or.value());
     if (!out_dense.has_value())
         return std::nullopt;
@@ -1547,7 +1751,8 @@ std::optional<Value> TryGpuConv2d(const Value& input,
     int64_t oh = h - kh + 1;
     int64_t ow = w - kw + 1;
 
-    auto kernel_or = exec.GetKernel({"lattice_conv2d"});
+    auto kernel_or =
+        exec.GetKernel(DispatchKernel(KernelOp::kConv2d, exec.DispatchKey()));
     if (!kernel_or.ok()) {
         LogGpuError(exec.Type(), kernel_or.status(), "conv2d");
         if (error)
@@ -1606,6 +1811,9 @@ std::optional<Value> TryGpuConv2d(const Value& input,
         return std::nullopt;
     }
 
+    DType elem =
+        PromoteType(in.tensor.elem_type, k.tensor.elem_type, line, column);
+
     Conv2dParams params;
     params.in_h = static_cast<uint64_t>(h);
     params.in_w = static_cast<uint64_t>(w);
@@ -1613,9 +1821,12 @@ std::optional<Value> TryGpuConv2d(const Value& input,
     params.k_w = static_cast<uint64_t>(kw);
     params.out_h = static_cast<uint64_t>(oh);
     params.out_w = static_cast<uint64_t>(ow);
+    params.dtype = KernelDType(exec, elem);
+    params.flags = KernelFlags(exec.ExecConfig(), false, exec.UseFp64());
 
-    LaunchConfig cfg =
-        Make2DLaunch(static_cast<uint64_t>(ow), static_cast<uint64_t>(oh));
+    uint32_t tile = TileFromKernelName(kernel_or.value().name, 16);
+    LaunchConfig cfg = MakeTiled2DLaunch(static_cast<uint64_t>(ow),
+                                         static_cast<uint64_t>(oh), tile);
     std::vector<GpuArg> args;
     args.push_back(GpuArg::Buffer(in_buf));
     args.push_back(GpuArg::Buffer(k_buf));
@@ -1638,8 +1849,6 @@ std::optional<Value> TryGpuConv2d(const Value& input,
         return std::nullopt;
     }
 
-    DType elem =
-        PromoteType(in.tensor.elem_type, k.tensor.elem_type, line, column);
     auto out_dense = BuildDenseTensor({oh, ow}, elem, out_data_or.value());
     if (!out_dense.has_value())
         return std::nullopt;

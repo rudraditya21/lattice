@@ -16,8 +16,14 @@ struct KernelBuildDefines {
     uint32_t abi_version_min = 0;
     bool has_fp16 = false;
     bool has_fp64 = false;
+    bool fast_math = false;
+    bool vectorize = false;
+    bool mixed_precision = false;
     uint64_t device_type = 0;
     uint64_t vendor_id = 0;
+    uint32_t arch_major = 0;
+    uint32_t arch_minor = 0;
+    uint32_t vector_width = 0;
 };
 
 std::string KernelDefineString(const KernelBuildDefines& defs,

@@ -15,6 +15,27 @@ void RunKernelRegistryTests(TestContext* ctx) {
 
   auto all = rt::AllKernelDefinitions();
   ExpectTrue(!all.empty(), "kernel_registry_all", ctx);
+
+  rt::KernelDispatchKey key;
+  key.backend = rt::BackendType::kCUDA;
+  key.vendor = rt::KernelVendor::kNvidia;
+  key.arch_major = 8;
+  key.vectorize = true;
+  key.use_fp64 = false;
+  const auto* matmul = rt::SelectKernelDefinition(rt::KernelOp::kMatmul, key);
+  ExpectTrue(matmul != nullptr, "kernel_registry_select_matmul", ctx);
+  if (matmul) {
+    ExpectTrue(matmul->name == "lattice_matmul_t32",
+               "kernel_registry_matmul_variant", ctx);
+  }
+
+  const auto* elemwise =
+      rt::SelectKernelDefinition(rt::KernelOp::kElemwiseAdd, key);
+  ExpectTrue(elemwise != nullptr, "kernel_registry_select_elemwise", ctx);
+  if (elemwise) {
+    ExpectTrue(elemwise->name == "lattice_elemwise_add_vec4",
+               "kernel_registry_elemwise_variant", ctx);
+  }
 }
 
 }  // namespace test

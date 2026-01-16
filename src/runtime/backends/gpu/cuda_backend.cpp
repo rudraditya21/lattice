@@ -1533,11 +1533,20 @@ std::string CudaBackend::BuildOptions(const DeviceContext& dev,
     defs.abi_version_min = cuda::kAbiVersionMin;
     defs.has_fp16 = dev.caps.fp16 == CapabilityStatus::kYes;
     defs.has_fp64 = dev.caps.fp64 == CapabilityStatus::kYes;
+    defs.fast_math = exec_config_.enable_fast_math;
+    defs.vectorize = exec_config_.enable_vectorize;
+    defs.mixed_precision = exec_config_.enable_mixed_precision;
+    defs.vendor_id = 0x10DE;
+    defs.arch_major = static_cast<uint32_t>(dev.desc.major);
+    defs.arch_minor = static_cast<uint32_t>(dev.desc.minor);
     std::string defines = KernelDefineString(defs, "-D");
     AppendOption(&options, defines);
     std::string env_opts = LoadBuildOptionsEnv("LATTICE_CUDA_BUILD_OPTIONS");
     AppendOption(&options, env_opts);
     AppendOption(&options, extra);
+    if (exec_config_.enable_fast_math) {
+        AppendOption(&options, "--use_fast_math");
+    }
     if (KernelDebugEnabled("LATTICE_CUDA_BUILD_DEBUG")) {
         AppendOption(&options, KernelDebugOptions(BackendType::kCUDA));
     }

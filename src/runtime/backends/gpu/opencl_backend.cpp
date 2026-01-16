@@ -1710,6 +1710,9 @@ std::string OpenCLBackend::BuildOptions(const DeviceContext& dev,
     defs.abi_version_min = opencl::kAbiVersionMin;
     defs.device_type = static_cast<uint64_t>(dev.desc.type);
     defs.vendor_id = static_cast<uint64_t>(dev.desc.vendor_id);
+    defs.fast_math = exec_config_.enable_fast_math;
+    defs.vectorize = exec_config_.enable_vectorize;
+    defs.mixed_precision = exec_config_.enable_mixed_precision;
     std::string extensions = DeviceInfoString(dev.device, CL_DEVICE_EXTENSIONS);
     if (extensions.find("cl_khr_fp64") != std::string::npos) {
         defs.has_fp64 = true;
@@ -1723,6 +1726,10 @@ std::string OpenCLBackend::BuildOptions(const DeviceContext& dev,
     std::string env_opts = LoadBuildOptionsEnv("LATTICE_OPENCL_BUILD_OPTIONS");
     AppendOption(&options, env_opts);
     AppendOption(&options, extra);
+    if (exec_config_.enable_fast_math) {
+        AppendOption(&options, "-cl-fast-relaxed-math");
+        AppendOption(&options, "-cl-mad-enable");
+    }
     if (KernelDebugEnabled("LATTICE_OPENCL_BUILD_DEBUG")) {
         AppendOption(&options, KernelDebugOptions(BackendType::kOpenCL));
     }

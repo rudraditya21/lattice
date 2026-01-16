@@ -238,6 +238,24 @@ std::string KernelDefineString(const KernelBuildDefines& defs,
     if (defs.has_fp64) {
         add("LATTICE_HAS_FP64", "1");
     }
+    if (defs.fast_math) {
+        add("LATTICE_FAST_MATH", "1");
+    }
+    if (defs.vectorize) {
+        add("LATTICE_VECTORIZE", "1");
+    }
+    if (defs.mixed_precision) {
+        add("LATTICE_MIXED_PRECISION", "1");
+    }
+    if (defs.vector_width != 0) {
+        add("LATTICE_VECTOR_WIDTH", std::to_string(defs.vector_width));
+    }
+    if (defs.arch_major != 0) {
+        add("LATTICE_ARCH_MAJOR", std::to_string(defs.arch_major));
+    }
+    if (defs.arch_minor != 0) {
+        add("LATTICE_ARCH_MINOR", std::to_string(defs.arch_minor));
+    }
     return out.str();
 }
 

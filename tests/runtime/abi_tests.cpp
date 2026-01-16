@@ -54,11 +54,12 @@ void RunAbiTests(TestContext* ctx) {
   ExpectTrue(offsetof(ElemwiseParams, flags) == 20, "elemwise_params_flags_off", ctx);
   ExpectTrue(offsetof(ElemwiseParams, shape) == 24, "elemwise_params_shape_off", ctx);
 
-  ExpectTrue(sizeof(ReduceParams) == 24, "reduce_params_size", ctx);
+  ExpectTrue(sizeof(ReduceParams) == 32, "reduce_params_size", ctx);
   ExpectTrue(offsetof(ReduceParams, count) == 0, "reduce_params_count_off", ctx);
   ExpectTrue(offsetof(ReduceParams, op) == 8, "reduce_params_op_off", ctx);
   ExpectTrue(offsetof(ReduceParams, dtype) == 12, "reduce_params_dtype_off", ctx);
-  ExpectTrue(offsetof(ReduceParams, stride) == 16, "reduce_params_stride_off", ctx);
+  ExpectTrue(offsetof(ReduceParams, flags) == 16, "reduce_params_flags_off", ctx);
+  ExpectTrue(offsetof(ReduceParams, stride) == 24, "reduce_params_stride_off", ctx);
 
   ExpectTrue(sizeof(MatmulParams) == 56, "matmul_params_size", ctx);
   ExpectTrue(offsetof(MatmulParams, m) == 0, "matmul_params_m_off", ctx);
@@ -70,8 +71,8 @@ void RunAbiTests(TestContext* ctx) {
   ExpectTrue(offsetof(MatmulParams, dtype) == 48, "matmul_params_dtype_off", ctx);
   ExpectTrue(offsetof(MatmulParams, flags) == 52, "matmul_params_flags_off", ctx);
 
-  ExpectTrue(sizeof(TransposeParams) == 16, "transpose_params_size", ctx);
-  ExpectTrue(sizeof(Conv2dParams) == 48, "conv2d_params_size", ctx);
+  ExpectTrue(sizeof(TransposeParams) == 24, "transpose_params_size", ctx);
+  ExpectTrue(sizeof(Conv2dParams) == 56, "conv2d_params_size", ctx);
   ExpectTrue(sizeof(Pool2dParams) == 48, "pool2d_params_size", ctx);
   ExpectTrue(sizeof(FftParams) == 8, "fft_params_size", ctx);
   ExpectTrue(sizeof(SolveParams) == 16, "solve_params_size", ctx);

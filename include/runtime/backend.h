@@ -111,6 +111,9 @@ struct DeviceMemoryStats {
 struct ExecutionConfig {
     bool sync_on_launch = true;
     bool enable_profiling = false;
+    bool enable_fast_math = false;
+    bool enable_vectorize = true;
+    bool enable_mixed_precision = false;
 };
 
 enum class ProfilingEventKind {

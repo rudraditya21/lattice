@@ -40,6 +40,18 @@ ExecutionConfig LoadExecutionConfig(const std::string& prefix,
     if (ParseBoolEnv(std::getenv(async_key.c_str()), &value)) {
         base.sync_on_launch = !value;
     }
+    const std::string fast_math_key = prefix + "_FAST_MATH";
+    if (ParseBoolEnv(std::getenv(fast_math_key.c_str()), &value)) {
+        base.enable_fast_math = value;
+    }
+    const std::string vectorize_key = prefix + "_VECTORIZE";
+    if (ParseBoolEnv(std::getenv(vectorize_key.c_str()), &value)) {
+        base.enable_vectorize = value;
+    }
+    const std::string mixed_key = prefix + "_MIXED_PRECISION";
+    if (ParseBoolEnv(std::getenv(mixed_key.c_str()), &value)) {
+        base.enable_mixed_precision = value;
+    }
     return base;
 }
 

@@ -7,10 +7,10 @@
 namespace lattice::runtime::cuda {
 
 constexpr uint32_t kAbiVersionMajor = 1;
-constexpr uint32_t kAbiVersionMinor = 1;
+constexpr uint32_t kAbiVersionMinor = 2;
 constexpr uint32_t kAbiVersion = (kAbiVersionMajor << 16) | kAbiVersionMinor;
 constexpr uint32_t kAbiVersionMinMajor = 1;
-constexpr uint32_t kAbiVersionMinMinor = 1;
+constexpr uint32_t kAbiVersionMinMinor = 2;
 constexpr uint32_t kAbiVersionMin =
     (kAbiVersionMinMajor << 16) | kAbiVersionMinMinor;
 
@@ -38,6 +38,19 @@ enum class DTypeCode : uint32_t {
     kU32 = 4,
 };
 
+enum class KernelFlag : uint32_t {
+    kVectorize = 1u << 0,
+    kFastMath = 1u << 1,
+    kMixedPrecision = 1u << 2,
+};
+
+constexpr uint32_t kKernelFlagVectorize =
+    static_cast<uint32_t>(KernelFlag::kVectorize);
+constexpr uint32_t kKernelFlagFastMath =
+    static_cast<uint32_t>(KernelFlag::kFastMath);
+constexpr uint32_t kKernelFlagMixedPrecision =
+    static_cast<uint32_t>(KernelFlag::kMixedPrecision);
+
 constexpr uint32_t kMaxTensorDims = 8;
 
 // Fixed ABI: kernels receive input buffers first, then a params struct by
@@ -58,6 +71,7 @@ struct ReduceParams {
     uint64_t count = 0;
     uint32_t op = 0;
     uint32_t dtype = 0;
+    uint32_t flags = 0;
     uint64_t stride = 0;
 };
 
@@ -75,6 +89,8 @@ struct MatmulParams {
 struct TransposeParams {
     uint64_t rows = 0;
     uint64_t cols = 0;
+    uint32_t dtype = 0;
+    uint32_t flags = 0;
 };
 
 struct Conv2dParams {
@@ -84,6 +100,8 @@ struct Conv2dParams {
     uint64_t k_w = 0;
     uint64_t out_h = 0;
     uint64_t out_w = 0;
+    uint32_t dtype = 0;
+    uint32_t flags = 0;
 };
 
 struct Pool2dParams {
@@ -152,14 +170,16 @@ static_assert(offsetof(ElemwiseParams, lhs_strides) == 24 + 16 * kMaxTensorDims,
 static_assert(offsetof(ElemwiseParams, rhs_strides) == 24 + 24 * kMaxTensorDims,
               "ElemwiseParams.rhs_strides offset mismatch");
 
-static_assert(sizeof(ReduceParams) == 24, "ReduceParams size mismatch");
+static_assert(sizeof(ReduceParams) == 32, "ReduceParams size mismatch");
 static_assert(offsetof(ReduceParams, count) == 0,
               "ReduceParams.count offset mismatch");
 static_assert(offsetof(ReduceParams, op) == 8,
               "ReduceParams.op offset mismatch");
 static_assert(offsetof(ReduceParams, dtype) == 12,
               "ReduceParams.dtype offset mismatch");
-static_assert(offsetof(ReduceParams, stride) == 16,
+static_assert(offsetof(ReduceParams, flags) == 16,
+              "ReduceParams.flags offset mismatch");
+static_assert(offsetof(ReduceParams, stride) == 24,
               "ReduceParams.stride offset mismatch");
 
 static_assert(sizeof(MatmulParams) == 56, "MatmulParams size mismatch");
@@ -178,8 +198,8 @@ static_assert(offsetof(MatmulParams, dtype) == 48,
 static_assert(offsetof(MatmulParams, flags) == 52,
               "MatmulParams.flags offset mismatch");
 
-static_assert(sizeof(TransposeParams) == 16, "TransposeParams size mismatch");
-static_assert(sizeof(Conv2dParams) == 48, "Conv2dParams size mismatch");
+static_assert(sizeof(TransposeParams) == 24, "TransposeParams size mismatch");
+static_assert(sizeof(Conv2dParams) == 56, "Conv2dParams size mismatch");
 static_assert(sizeof(Pool2dParams) == 48, "Pool2dParams size mismatch");
 static_assert(sizeof(FftParams) == 8, "FftParams size mismatch");
 static_assert(sizeof(SolveParams) == 16, "SolveParams size mismatch");

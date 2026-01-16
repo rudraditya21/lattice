@@ -1342,9 +1342,16 @@ std::string MetalBackend::BuildOptions(const DeviceContext& dev,
     defs.abi_version_min = metal::kAbiVersionMin;
     defs.has_fp16 = dev.caps.fp16 == CapabilityStatus::kYes;
     defs.has_fp64 = dev.caps.fp64 == CapabilityStatus::kYes;
+    defs.fast_math = exec_config_.enable_fast_math;
+    defs.vectorize = exec_config_.enable_vectorize;
+    defs.mixed_precision = exec_config_.enable_mixed_precision;
+    defs.vendor_id = 0x106B;
     AppendOption(&options, KernelDefineString(defs, "-D"));
     AppendOption(&options, LoadBuildOptionsEnv("LATTICE_METAL_BUILD_OPTIONS"));
     AppendOption(&options, extra);
+    if (exec_config_.enable_fast_math) {
+        AppendOption(&options, "-ffast-math");
+    }
     if (KernelDebugEnabled("LATTICE_METAL_BUILD_DEBUG")) {
         AppendOption(&options, KernelDebugOptions(BackendType::kMetal));
     }

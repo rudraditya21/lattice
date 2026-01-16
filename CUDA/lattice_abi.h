@@ -5,10 +5,10 @@
 #include <stdint.h>
 
 #ifndef LATTICE_ABI_VERSION
-#define LATTICE_ABI_VERSION 0x00010001
+#define LATTICE_ABI_VERSION 0x00010002
 #endif
 #ifndef LATTICE_ABI_VERSION_MIN
-#define LATTICE_ABI_VERSION_MIN 0x00010001
+#define LATTICE_ABI_VERSION_MIN 0x00010002
 #endif
 
 #define LATTICE_ABI_MAJOR(version) ((version) >> 16)
@@ -42,6 +42,10 @@ typedef enum lattice_dtype_code {
     LATTICE_DTYPE_U32 = 4,
 } lattice_dtype_code_t;
 
+#define LATTICE_FLAG_VECTORIZE (1u << 0)
+#define LATTICE_FLAG_FAST_MATH (1u << 1)
+#define LATTICE_FLAG_MIXED_PRECISION (1u << 2)
+
 // Fixed ABI: kernels receive input buffers first, then a params struct by
 // value.
 typedef struct lattice_elemwise_params {
@@ -60,6 +64,7 @@ typedef struct lattice_reduce_params {
     unsigned long long count;
     unsigned int op;
     unsigned int dtype;
+    unsigned int flags;
     unsigned long long stride;
 } lattice_reduce_params_t;
 
@@ -77,6 +82,8 @@ typedef struct lattice_matmul_params {
 typedef struct lattice_transpose_params {
     unsigned long long rows;
     unsigned long long cols;
+    unsigned int dtype;
+    unsigned int flags;
 } lattice_transpose_params_t;
 
 typedef struct lattice_conv2d_params {
@@ -86,6 +93,8 @@ typedef struct lattice_conv2d_params {
     unsigned long long k_w;
     unsigned long long out_h;
     unsigned long long out_w;
+    unsigned int dtype;
+    unsigned int flags;
 } lattice_conv2d_params_t;
 
 typedef struct lattice_pool2d_params {
@@ -170,7 +179,7 @@ LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_elemwise_params_t,
                                              rhs_strides) ==
                               24 + 24 * LATTICE_MAX_TENSOR_DIMS,
                           lattice_elemwise_params_rhs_strides_off);
-LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_reduce_params_t) == 24,
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_reduce_params_t) == 32,
                           lattice_reduce_params_size);
 LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_reduce_params_t, count) ==
                               0,
@@ -180,8 +189,11 @@ LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_reduce_params_t, op) == 8,
 LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_reduce_params_t, dtype) ==
                               12,
                           lattice_reduce_params_dtype_off);
-LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_reduce_params_t, stride) ==
+LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_reduce_params_t, flags) ==
                               16,
+                          lattice_reduce_params_flags_off);
+LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_reduce_params_t, stride) ==
+                              24,
                           lattice_reduce_params_stride_off);
 LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_matmul_params_t) == 56,
                           lattice_matmul_params_size);
@@ -206,9 +218,9 @@ LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_matmul_params_t, dtype) ==
 LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_matmul_params_t, flags) ==
                               52,
                           lattice_matmul_params_flags_off);
-LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_transpose_params_t) == 16,
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_transpose_params_t) == 24,
                           lattice_transpose_params_size);
-LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_conv2d_params_t) == 48,
+LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_conv2d_params_t) == 56,
                           lattice_conv2d_params_size);
 LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_pool2d_params_t) == 48,
                           lattice_pool2d_params_size);
