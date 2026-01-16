@@ -91,6 +91,7 @@ class CudaBackend final : public Backend {
     int NumThreads() const override;
     size_t OutstandingAllocs() const override;
     BackendMemoryStats MemoryStats() const override;
+    std::vector<DeviceMemoryStats> MemoryStatsByDevice() const override;
     ExecutionConfig GetExecutionConfig() const override;
     Status SetExecutionConfig(const ExecutionConfig& config) override;
     StatusOr<uint64_t> ElapsedNs(

@@ -100,6 +100,14 @@ struct BackendMemoryStats {
     MemoryPoolStats pinned;
 };
 
+struct DeviceMemoryStats {
+    BackendType backend = BackendType::kCPU;
+    int device_index = -1;
+    std::string device_name;
+    MemoryPoolStats device;
+    MemoryPoolStats pinned;
+};
+
 struct ExecutionConfig {
     bool sync_on_launch = true;
     bool enable_profiling = false;
@@ -164,6 +172,7 @@ class Backend {
     virtual int NumThreads() const = 0;
     virtual size_t OutstandingAllocs() const = 0;
     virtual BackendMemoryStats MemoryStats() const = 0;
+    virtual std::vector<DeviceMemoryStats> MemoryStatsByDevice() const = 0;
     virtual ExecutionConfig GetExecutionConfig() const = 0;
     virtual Status SetExecutionConfig(const ExecutionConfig& config) = 0;
     virtual StatusOr<uint64_t> ElapsedNs(
@@ -176,6 +185,7 @@ class Backend {
 class CpuBackend final : public Backend {
    public:
     CpuBackend();
+    ~CpuBackend() override;
     BackendType Type() const override;
     std::string Name() const override;
     BackendCapabilities Capabilities() const override;
@@ -190,6 +200,7 @@ class CpuBackend final : public Backend {
     int NumThreads() const override;
     size_t OutstandingAllocs() const override;
     BackendMemoryStats MemoryStats() const override;
+    std::vector<DeviceMemoryStats> MemoryStatsByDevice() const override;
     ExecutionConfig GetExecutionConfig() const override;
     Status SetExecutionConfig(const ExecutionConfig& config) override;
     StatusOr<uint64_t> ElapsedNs(

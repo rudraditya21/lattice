@@ -28,6 +28,7 @@
 #include "runtime/backends/device_selector.h"
 #include "runtime/backends/kernel_build.h"
 #include "runtime/backends/memory_pool.h"
+#include "runtime/backends/memory_stats.h"
 #include "runtime/backends/memory_utils.h"
 #include "runtime/backends/metal_abi.h"
 
@@ -230,19 +231,23 @@ MetalBackend::~MetalBackend() {
     std::lock_guard<std::mutex> lock(mu_);
     for (auto& dev : devices_) {
         if (dev.device_pool) {
-            if (dev.device_pool->Outstanding() > 0) {
+            MemoryPoolStats stats = dev.device_pool->Stats();
+            if (HasOutstandingAllocs(stats)) {
                 LogBackend({LogLevel::kWarn, BackendType::kMetal,
                             BackendErrorKind::kMemory,
-                            "device pool has outstanding allocations",
+                            "device pool has outstanding allocations (" +
+                                FormatPoolStats(stats) + ")",
                             "device_pool_leak", dev.desc.index, dev.desc.name});
             }
             dev.device_pool->Trim();
         }
         if (dev.pinned_pool) {
-            if (dev.pinned_pool->Outstanding() > 0) {
+            MemoryPoolStats stats = dev.pinned_pool->Stats();
+            if (HasOutstandingAllocs(stats)) {
                 LogBackend({LogLevel::kWarn, BackendType::kMetal,
                             BackendErrorKind::kMemory,
-                            "pinned pool has outstanding allocations",
+                            "pinned pool has outstanding allocations (" +
+                                FormatPoolStats(stats) + ")",
                             "pinned_pool_leak", dev.desc.index, dev.desc.name});
             }
             dev.pinned_pool->Trim();
@@ -427,6 +432,28 @@ BackendMemoryStats MetalBackend::MemoryStats() const {
         }
     }
     return stats;
+}
+
+std::vector<DeviceMemoryStats> MetalBackend::MemoryStatsByDevice() const {
+    std::vector<DeviceMemoryStats> out;
+    Status status = EnsureInitialized();
+    if (!status.ok())
+        return out;
+    out.reserve(devices_.size());
+    for (const auto& dev : devices_) {
+        DeviceMemoryStats entry;
+        entry.backend = BackendType::kMetal;
+        entry.device_index = dev.desc.index;
+        entry.device_name = dev.desc.name;
+        if (dev.device_pool) {
+            entry.device = dev.device_pool->Stats();
+        }
+        if (dev.pinned_pool) {
+            entry.pinned = dev.pinned_pool->Stats();
+        }
+        out.push_back(std::move(entry));
+    }
+    return out;
 }
 
 ExecutionConfig MetalBackend::GetExecutionConfig() const {

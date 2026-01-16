@@ -27,6 +27,7 @@
 #include "runtime/backends/gpu/opencl_loader.h"
 #include "runtime/backends/kernel_build.h"
 #include "runtime/backends/memory_pool.h"
+#include "runtime/backends/memory_stats.h"
 #include "runtime/backends/memory_utils.h"
 #include "runtime/backends/opencl_abi.h"
 
@@ -351,23 +352,28 @@ OpenCLBackend::OpenCLBackend() = default;
 OpenCLBackend::~OpenCLBackend() {
     if (loader_.Loaded()) {
         for (auto& dev : devices_) {
+            MemoryPoolStats device_stats;
             for (auto& entry : dev.device_pools) {
                 if (entry.second) {
-                    if (entry.second->Outstanding() > 0) {
-                        LogBackend({LogLevel::kWarn, BackendType::kOpenCL,
-                                    BackendErrorKind::kMemory,
-                                    "device pool has outstanding allocations",
-                                    "device_pool_leak", dev.desc.index,
-                                    dev.desc.name});
-                    }
+                    AccumulateMemoryPoolStats(&device_stats,
+                                              entry.second->Stats());
                     entry.second->Trim();
                 }
             }
+            if (HasOutstandingAllocs(device_stats)) {
+                LogBackend({LogLevel::kWarn, BackendType::kOpenCL,
+                            BackendErrorKind::kMemory,
+                            "device pool has outstanding allocations (" +
+                                FormatPoolStats(device_stats) + ")",
+                            "device_pool_leak", dev.desc.index, dev.desc.name});
+            }
             if (dev.pinned_pool) {
-                if (dev.pinned_pool->Outstanding() > 0) {
+                MemoryPoolStats stats = dev.pinned_pool->Stats();
+                if (HasOutstandingAllocs(stats)) {
                     LogBackend({LogLevel::kWarn, BackendType::kOpenCL,
                                 BackendErrorKind::kMemory,
-                                "pinned pool has outstanding allocations",
+                                "pinned pool has outstanding allocations (" +
+                                    FormatPoolStats(stats) + ")",
                                 "pinned_pool_leak", dev.desc.index,
                                 dev.desc.name});
                 }
@@ -566,6 +572,31 @@ BackendMemoryStats OpenCLBackend::MemoryStats() const {
         }
     }
     return stats;
+}
+
+std::vector<DeviceMemoryStats> OpenCLBackend::MemoryStatsByDevice() const {
+    std::vector<DeviceMemoryStats> out;
+    Status status = EnsureInitialized();
+    if (!status.ok())
+        return out;
+    out.reserve(devices_.size());
+    for (const auto& dev : devices_) {
+        DeviceMemoryStats entry;
+        entry.backend = BackendType::kOpenCL;
+        entry.device_index = dev.desc.index;
+        entry.device_name = dev.desc.name;
+        for (const auto& pool_entry : dev.device_pools) {
+            if (pool_entry.second) {
+                AccumulateMemoryPoolStats(&entry.device,
+                                          pool_entry.second->Stats());
+            }
+        }
+        if (dev.pinned_pool) {
+            entry.pinned = dev.pinned_pool->Stats();
+        }
+        out.push_back(std::move(entry));
+    }
+    return out;
 }
 
 ExecutionConfig OpenCLBackend::GetExecutionConfig() const {

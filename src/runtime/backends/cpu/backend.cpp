@@ -20,6 +20,7 @@
 
 #include "runtime/backends/backend_log.h"
 #include "runtime/backends/memory_pool.h"
+#include "runtime/backends/memory_stats.h"
 #include "runtime/backends/memory_utils.h"
 
 #ifdef __linux__
@@ -502,6 +503,33 @@ CpuBackend::CpuBackend() {
     default_priority_ = 0;
 }
 
+CpuBackend::~CpuBackend() {
+    auto& state = CpuPools();
+    std::lock_guard<std::mutex> lock(state.mu);
+    if (state.device_pool) {
+        MemoryPoolStats stats = state.device_pool->Stats();
+        if (HasOutstandingAllocs(stats)) {
+            LogBackend({LogLevel::kWarn, BackendType::kCPU,
+                        BackendErrorKind::kMemory,
+                        "device pool has outstanding allocations (" +
+                            FormatPoolStats(stats) + ")",
+                        "device_pool_leak", 0, "cpu"});
+        }
+        state.device_pool->Trim();
+    }
+    if (state.pinned_pool) {
+        MemoryPoolStats stats = state.pinned_pool->Stats();
+        if (HasOutstandingAllocs(stats)) {
+            LogBackend({LogLevel::kWarn, BackendType::kCPU,
+                        BackendErrorKind::kMemory,
+                        "pinned pool has outstanding allocations (" +
+                            FormatPoolStats(stats) + ")",
+                        "pinned_pool_leak", -1, "cpu"});
+        }
+        state.pinned_pool->Trim();
+    }
+}
+
 BackendType CpuBackend::Type() const {
     return BackendType::kCPU;
 }
@@ -578,6 +606,20 @@ BackendMemoryStats CpuBackend::MemoryStats() const {
         stats.pinned = pool->Stats();
     }
     return stats;
+}
+
+std::vector<DeviceMemoryStats> CpuBackend::MemoryStatsByDevice() const {
+    DeviceMemoryStats entry;
+    entry.backend = BackendType::kCPU;
+    entry.device_index = 0;
+    entry.device_name = "cpu";
+    if (auto* pool = CpuDevicePool()) {
+        entry.device = pool->Stats();
+    }
+    if (auto* pool = CpuPinnedPool()) {
+        entry.pinned = pool->Stats();
+    }
+    return {entry};
 }
 
 ExecutionConfig CpuBackend::GetExecutionConfig() const {

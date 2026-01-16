@@ -24,6 +24,7 @@
 #include "runtime/backends/device_selector.h"
 #include "runtime/backends/kernel_build.h"
 #include "runtime/backends/memory_pool.h"
+#include "runtime/backends/memory_stats.h"
 #include "runtime/backends/memory_utils.h"
 
 namespace lattice::runtime {
@@ -315,10 +316,12 @@ CudaBackend::~CudaBackend() {
             loader_.cuCtxSetCurrent(dev.context);
         }
         if (dev.device_pool) {
-            if (dev.device_pool->Outstanding() > 0) {
+            MemoryPoolStats stats = dev.device_pool->Stats();
+            if (HasOutstandingAllocs(stats)) {
                 LogBackend({LogLevel::kWarn, BackendType::kCUDA,
                             BackendErrorKind::kMemory,
-                            "device pool has outstanding allocations",
+                            "device pool has outstanding allocations (" +
+                                FormatPoolStats(stats) + ")",
                             "device_pool_leak", dev.desc.index, dev.desc.name});
             }
             dev.device_pool->Trim();
@@ -333,10 +336,12 @@ CudaBackend::~CudaBackend() {
         }
     }
     if (pinned_pool_) {
-        if (pinned_pool_->Outstanding() > 0) {
+        MemoryPoolStats stats = pinned_pool_->Stats();
+        if (HasOutstandingAllocs(stats)) {
             LogBackend({LogLevel::kWarn, BackendType::kCUDA,
                         BackendErrorKind::kMemory,
-                        "pinned pool has outstanding allocations",
+                        "pinned pool has outstanding allocations (" +
+                            FormatPoolStats(stats) + ")",
                         "pinned_pool_leak", -1, "cuda"});
         }
         pinned_pool_->Trim();
@@ -517,6 +522,33 @@ BackendMemoryStats CudaBackend::MemoryStats() const {
         AccumulateMemoryPoolStats(&stats.pinned, pinned_pool_->Stats());
     }
     return stats;
+}
+
+std::vector<DeviceMemoryStats> CudaBackend::MemoryStatsByDevice() const {
+    std::vector<DeviceMemoryStats> out;
+    Status status = EnsureInitialized();
+    if (!status.ok())
+        return out;
+    out.reserve(devices_.size() + (pinned_pool_ ? 1 : 0));
+    for (const auto& dev : devices_) {
+        DeviceMemoryStats entry;
+        entry.backend = BackendType::kCUDA;
+        entry.device_index = dev.desc.index;
+        entry.device_name = dev.desc.name;
+        if (dev.device_pool) {
+            entry.device = dev.device_pool->Stats();
+        }
+        out.push_back(entry);
+    }
+    if (pinned_pool_) {
+        DeviceMemoryStats entry;
+        entry.backend = BackendType::kCUDA;
+        entry.device_index = -1;
+        entry.device_name = "pinned_host";
+        entry.pinned = pinned_pool_->Stats();
+        out.push_back(entry);
+    }
+    return out;
 }
 
 ExecutionConfig CudaBackend::GetExecutionConfig() const {
