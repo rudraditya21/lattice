@@ -12,6 +12,12 @@
 - GPU backends: CUDA/HIP/Metal/OpenCL enqueue kernels and copies asynchronously; `ExecutionConfig::sync_on_launch` forces a stream sync after each launch for debugging.
 - Stream instances: `CreateStream()` creates a backend stream/queue when supported; on failure it falls back to the device default stream/queue.
 
+## Profiling Hooks and Counters
+- Enable timing and counters with `ExecutionConfig::enable_profiling` (per backend or via env config). When disabled, counters stay idle unless a hook is registered.
+- `Backend::ProfilingStats()` returns aggregate counters for kernel launches, host↔device copy calls/bytes, stream syncs, and event record/wait calls with host-side elapsed time accumulation.
+- `Backend::ResetProfilingStats()` clears counters; `Backend::SetProfilingHook()` registers a callback that receives `ProfilingEvent` records.
+- Profiling durations are host wall-clock time for the backend API call (not GPU kernel execution time); use `ElapsedNs(start, end)` with GPU events for device-side timing.
+
 ## Backend Selection
 - `LATTICE_BACKEND=auto|cpu|opencl|cuda|hip|metal` selects a preferred backend; if unavailable, Lattice falls back to CPU. `auto` probes CUDA → HIP → Metal → OpenCL → CPU.
 - `LATTICE_KERNEL_DIR=<path>` overrides the kernel search directory (defaults to `./OpenCL`, `./CUDA`, `./HIP`, or `./Metal` depending on backend).

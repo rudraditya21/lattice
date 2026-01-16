@@ -113,6 +113,46 @@ struct ExecutionConfig {
     bool enable_profiling = false;
 };
 
+enum class ProfilingEventKind {
+    kKernelLaunch,
+    kMemcpyH2D,
+    kMemcpyD2H,
+    kStreamSync,
+    kEventRecord,
+    kEventWait
+};
+
+struct ProfilingEvent {
+    ProfilingEventKind kind = ProfilingEventKind::kKernelLaunch;
+    BackendType backend = BackendType::kCPU;
+    int device_index = -1;
+    std::string label;
+    size_t bytes = 0;
+    uint64_t duration_ns = 0;
+    StatusCode status = StatusCode::kOk;
+};
+
+struct ProfilingCounters {
+    uint64_t kernel_launches = 0;
+    uint64_t kernel_launch_ns = 0;
+    uint64_t memcpy_h2d_calls = 0;
+    uint64_t memcpy_h2d_bytes = 0;
+    uint64_t memcpy_h2d_ns = 0;
+    uint64_t memcpy_d2h_calls = 0;
+    uint64_t memcpy_d2h_bytes = 0;
+    uint64_t memcpy_d2h_ns = 0;
+    uint64_t stream_syncs = 0;
+    uint64_t stream_sync_ns = 0;
+    uint64_t event_records = 0;
+    uint64_t event_record_ns = 0;
+    uint64_t event_waits = 0;
+    uint64_t event_wait_ns = 0;
+};
+
+using ProfilingHook = std::function<void(const ProfilingEvent&)>;
+
+class ProfilingState;
+
 class Event {
    public:
     virtual ~Event() = default;
@@ -177,6 +217,9 @@ class Backend {
     virtual std::vector<DeviceMemoryStats> MemoryStatsByDevice() const = 0;
     virtual ExecutionConfig GetExecutionConfig() const = 0;
     virtual Status SetExecutionConfig(const ExecutionConfig& config) = 0;
+    virtual ProfilingCounters ProfilingStats() const = 0;
+    virtual void ResetProfilingStats() = 0;
+    virtual void SetProfilingHook(ProfilingHook hook) = 0;
     virtual StatusOr<uint64_t> ElapsedNs(
         const std::shared_ptr<Event>& start,
         const std::shared_ptr<Event>& end) const = 0;
@@ -208,6 +251,9 @@ class CpuBackend final : public Backend {
     StatusOr<uint64_t> ElapsedNs(
         const std::shared_ptr<Event>& start,
         const std::shared_ptr<Event>& end) const override;
+    ProfilingCounters ProfilingStats() const override;
+    void ResetProfilingStats() override;
+    void SetProfilingHook(ProfilingHook hook) override;
     void SetDefaultPriority(int priority) override;
     void SetDeterministic(bool deterministic) override;
 
@@ -216,6 +262,7 @@ class CpuBackend final : public Backend {
     int default_priority_ = 0;
     mutable ExecutionConfig exec_config_{};
     mutable std::mutex config_mu_;
+    std::shared_ptr<ProfilingState> profiling_;
 };
 
 // Returns a singleton CPU backend instance.

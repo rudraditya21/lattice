@@ -84,6 +84,36 @@ void RunBackendEdgeTests(TestContext* ctx) {
     ExpectTrue(elapsed_or.ok(), "cpu_elapsed_enabled", ctx);
   }
 
+  backend->ResetProfilingStats();
+  std::atomic<int> hook_calls{0};
+  backend->SetProfilingHook([&](const rt::ProfilingEvent& ev) {
+    if (ev.backend == rt::BackendType::kCPU) {
+      hook_calls.fetch_add(1);
+    }
+  });
+  auto prof_stream_or = backend->CreateStream();
+  ExpectTrue(prof_stream_or.ok(), "cpu_profile_stream", ctx);
+  if (prof_stream_or.ok()) {
+    auto prof_stream = prof_stream_or.value();
+    auto prof_event_or = prof_stream->CreateEvent();
+    ExpectTrue(prof_event_or.ok(), "cpu_profile_event", ctx);
+    if (prof_event_or.ok()) {
+      auto prof_event = prof_event_or.value();
+      prof_stream->RecordEvent(prof_event);
+      prof_stream->Synchronize();
+      prof_event->Wait();
+    }
+  }
+  auto profile_stats = backend->ProfilingStats();
+  ExpectTrue(profile_stats.event_records > 0, "cpu_profile_event_records", ctx);
+  ExpectTrue(profile_stats.event_waits > 0, "cpu_profile_event_waits", ctx);
+  ExpectTrue(profile_stats.stream_syncs > 0, "cpu_profile_stream_syncs", ctx);
+  ExpectTrue(hook_calls.load() > 0, "cpu_profile_hook_calls", ctx);
+  backend->ResetProfilingStats();
+  auto cleared_stats = backend->ProfilingStats();
+  ExpectTrue(cleared_stats.event_records == 0, "cpu_profile_reset_records", ctx);
+  backend->SetProfilingHook(rt::ProfilingHook{});
+
   config.enable_profiling = false;
   backend->SetExecutionConfig(config);
   if (start_or.ok() && end_or.ok()) {

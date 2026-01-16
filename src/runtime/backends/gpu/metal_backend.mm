@@ -32,6 +32,7 @@
 #include "runtime/backends/memory_stats.h"
 #include "runtime/backends/memory_utils.h"
 #include "runtime/backends/metal_abi.h"
+#include "runtime/backends/profiling.h"
 
 namespace lattice::runtime {
 
@@ -93,16 +94,23 @@ std::unordered_map<std::string, std::string> ParseDefineOptions(
 
 class MetalEvent final : public Event {
    public:
-    explicit MetalEvent(id<MTLCommandQueue> queue) : queue_(queue) {}
+    MetalEvent(id<MTLCommandQueue> queue,
+               ProfilingState* profiling,
+               int device_index)
+        : queue_(queue), profiling_(profiling), device_index_(device_index) {}
 
     void Record() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kEventRecord,
+                                          BackendType::kMetal, device_index_});
         ready_.store(false, std::memory_order_relaxed);
         if (!queue_) {
+            scope.SetStatus(StatusCode::kUnavailable);
             ready_.store(true, std::memory_order_relaxed);
             return;
         }
         cmd_ = [queue_ commandBuffer];
         if (!cmd_) {
+            scope.SetStatus(StatusCode::kInternal);
             ready_.store(true, std::memory_order_relaxed);
             return;
         }
@@ -114,6 +122,8 @@ class MetalEvent final : public Event {
     }
 
     void Wait() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kEventWait,
+                                          BackendType::kMetal, device_index_});
         if (cmd_) {
             [cmd_ waitUntilCompleted];
         }
@@ -135,11 +145,16 @@ class MetalEvent final : public Event {
     id<MTLCommandQueue> queue_ = nil;
     id<MTLCommandBuffer> cmd_ = nil;
     std::atomic<bool> ready_{false};
+    ProfilingState* profiling_ = nullptr;
+    int device_index_ = -1;
 };
 
 class MetalStream final : public Stream {
    public:
-    explicit MetalStream(id<MTLCommandQueue> queue) : queue_(queue) {}
+    MetalStream(id<MTLCommandQueue> queue,
+                ProfilingState* profiling,
+                int device_index)
+        : queue_(queue), profiling_(profiling), device_index_(device_index) {}
     void Submit(std::function<void()> fn) override {
         for (auto& dep : deps_) {
             dep->Wait();
@@ -148,6 +163,8 @@ class MetalStream final : public Stream {
         fn();
     }
     void Synchronize() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kStreamSync,
+                                          BackendType::kMetal, device_index_});
         if (queue_) {
             id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
             [cmd commit];
@@ -164,7 +181,7 @@ class MetalStream final : public Stream {
         if (!queue_) {
             return Status::Unavailable("Metal queue unavailable");
         }
-        return std::make_shared<MetalEvent>(queue_);
+        return std::make_shared<MetalEvent>(queue_, profiling_, device_index_);
     }
     void RecordEvent(const std::shared_ptr<Event>& ev) override {
         if (!ev)
@@ -177,6 +194,8 @@ class MetalStream final : public Stream {
     id<MTLCommandQueue> queue_ = nil;
     int priority_ = 0;
     std::vector<std::shared_ptr<Event>> deps_;
+    ProfilingState* profiling_ = nullptr;
+    int device_index_ = -1;
 };
 
 bool QueryBoolSelector(id obj, SEL sel, bool* out) {
@@ -240,6 +259,8 @@ struct MetalBackend::DeviceContext {
 MetalBackend::MetalBackend() {
     exec_config_ = LoadExecutionConfig("LATTICE", exec_config_);
     exec_config_ = LoadExecutionConfig("LATTICE_METAL", exec_config_);
+    profiling_ = std::make_shared<ProfilingState>(BackendType::kMetal);
+    profiling_->SetEnabled(exec_config_.enable_profiling);
 }
 
 MetalBackend::~MetalBackend() {
@@ -316,7 +337,8 @@ StatusOr<std::shared_ptr<Stream>> MetalBackend::CreateStream() const {
         return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kContext,
                            "Metal queue unavailable");
     }
-    return std::make_shared<MetalStream>(queue);
+    return std::make_shared<MetalStream>(queue, profiling_.get(),
+                                         dev.desc.index);
 }
 
 StatusOr<std::shared_ptr<Event>> MetalBackend::CreateEvent() const {
@@ -328,7 +350,8 @@ StatusOr<std::shared_ptr<Event>> MetalBackend::CreateEvent() const {
                            BackendErrorKind::kDiscovery,
                            "No Metal devices available");
     }
-    return std::make_shared<MetalEvent>(devices_[0].queue);
+    return std::make_shared<MetalEvent>(devices_[0].queue, profiling_.get(),
+                                        devices_[0].desc.index);
 }
 
 StatusOr<Allocation> MetalBackend::Allocate(size_t bytes,
@@ -489,9 +512,33 @@ ExecutionConfig MetalBackend::GetExecutionConfig() const {
 }
 
 Status MetalBackend::SetExecutionConfig(const ExecutionConfig& config) {
-    std::lock_guard<std::mutex> lock(config_mu_);
-    exec_config_ = config;
+    {
+        std::lock_guard<std::mutex> lock(config_mu_);
+        exec_config_ = config;
+    }
+    if (profiling_) {
+        profiling_->SetEnabled(exec_config_.enable_profiling);
+    }
     return Status::OK();
+}
+
+ProfilingCounters MetalBackend::ProfilingStats() const {
+    if (!profiling_) {
+        return ProfilingCounters{};
+    }
+    return profiling_->Snapshot();
+}
+
+void MetalBackend::ResetProfilingStats() {
+    if (profiling_) {
+        profiling_->Reset();
+    }
+}
+
+void MetalBackend::SetProfilingHook(ProfilingHook hook) {
+    if (profiling_) {
+        profiling_->SetHook(std::move(hook));
+    }
 }
 
 StatusOr<uint64_t> MetalBackend::ElapsedNs(
@@ -615,18 +662,27 @@ Status MetalBackend::WriteBuffer(int device_index,
                                  const void* data,
                                  size_t bytes,
                                  size_t offset) const {
+    ProfilingScope scope(profiling_.get(), {ProfilingEventKind::kMemcpyH2D,
+                                            BackendType::kMetal, device_index});
+    scope.SetBytes(bytes);
     Status status = EnsureInitialized();
-    if (!status.ok())
+    if (!status.ok()) {
+        scope.SetStatus(status.code);
         return status;
+    }
     if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-        return MetalStatus(StatusCode::kInvalidArgument,
-                           BackendErrorKind::kInvalidArgument,
-                           "Invalid Metal device index");
+        Status err = MetalStatus(StatusCode::kInvalidArgument,
+                                 BackendErrorKind::kInvalidArgument,
+                                 "Invalid Metal device index");
+        scope.SetStatus(err.code);
+        return err;
     }
     if (bytes + offset > buffer.bytes) {
-        return MetalStatus(StatusCode::kInvalidArgument,
-                           BackendErrorKind::kInvalidArgument,
-                           "Write exceeds buffer size");
+        Status err = MetalStatus(StatusCode::kInvalidArgument,
+                                 BackendErrorKind::kInvalidArgument,
+                                 "Write exceeds buffer size");
+        scope.SetStatus(err.code);
+        return err;
     }
     id<MTLBuffer> mtl_buffer = (__bridge id<MTLBuffer>)buffer.handle;
     void* dst = static_cast<char*>(mtl_buffer.contents) +
@@ -640,18 +696,27 @@ Status MetalBackend::ReadBuffer(int device_index,
                                 void* data,
                                 size_t bytes,
                                 size_t offset) const {
+    ProfilingScope scope(profiling_.get(), {ProfilingEventKind::kMemcpyD2H,
+                                            BackendType::kMetal, device_index});
+    scope.SetBytes(bytes);
     Status status = EnsureInitialized();
-    if (!status.ok())
+    if (!status.ok()) {
+        scope.SetStatus(status.code);
         return status;
+    }
     if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-        return MetalStatus(StatusCode::kInvalidArgument,
-                           BackendErrorKind::kInvalidArgument,
-                           "Invalid Metal device index");
+        Status err = MetalStatus(StatusCode::kInvalidArgument,
+                                 BackendErrorKind::kInvalidArgument,
+                                 "Invalid Metal device index");
+        scope.SetStatus(err.code);
+        return err;
     }
     if (bytes + offset > buffer.bytes) {
-        return MetalStatus(StatusCode::kInvalidArgument,
-                           BackendErrorKind::kInvalidArgument,
-                           "Read exceeds buffer size");
+        Status err = MetalStatus(StatusCode::kInvalidArgument,
+                                 BackendErrorKind::kInvalidArgument,
+                                 "Read exceeds buffer size");
+        scope.SetStatus(err.code);
+        return err;
     }
     id<MTLBuffer> mtl_buffer = (__bridge id<MTLBuffer>)buffer.handle;
     void* src = static_cast<char*>(mtl_buffer.contents) +
@@ -820,22 +885,32 @@ Status MetalBackend::LaunchKernel(
     const MetalKernel& kernel,
     const MetalLaunchConfig& config,
     const std::vector<MetalKernelArg>& args) const {
+    ProfilingScope scope(profiling_.get(),
+                         {ProfilingEventKind::kKernelLaunch,
+                          BackendType::kMetal, kernel.device_index});
+    scope.SetLabel(kernel.name);
     Status status = EnsureInitialized();
-    if (!status.ok())
+    if (!status.ok()) {
+        scope.SetStatus(status.code);
         return status;
+    }
     if (kernel.device_index < 0 ||
         kernel.device_index >= static_cast<int>(devices_.size())) {
-        return MetalStatus(StatusCode::kInvalidArgument,
-                           BackendErrorKind::kInvalidArgument,
-                           "Invalid Metal device index");
+        Status err = MetalStatus(StatusCode::kInvalidArgument,
+                                 BackendErrorKind::kInvalidArgument,
+                                 "Invalid Metal device index");
+        scope.SetStatus(err.code);
+        return err;
     }
     auto& dev = devices_[kernel.device_index];
     id<MTLComputePipelineState> pipeline =
         (__bridge id<MTLComputePipelineState>)kernel.pipeline;
     if (!pipeline) {
-        return MetalStatus(StatusCode::kInvalidArgument,
-                           BackendErrorKind::kInvalidArgument,
-                           "Invalid Metal pipeline");
+        Status err = MetalStatus(StatusCode::kInvalidArgument,
+                                 BackendErrorKind::kInvalidArgument,
+                                 "Invalid Metal pipeline");
+        scope.SetStatus(err.code);
+        return err;
     }
 
     id<MTLCommandBuffer> cmd = [dev.queue commandBuffer];
@@ -873,9 +948,11 @@ Status MetalBackend::LaunchKernel(
     if (exec_config.sync_on_launch) {
         [cmd waitUntilCompleted];
         if (cmd.error) {
-            return MetalStatus(StatusCode::kInternal,
-                               BackendErrorKind::kRuntime,
-                               cmd.error.localizedDescription.UTF8String);
+            Status err =
+                MetalStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                            cmd.error.localizedDescription.UTF8String);
+            scope.SetStatus(err.code);
+            return err;
         }
     }
     return Status::OK();

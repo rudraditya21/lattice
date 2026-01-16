@@ -92,6 +92,9 @@ class HipBackend final : public Backend {
     std::vector<DeviceMemoryStats> MemoryStatsByDevice() const override;
     ExecutionConfig GetExecutionConfig() const override;
     Status SetExecutionConfig(const ExecutionConfig& config) override;
+    ProfilingCounters ProfilingStats() const override;
+    void ResetProfilingStats() override;
+    void SetProfilingHook(ProfilingHook hook) override;
     StatusOr<uint64_t> ElapsedNs(
         const std::shared_ptr<Event>& start,
         const std::shared_ptr<Event>& end) const override;
@@ -161,6 +164,7 @@ class HipBackend final : public Backend {
     int default_priority_ = 0;
     bool deterministic_ = false;
     mutable ExecutionConfig exec_config_{};
+    std::shared_ptr<ProfilingState> profiling_;
 };
 
 const Backend* GetHipBackend();

@@ -27,6 +27,7 @@
 #include "runtime/backends/memory_pool.h"
 #include "runtime/backends/memory_stats.h"
 #include "runtime/backends/memory_utils.h"
+#include "runtime/backends/profiling.h"
 
 namespace lattice::runtime {
 
@@ -194,8 +195,14 @@ class CudaEvent final : public Event {
    public:
     CudaEvent(const gpu::CudaLoader* loader,
               gpu::CUstream stream,
-              bool timing_enabled)
-        : loader_(loader), stream_(stream), timing_enabled_(timing_enabled) {}
+              bool timing_enabled,
+              ProfilingState* profiling,
+              int device_index)
+        : loader_(loader),
+          stream_(stream),
+          timing_enabled_(timing_enabled),
+          profiling_(profiling),
+          device_index_(device_index) {}
     ~CudaEvent() override {
         if (event_ && loader_ && loader_->cuEventDestroy) {
             loader_->cuEventDestroy(event_);
@@ -203,8 +210,11 @@ class CudaEvent final : public Event {
     }
 
     void Record() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kEventRecord,
+                                          BackendType::kCUDA, device_index_});
         ready_.store(false, std::memory_order_relaxed);
         if (!loader_) {
+            scope.SetStatus(StatusCode::kUnavailable);
             ready_.store(true, std::memory_order_relaxed);
             return;
         }
@@ -225,6 +235,8 @@ class CudaEvent final : public Event {
     }
 
     void Wait() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kEventWait,
+                                          BackendType::kCUDA, device_index_});
         if (event_ && loader_ && loader_->cuEventSynchronize) {
             loader_->cuEventSynchronize(event_);
             ready_.store(true, std::memory_order_relaxed);
@@ -252,6 +264,8 @@ class CudaEvent final : public Event {
     gpu::CUevent event_ = nullptr;
     std::atomic<bool> ready_{false};
     bool timing_enabled_ = false;
+    ProfilingState* profiling_ = nullptr;
+    int device_index_ = 0;
 };
 
 class CudaStream final : public Stream {
@@ -259,11 +273,15 @@ class CudaStream final : public Stream {
     CudaStream(const gpu::CudaLoader* loader,
                gpu::CUstream stream,
                bool timing_enabled,
-               bool owns_stream)
+               bool owns_stream,
+               ProfilingState* profiling,
+               int device_index)
         : loader_(loader),
           stream_(stream),
           timing_enabled_(timing_enabled),
-          owns_stream_(owns_stream) {}
+          owns_stream_(owns_stream),
+          profiling_(profiling),
+          device_index_(device_index) {}
     ~CudaStream() override {
         if (owns_stream_ && loader_ && loader_->cuStreamDestroy && stream_) {
             loader_->cuStreamDestroy(stream_);
@@ -279,6 +297,8 @@ class CudaStream final : public Stream {
     }
 
     void Synchronize() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kStreamSync,
+                                          BackendType::kCUDA, device_index_});
         if (loader_ && loader_->cuStreamSynchronize) {
             loader_->cuStreamSynchronize(stream_);
         }
@@ -302,7 +322,8 @@ class CudaStream final : public Stream {
                               BackendErrorKind::kContext,
                               "CUDA stream unavailable");
         }
-        return std::make_shared<CudaEvent>(loader_, stream_, timing_enabled_);
+        return std::make_shared<CudaEvent>(loader_, stream_, timing_enabled_,
+                                           profiling_, device_index_);
     }
     void RecordEvent(const std::shared_ptr<Event>& ev) override {
         if (!ev)
@@ -319,6 +340,8 @@ class CudaStream final : public Stream {
     bool owns_stream_ = false;
     int priority_ = 0;
     std::vector<std::shared_ptr<Event>> deps_;
+    ProfilingState* profiling_ = nullptr;
+    int device_index_ = 0;
 };
 
 }  // namespace
@@ -337,6 +360,8 @@ struct CudaBackend::DeviceContext {
 CudaBackend::CudaBackend() {
     exec_config_ = LoadExecutionConfig("LATTICE", exec_config_);
     exec_config_ = LoadExecutionConfig("LATTICE_CUDA", exec_config_);
+    profiling_ = std::make_shared<ProfilingState>(BackendType::kCUDA);
+    profiling_->SetEnabled(exec_config_.enable_profiling);
 }
 
 CudaBackend::~CudaBackend() {
@@ -429,7 +454,8 @@ StatusOr<std::shared_ptr<Stream>> CudaBackend::CreateStream() const {
     }
     ExecutionConfig config = GetExecutionConfig();
     return std::make_shared<CudaStream>(&loader_, stream,
-                                        config.enable_profiling, owns_stream);
+                                        config.enable_profiling, owns_stream,
+                                        profiling_.get(), dev.desc.index);
 }
 
 StatusOr<std::shared_ptr<Event>> CudaBackend::CreateEvent() const {
@@ -442,8 +468,9 @@ StatusOr<std::shared_ptr<Event>> CudaBackend::CreateEvent() const {
                           "No CUDA devices available");
     }
     ExecutionConfig config = GetExecutionConfig();
-    return std::make_shared<CudaEvent>(&loader_, devices_[0].stream,
-                                       config.enable_profiling);
+    return std::make_shared<CudaEvent>(
+        &loader_, devices_[0].stream, config.enable_profiling, profiling_.get(),
+        devices_[0].desc.index);
 }
 
 StatusOr<Allocation> CudaBackend::Allocate(size_t bytes,
@@ -604,9 +631,33 @@ ExecutionConfig CudaBackend::GetExecutionConfig() const {
 }
 
 Status CudaBackend::SetExecutionConfig(const ExecutionConfig& config) {
-    std::lock_guard<std::mutex> lock(config_mu_);
-    exec_config_ = config;
+    {
+        std::lock_guard<std::mutex> lock(config_mu_);
+        exec_config_ = config;
+    }
+    if (profiling_) {
+        profiling_->SetEnabled(exec_config_.enable_profiling);
+    }
     return Status::OK();
+}
+
+ProfilingCounters CudaBackend::ProfilingStats() const {
+    if (!profiling_) {
+        return ProfilingCounters{};
+    }
+    return profiling_->Snapshot();
+}
+
+void CudaBackend::ResetProfilingStats() {
+    if (profiling_) {
+        profiling_->Reset();
+    }
+}
+
+void CudaBackend::SetProfilingHook(ProfilingHook hook) {
+    if (profiling_) {
+        profiling_->SetHook(std::move(hook));
+    }
 }
 
 StatusOr<uint64_t> CudaBackend::ElapsedNs(
@@ -732,18 +783,27 @@ Status CudaBackend::WriteBuffer(int device_index,
                                 const void* data,
                                 size_t bytes,
                                 size_t offset) const {
+    ProfilingScope scope(profiling_.get(), {ProfilingEventKind::kMemcpyH2D,
+                                            BackendType::kCUDA, device_index});
+    scope.SetBytes(bytes);
     Status status = EnsureInitialized();
-    if (!status.ok())
+    if (!status.ok()) {
+        scope.SetStatus(status.code);
         return status;
+    }
     if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-        return CudaStatus(StatusCode::kInvalidArgument,
-                          BackendErrorKind::kInvalidArgument,
-                          "Invalid CUDA device index");
+        Status err = CudaStatus(StatusCode::kInvalidArgument,
+                                BackendErrorKind::kInvalidArgument,
+                                "Invalid CUDA device index");
+        scope.SetStatus(err.code);
+        return err;
     }
     if (bytes + offset > buffer.bytes) {
-        return CudaStatus(StatusCode::kInvalidArgument,
-                          BackendErrorKind::kInvalidArgument,
-                          "Write exceeds buffer size");
+        Status err = CudaStatus(StatusCode::kInvalidArgument,
+                                BackendErrorKind::kInvalidArgument,
+                                "Write exceeds buffer size");
+        scope.SetStatus(err.code);
+        return err;
     }
     auto& dev = devices_[device_index];
     if (loader_.cuCtxSetCurrent) {
@@ -751,9 +811,11 @@ Status CudaBackend::WriteBuffer(int device_index,
     }
     gpu::CUresult err = loader_.cuMemcpyHtoD(buffer.ptr + offset, data, bytes);
     if (err != gpu::CUDA_SUCCESS) {
-        return CudaStatus(
+        Status st = CudaStatus(
             StatusCode::kInternal, BackendErrorKind::kRuntime,
             "cuMemcpyHtoD failed: " + gpu::CudaErrorString(err, &loader_));
+        scope.SetStatus(st.code);
+        return st;
     }
     return Status::OK();
 }
@@ -763,18 +825,27 @@ Status CudaBackend::ReadBuffer(int device_index,
                                void* data,
                                size_t bytes,
                                size_t offset) const {
+    ProfilingScope scope(profiling_.get(), {ProfilingEventKind::kMemcpyD2H,
+                                            BackendType::kCUDA, device_index});
+    scope.SetBytes(bytes);
     Status status = EnsureInitialized();
-    if (!status.ok())
+    if (!status.ok()) {
+        scope.SetStatus(status.code);
         return status;
+    }
     if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-        return CudaStatus(StatusCode::kInvalidArgument,
-                          BackendErrorKind::kInvalidArgument,
-                          "Invalid CUDA device index");
+        Status err = CudaStatus(StatusCode::kInvalidArgument,
+                                BackendErrorKind::kInvalidArgument,
+                                "Invalid CUDA device index");
+        scope.SetStatus(err.code);
+        return err;
     }
     if (bytes + offset > buffer.bytes) {
-        return CudaStatus(StatusCode::kInvalidArgument,
-                          BackendErrorKind::kInvalidArgument,
-                          "Read exceeds buffer size");
+        Status err = CudaStatus(StatusCode::kInvalidArgument,
+                                BackendErrorKind::kInvalidArgument,
+                                "Read exceeds buffer size");
+        scope.SetStatus(err.code);
+        return err;
     }
     auto& dev = devices_[device_index];
     if (loader_.cuCtxSetCurrent) {
@@ -782,9 +853,11 @@ Status CudaBackend::ReadBuffer(int device_index,
     }
     gpu::CUresult err = loader_.cuMemcpyDtoH(data, buffer.ptr + offset, bytes);
     if (err != gpu::CUDA_SUCCESS) {
-        return CudaStatus(
+        Status st = CudaStatus(
             StatusCode::kInternal, BackendErrorKind::kRuntime,
             "cuMemcpyDtoH failed: " + gpu::CudaErrorString(err, &loader_));
+        scope.SetStatus(st.code);
+        return st;
     }
     return Status::OK();
 }
@@ -878,14 +951,22 @@ Status CudaBackend::ReleaseKernel(CudaKernel* kernel) const {
 Status CudaBackend::LaunchKernel(const CudaKernel& kernel,
                                  const CudaLaunchConfig& config,
                                  const std::vector<CudaKernelArg>& args) const {
+    ProfilingScope scope(profiling_.get(),
+                         {ProfilingEventKind::kKernelLaunch, BackendType::kCUDA,
+                          kernel.device_index});
+    scope.SetLabel(kernel.name);
     Status status = EnsureInitialized();
-    if (!status.ok())
+    if (!status.ok()) {
+        scope.SetStatus(status.code);
         return status;
+    }
     if (kernel.device_index < 0 ||
         kernel.device_index >= static_cast<int>(devices_.size())) {
-        return CudaStatus(StatusCode::kInvalidArgument,
-                          BackendErrorKind::kInvalidArgument,
-                          "Invalid CUDA device index");
+        Status err = CudaStatus(StatusCode::kInvalidArgument,
+                                BackendErrorKind::kInvalidArgument,
+                                "Invalid CUDA device index");
+        scope.SetStatus(err.code);
+        return err;
     }
     auto& dev = devices_[kernel.device_index];
     if (loader_.cuCtxSetCurrent) {
@@ -917,17 +998,22 @@ Status CudaBackend::LaunchKernel(const CudaKernel& kernel,
         static_cast<unsigned int>(config.shared_bytes), dev.stream,
         params.data(), nullptr);
     if (err != gpu::CUDA_SUCCESS) {
-        return CudaStatus(
+        Status st = CudaStatus(
             StatusCode::kInternal, BackendErrorKind::kLaunch,
             "cuLaunchKernel failed: " + gpu::CudaErrorString(err, &loader_));
+        scope.SetStatus(st.code);
+        return st;
     }
     ExecutionConfig exec_config = GetExecutionConfig();
     if (exec_config.sync_on_launch && loader_.cuStreamSynchronize) {
         err = loader_.cuStreamSynchronize(dev.stream);
         if (err != gpu::CUDA_SUCCESS) {
-            return CudaStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
-                              "cuStreamSynchronize failed: " +
-                                  gpu::CudaErrorString(err, &loader_));
+            Status st =
+                CudaStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                           "cuStreamSynchronize failed: " +
+                               gpu::CudaErrorString(err, &loader_));
+            scope.SetStatus(st.code);
+            return st;
         }
     }
     return Status::OK();

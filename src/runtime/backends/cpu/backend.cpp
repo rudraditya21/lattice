@@ -23,6 +23,7 @@
 #include "runtime/backends/memory_pool.h"
 #include "runtime/backends/memory_stats.h"
 #include "runtime/backends/memory_utils.h"
+#include "runtime/backends/profiling.h"
 
 #ifdef __linux__
 #include <numaif.h>
@@ -416,7 +417,11 @@ class ThreadPool {
 
 class CpuEvent final : public Event {
    public:
+    CpuEvent(ProfilingState* profiling, int device_index)
+        : profiling_(profiling), device_index_(device_index) {}
     void Record() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kEventRecord,
+                                          BackendType::kCPU, device_index_});
         timestamp_ = std::chrono::steady_clock::now();
         has_timestamp_ = true;
         ready_ = std::make_shared<std::promise<void>>();
@@ -424,6 +429,8 @@ class CpuEvent final : public Event {
         ready_->set_value();
     }
     void Wait() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kEventWait,
+                                          BackendType::kCPU, device_index_});
         if (future_.valid())
             future_.wait();
     }
@@ -442,10 +449,14 @@ class CpuEvent final : public Event {
     std::future<void> future_;
     std::chrono::steady_clock::time_point timestamp_{};
     bool has_timestamp_ = false;
+    ProfilingState* profiling_ = nullptr;
+    int device_index_ = 0;
 };
 
 class CpuStream final : public Stream {
    public:
+    CpuStream(ProfilingState* profiling, int device_index)
+        : profiling_(profiling), device_index_(device_index) {}
     void Submit(std::function<void()> fn) override {
         std::vector<std::shared_ptr<Event>> deps;
         std::shared_future<void> prev;
@@ -469,6 +480,8 @@ class CpuStream final : public Stream {
         }
     }
     void Synchronize() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kStreamSync,
+                                          BackendType::kCPU, device_index_});
         std::shared_future<void> tail;
         {
             std::lock_guard<std::mutex> lock(mu_);
@@ -486,7 +499,7 @@ class CpuStream final : public Stream {
         deps_.push_back(ev);
     }
     StatusOr<std::shared_ptr<Event>> CreateEvent() const override {
-        return std::make_shared<CpuEvent>();
+        return std::make_shared<CpuEvent>(profiling_, device_index_);
     }
     void RecordEvent(const std::shared_ptr<Event>& ev) override {
         if (!ev)
@@ -500,6 +513,8 @@ class CpuStream final : public Stream {
     std::vector<std::shared_ptr<Event>> deps_;
     std::shared_future<void> tail_;
     int priority_ = 0;
+    ProfilingState* profiling_ = nullptr;
+    int device_index_ = 0;
 };
 
 BackendCapabilities CpuCaps() {
@@ -527,6 +542,8 @@ BackendCapabilities CpuCaps() {
 CpuBackend::CpuBackend() {
     exec_config_ = LoadExecutionConfig("LATTICE", exec_config_);
     exec_config_ = LoadExecutionConfig("LATTICE_CPU", exec_config_);
+    profiling_ = std::make_shared<ProfilingState>(BackendType::kCPU);
+    profiling_->SetEnabled(exec_config_.enable_profiling);
     const char* env = std::getenv("LATTICE_NUMA_NODE");
     if (env) {
         try {
@@ -578,11 +595,11 @@ BackendCapabilities CpuBackend::Capabilities() const {
 }
 
 StatusOr<std::shared_ptr<Stream>> CpuBackend::CreateStream() const {
-    return std::make_shared<CpuStream>();
+    return std::make_shared<CpuStream>(profiling_.get(), 0);
 }
 
 StatusOr<std::shared_ptr<Event>> CpuBackend::CreateEvent() const {
-    return std::make_shared<CpuEvent>();
+    return std::make_shared<CpuEvent>(profiling_.get(), 0);
 }
 
 StatusOr<Allocation> CpuBackend::Allocate(size_t bytes,
@@ -663,9 +680,33 @@ ExecutionConfig CpuBackend::GetExecutionConfig() const {
 }
 
 Status CpuBackend::SetExecutionConfig(const ExecutionConfig& config) {
-    std::lock_guard<std::mutex> lock(config_mu_);
-    exec_config_ = config;
+    {
+        std::lock_guard<std::mutex> lock(config_mu_);
+        exec_config_ = config;
+    }
+    if (profiling_) {
+        profiling_->SetEnabled(exec_config_.enable_profiling);
+    }
     return Status::OK();
+}
+
+ProfilingCounters CpuBackend::ProfilingStats() const {
+    if (!profiling_) {
+        return ProfilingCounters{};
+    }
+    return profiling_->Snapshot();
+}
+
+void CpuBackend::ResetProfilingStats() {
+    if (profiling_) {
+        profiling_->Reset();
+    }
+}
+
+void CpuBackend::SetProfilingHook(ProfilingHook hook) {
+    if (profiling_) {
+        profiling_->SetHook(std::move(hook));
+    }
 }
 
 StatusOr<uint64_t> CpuBackend::ElapsedNs(

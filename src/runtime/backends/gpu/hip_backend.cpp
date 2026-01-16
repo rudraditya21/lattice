@@ -27,6 +27,7 @@
 #include "runtime/backends/memory_pool.h"
 #include "runtime/backends/memory_stats.h"
 #include "runtime/backends/memory_utils.h"
+#include "runtime/backends/profiling.h"
 
 namespace lattice::runtime {
 
@@ -187,8 +188,14 @@ class HipEvent final : public Event {
    public:
     HipEvent(const gpu::HipLoader* loader,
              gpu::hipStream_t stream,
-             bool timing_enabled)
-        : loader_(loader), stream_(stream), timing_enabled_(timing_enabled) {}
+             bool timing_enabled,
+             ProfilingState* profiling,
+             int device_index)
+        : loader_(loader),
+          stream_(stream),
+          timing_enabled_(timing_enabled),
+          profiling_(profiling),
+          device_index_(device_index) {}
     ~HipEvent() override {
         if (event_ && loader_ && loader_->hipEventDestroy) {
             loader_->hipEventDestroy(event_);
@@ -196,8 +203,11 @@ class HipEvent final : public Event {
     }
 
     void Record() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kEventRecord,
+                                          BackendType::kHIP, device_index_});
         ready_.store(false, std::memory_order_relaxed);
         if (!loader_) {
+            scope.SetStatus(StatusCode::kUnavailable);
             ready_.store(true, std::memory_order_relaxed);
             return;
         }
@@ -227,6 +237,8 @@ class HipEvent final : public Event {
     }
 
     void Wait() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kEventWait,
+                                          BackendType::kHIP, device_index_});
         if (event_ && loader_ && loader_->hipEventSynchronize) {
             loader_->hipEventSynchronize(event_);
             ready_.store(true, std::memory_order_relaxed);
@@ -254,6 +266,8 @@ class HipEvent final : public Event {
     gpu::hipEvent_t event_ = nullptr;
     std::atomic<bool> ready_{false};
     bool timing_enabled_ = false;
+    ProfilingState* profiling_ = nullptr;
+    int device_index_ = 0;
 };
 
 class HipStream final : public Stream {
@@ -261,11 +275,15 @@ class HipStream final : public Stream {
     HipStream(const gpu::HipLoader* loader,
               gpu::hipStream_t stream,
               bool timing_enabled,
-              bool owns_stream)
+              bool owns_stream,
+              ProfilingState* profiling,
+              int device_index)
         : loader_(loader),
           stream_(stream),
           timing_enabled_(timing_enabled),
-          owns_stream_(owns_stream) {}
+          owns_stream_(owns_stream),
+          profiling_(profiling),
+          device_index_(device_index) {}
     ~HipStream() override {
         if (owns_stream_ && loader_ && loader_->hipStreamDestroy && stream_) {
             loader_->hipStreamDestroy(stream_);
@@ -281,6 +299,8 @@ class HipStream final : public Stream {
     }
 
     void Synchronize() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kStreamSync,
+                                          BackendType::kHIP, device_index_});
         if (loader_ && loader_->hipStreamSynchronize) {
             loader_->hipStreamSynchronize(stream_);
         }
@@ -304,7 +324,8 @@ class HipStream final : public Stream {
                              BackendErrorKind::kContext,
                              "HIP stream unavailable");
         }
-        return std::make_shared<HipEvent>(loader_, stream_, timing_enabled_);
+        return std::make_shared<HipEvent>(loader_, stream_, timing_enabled_,
+                                          profiling_, device_index_);
     }
     void RecordEvent(const std::shared_ptr<Event>& ev) override {
         if (!ev)
@@ -321,6 +342,8 @@ class HipStream final : public Stream {
     bool owns_stream_ = false;
     int priority_ = 0;
     std::vector<std::shared_ptr<Event>> deps_;
+    ProfilingState* profiling_ = nullptr;
+    int device_index_ = 0;
 };
 
 }  // namespace
@@ -339,6 +362,8 @@ struct HipBackend::DeviceContext {
 HipBackend::HipBackend() {
     exec_config_ = LoadExecutionConfig("LATTICE", exec_config_);
     exec_config_ = LoadExecutionConfig("LATTICE_HIP", exec_config_);
+    profiling_ = std::make_shared<ProfilingState>(BackendType::kHIP);
+    profiling_->SetEnabled(exec_config_.enable_profiling);
 }
 
 HipBackend::~HipBackend() {
@@ -430,7 +455,8 @@ StatusOr<std::shared_ptr<Stream>> HipBackend::CreateStream() const {
     }
     ExecutionConfig config = GetExecutionConfig();
     return std::make_shared<HipStream>(&loader_, stream,
-                                       config.enable_profiling, owns_stream);
+                                       config.enable_profiling, owns_stream,
+                                       profiling_.get(), dev.desc.index);
 }
 
 StatusOr<std::shared_ptr<Event>> HipBackend::CreateEvent() const {
@@ -443,7 +469,8 @@ StatusOr<std::shared_ptr<Event>> HipBackend::CreateEvent() const {
     }
     ExecutionConfig config = GetExecutionConfig();
     return std::make_shared<HipEvent>(&loader_, devices_[0].stream,
-                                      config.enable_profiling);
+                                      config.enable_profiling, profiling_.get(),
+                                      devices_[0].desc.index);
 }
 
 StatusOr<Allocation> HipBackend::Allocate(size_t bytes,
@@ -603,9 +630,33 @@ ExecutionConfig HipBackend::GetExecutionConfig() const {
 }
 
 Status HipBackend::SetExecutionConfig(const ExecutionConfig& config) {
-    std::lock_guard<std::mutex> lock(config_mu_);
-    exec_config_ = config;
+    {
+        std::lock_guard<std::mutex> lock(config_mu_);
+        exec_config_ = config;
+    }
+    if (profiling_) {
+        profiling_->SetEnabled(exec_config_.enable_profiling);
+    }
     return Status::OK();
+}
+
+ProfilingCounters HipBackend::ProfilingStats() const {
+    if (!profiling_) {
+        return ProfilingCounters{};
+    }
+    return profiling_->Snapshot();
+}
+
+void HipBackend::ResetProfilingStats() {
+    if (profiling_) {
+        profiling_->Reset();
+    }
+}
+
+void HipBackend::SetProfilingHook(ProfilingHook hook) {
+    if (profiling_) {
+        profiling_->SetHook(std::move(hook));
+    }
 }
 
 StatusOr<uint64_t> HipBackend::ElapsedNs(
@@ -731,18 +782,27 @@ Status HipBackend::WriteBuffer(int device_index,
                                const void* data,
                                size_t bytes,
                                size_t offset) const {
+    ProfilingScope scope(profiling_.get(), {ProfilingEventKind::kMemcpyH2D,
+                                            BackendType::kHIP, device_index});
+    scope.SetBytes(bytes);
     Status status = EnsureInitialized();
-    if (!status.ok())
+    if (!status.ok()) {
+        scope.SetStatus(status.code);
         return status;
+    }
     if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-        return HipStatus(StatusCode::kInvalidArgument,
-                         BackendErrorKind::kInvalidArgument,
-                         "Invalid HIP device index");
+        Status err = HipStatus(StatusCode::kInvalidArgument,
+                               BackendErrorKind::kInvalidArgument,
+                               "Invalid HIP device index");
+        scope.SetStatus(err.code);
+        return err;
     }
     if (bytes + offset > buffer.bytes) {
-        return HipStatus(StatusCode::kInvalidArgument,
-                         BackendErrorKind::kInvalidArgument,
-                         "Write exceeds buffer size");
+        Status err = HipStatus(StatusCode::kInvalidArgument,
+                               BackendErrorKind::kInvalidArgument,
+                               "Write exceeds buffer size");
+        scope.SetStatus(err.code);
+        return err;
     }
     auto& dev = devices_[device_index];
     if (loader_.hipCtxSetCurrent && dev.context) {
@@ -753,9 +813,11 @@ Status HipBackend::WriteBuffer(int device_index,
     gpu::hipError_t err =
         loader_.hipMemcpy(dst, data, bytes, gpu::hipMemcpyHostToDevice);
     if (err != gpu::hipSuccess) {
-        return HipStatus(
+        Status st = HipStatus(
             StatusCode::kInternal, BackendErrorKind::kRuntime,
             "hipMemcpy HtoD failed: " + gpu::HipErrorString(err, &loader_));
+        scope.SetStatus(st.code);
+        return st;
     }
     return Status::OK();
 }
@@ -765,18 +827,27 @@ Status HipBackend::ReadBuffer(int device_index,
                               void* data,
                               size_t bytes,
                               size_t offset) const {
+    ProfilingScope scope(profiling_.get(), {ProfilingEventKind::kMemcpyD2H,
+                                            BackendType::kHIP, device_index});
+    scope.SetBytes(bytes);
     Status status = EnsureInitialized();
-    if (!status.ok())
+    if (!status.ok()) {
+        scope.SetStatus(status.code);
         return status;
+    }
     if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-        return HipStatus(StatusCode::kInvalidArgument,
-                         BackendErrorKind::kInvalidArgument,
-                         "Invalid HIP device index");
+        Status err = HipStatus(StatusCode::kInvalidArgument,
+                               BackendErrorKind::kInvalidArgument,
+                               "Invalid HIP device index");
+        scope.SetStatus(err.code);
+        return err;
     }
     if (bytes + offset > buffer.bytes) {
-        return HipStatus(StatusCode::kInvalidArgument,
-                         BackendErrorKind::kInvalidArgument,
-                         "Read exceeds buffer size");
+        Status err = HipStatus(StatusCode::kInvalidArgument,
+                               BackendErrorKind::kInvalidArgument,
+                               "Read exceeds buffer size");
+        scope.SetStatus(err.code);
+        return err;
     }
     auto& dev = devices_[device_index];
     if (loader_.hipCtxSetCurrent && dev.context) {
@@ -787,9 +858,11 @@ Status HipBackend::ReadBuffer(int device_index,
     gpu::hipError_t err =
         loader_.hipMemcpy(data, src, bytes, gpu::hipMemcpyDeviceToHost);
     if (err != gpu::hipSuccess) {
-        return HipStatus(
+        Status st = HipStatus(
             StatusCode::kInternal, BackendErrorKind::kRuntime,
             "hipMemcpy DtoH failed: " + gpu::HipErrorString(err, &loader_));
+        scope.SetStatus(st.code);
+        return st;
     }
     return Status::OK();
 }
@@ -886,19 +959,29 @@ Status HipBackend::ReleaseKernel(HipKernel* kernel) const {
 Status HipBackend::LaunchKernel(const HipKernel& kernel,
                                 const HipLaunchConfig& config,
                                 const std::vector<HipKernelArg>& args) const {
+    ProfilingScope scope(profiling_.get(),
+                         {ProfilingEventKind::kKernelLaunch, BackendType::kHIP,
+                          kernel.device_index});
+    scope.SetLabel(kernel.name);
     Status status = EnsureInitialized();
-    if (!status.ok())
+    if (!status.ok()) {
+        scope.SetStatus(status.code);
         return status;
+    }
     if (!loader_.hipModuleLaunchKernel) {
-        return HipStatus(StatusCode::kUnavailable,
-                         BackendErrorKind::kUnsupported,
-                         "hipModuleLaunchKernel not available");
+        Status err =
+            HipStatus(StatusCode::kUnavailable, BackendErrorKind::kUnsupported,
+                      "hipModuleLaunchKernel not available");
+        scope.SetStatus(err.code);
+        return err;
     }
     if (kernel.device_index < 0 ||
         kernel.device_index >= static_cast<int>(devices_.size())) {
-        return HipStatus(StatusCode::kInvalidArgument,
-                         BackendErrorKind::kInvalidArgument,
-                         "Invalid HIP device index");
+        Status err = HipStatus(StatusCode::kInvalidArgument,
+                               BackendErrorKind::kInvalidArgument,
+                               "Invalid HIP device index");
+        scope.SetStatus(err.code);
+        return err;
     }
     auto& dev = devices_[kernel.device_index];
     if (loader_.hipCtxSetCurrent && dev.context) {
@@ -930,17 +1013,22 @@ Status HipBackend::LaunchKernel(const HipKernel& kernel,
         static_cast<unsigned int>(config.shared_bytes), dev.stream,
         params.data(), nullptr);
     if (err != gpu::hipSuccess) {
-        return HipStatus(StatusCode::kInternal, BackendErrorKind::kLaunch,
-                         "hipModuleLaunchKernel failed: " +
-                             gpu::HipErrorString(err, &loader_));
+        Status st = HipStatus(StatusCode::kInternal, BackendErrorKind::kLaunch,
+                              "hipModuleLaunchKernel failed: " +
+                                  gpu::HipErrorString(err, &loader_));
+        scope.SetStatus(st.code);
+        return st;
     }
     ExecutionConfig exec_config = GetExecutionConfig();
     if (exec_config.sync_on_launch && loader_.hipStreamSynchronize) {
         err = loader_.hipStreamSynchronize(dev.stream);
         if (err != gpu::hipSuccess) {
-            return HipStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
-                             "hipStreamSynchronize failed: " +
-                                 gpu::HipErrorString(err, &loader_));
+            Status st =
+                HipStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                          "hipStreamSynchronize failed: " +
+                              gpu::HipErrorString(err, &loader_));
+            scope.SetStatus(st.code);
+            return st;
         }
     }
     return Status::OK();

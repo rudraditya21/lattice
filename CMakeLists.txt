@@ -27,6 +27,7 @@ set(LATTICE_SOURCES
     src/runtime/backends/kernel_registry.cpp
     src/runtime/backends/kernel_build.cpp
     src/runtime/backends/execution_config.cpp
+    src/runtime/backends/profiling.cpp
     src/runtime/backends/gpu/cuda_loader.cpp
     src/runtime/backends/gpu/cuda_backend.cpp
     src/runtime/backends/gpu/hip_loader.cpp

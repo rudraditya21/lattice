@@ -31,6 +31,7 @@
 #include "runtime/backends/memory_stats.h"
 #include "runtime/backends/memory_utils.h"
 #include "runtime/backends/opencl_abi.h"
+#include "runtime/backends/profiling.h"
 
 namespace lattice::runtime {
 
@@ -219,8 +220,14 @@ Status FillBufferZero(const OpenCLLoader* loader,
 
 class OpenCLEvent final : public Event {
    public:
-    OpenCLEvent(const OpenCLLoader* loader, cl_command_queue queue)
-        : loader_(loader), queue_(queue) {}
+    OpenCLEvent(const OpenCLLoader* loader,
+                cl_command_queue queue,
+                ProfilingState* profiling,
+                int device_index)
+        : loader_(loader),
+          queue_(queue),
+          profiling_(profiling),
+          device_index_(device_index) {}
     ~OpenCLEvent() override {
         if (event_ && loader_ && loader_->clReleaseEvent) {
             loader_->clReleaseEvent(event_);
@@ -228,8 +235,11 @@ class OpenCLEvent final : public Event {
     }
 
     void Record() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kEventRecord,
+                                          BackendType::kOpenCL, device_index_});
         ready_.store(false, std::memory_order_relaxed);
         if (!loader_ || !queue_) {
+            scope.SetStatus(StatusCode::kUnavailable);
             ready_.store(true, std::memory_order_relaxed);
             return;
         }
@@ -259,6 +269,8 @@ class OpenCLEvent final : public Event {
     }
 
     void Wait() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kEventWait,
+                                          BackendType::kOpenCL, device_index_});
         if (event_ && loader_ && loader_->clWaitForEvents) {
             loader_->clWaitForEvents(1, &event_);
             ready_.store(true, std::memory_order_relaxed);
@@ -287,14 +299,22 @@ class OpenCLEvent final : public Event {
     cl_command_queue queue_ = nullptr;
     cl_event event_ = nullptr;
     std::atomic<bool> ready_{false};
+    ProfilingState* profiling_ = nullptr;
+    int device_index_ = -1;
 };
 
 class OpenCLStream final : public Stream {
    public:
     OpenCLStream(const OpenCLLoader* loader,
                  cl_command_queue queue,
-                 bool owns_queue)
-        : loader_(loader), queue_(queue), owns_queue_(owns_queue) {}
+                 bool owns_queue,
+                 ProfilingState* profiling,
+                 int device_index)
+        : loader_(loader),
+          queue_(queue),
+          owns_queue_(owns_queue),
+          profiling_(profiling),
+          device_index_(device_index) {}
     ~OpenCLStream() override {
         if (owns_queue_ && loader_ && loader_->clReleaseCommandQueue &&
             queue_) {
@@ -309,6 +329,8 @@ class OpenCLStream final : public Stream {
         fn();
     }
     void Synchronize() override {
+        ProfilingScope scope(profiling_, {ProfilingEventKind::kStreamSync,
+                                          BackendType::kOpenCL, device_index_});
         if (loader_ && queue_)
             loader_->clFinish(queue_);
         deps_.clear();
@@ -337,7 +359,8 @@ class OpenCLStream final : public Stream {
                                 BackendErrorKind::kContext,
                                 "OpenCL queue unavailable");
         }
-        return std::make_shared<OpenCLEvent>(loader_, queue_);
+        return std::make_shared<OpenCLEvent>(loader_, queue_, profiling_,
+                                             device_index_);
     }
     void RecordEvent(const std::shared_ptr<Event>& ev) override {
         if (!ev)
@@ -352,6 +375,8 @@ class OpenCLStream final : public Stream {
     bool owns_queue_ = false;
     int priority_ = 0;
     std::vector<std::shared_ptr<Event>> deps_;
+    ProfilingState* profiling_ = nullptr;
+    int device_index_ = -1;
 };
 
 }  // namespace
@@ -373,6 +398,8 @@ struct OpenCLBackend::DeviceContext {
 OpenCLBackend::OpenCLBackend() {
     exec_config_ = LoadExecutionConfig("LATTICE", exec_config_);
     exec_config_ = LoadExecutionConfig("LATTICE_OPENCL", exec_config_);
+    profiling_ = std::make_shared<ProfilingState>(BackendType::kOpenCL);
+    profiling_->SetEnabled(exec_config_.enable_profiling);
 }
 
 OpenCLBackend::~OpenCLBackend() {
@@ -477,7 +504,8 @@ StatusOr<std::shared_ptr<Stream>> OpenCLBackend::CreateStream() const {
                             BackendErrorKind::kContext,
                             "OpenCL queue unavailable");
     }
-    return std::make_shared<OpenCLStream>(&loader_, queue, owns_queue);
+    return std::make_shared<OpenCLStream>(&loader_, queue, owns_queue,
+                                          profiling_.get(), dev.desc.index);
 }
 
 StatusOr<std::shared_ptr<Event>> OpenCLBackend::CreateEvent() const {
@@ -489,7 +517,8 @@ StatusOr<std::shared_ptr<Event>> OpenCLBackend::CreateEvent() const {
                             BackendErrorKind::kDiscovery,
                             "No OpenCL devices available");
     }
-    return std::make_shared<OpenCLEvent>(&loader_, devices_[0].queue);
+    return std::make_shared<OpenCLEvent>(
+        &loader_, devices_[0].queue, profiling_.get(), devices_[0].desc.index);
 }
 
 StatusOr<Allocation> OpenCLBackend::Allocate(size_t bytes,
@@ -663,6 +692,9 @@ Status OpenCLBackend::SetExecutionConfig(const ExecutionConfig& config) {
             exec_config_.enable_profiling != config.enable_profiling;
         exec_config_ = config;
     }
+    if (profiling_) {
+        profiling_->SetEnabled(exec_config_.enable_profiling);
+    }
     if (!profiling_changed)
         return Status::OK();
     Status status = EnsureInitialized();
@@ -688,6 +720,25 @@ Status OpenCLBackend::SetExecutionConfig(const ExecutionConfig& config) {
         dev.queue_profiling = config.enable_profiling;
     }
     return Status::OK();
+}
+
+ProfilingCounters OpenCLBackend::ProfilingStats() const {
+    if (!profiling_) {
+        return ProfilingCounters{};
+    }
+    return profiling_->Snapshot();
+}
+
+void OpenCLBackend::ResetProfilingStats() {
+    if (profiling_) {
+        profiling_->Reset();
+    }
+}
+
+void OpenCLBackend::SetProfilingHook(ProfilingHook hook) {
+    if (profiling_) {
+        profiling_->SetHook(std::move(hook));
+    }
 }
 
 StatusOr<uint64_t> OpenCLBackend::ElapsedNs(
@@ -826,31 +877,45 @@ Status OpenCLBackend::WriteBuffer(int device_index,
                                   const void* data,
                                   size_t bytes,
                                   size_t offset) const {
+    ProfilingScope scope(
+        profiling_.get(),
+        {ProfilingEventKind::kMemcpyH2D, BackendType::kOpenCL, device_index});
+    scope.SetBytes(bytes);
     Status status = EnsureInitialized();
-    if (!status.ok())
+    if (!status.ok()) {
+        scope.SetStatus(status.code);
         return status;
+    }
     if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-        return OpenclStatus(StatusCode::kInvalidArgument,
-                            BackendErrorKind::kInvalidArgument,
-                            "Invalid device index");
+        Status err = OpenclStatus(StatusCode::kInvalidArgument,
+                                  BackendErrorKind::kInvalidArgument,
+                                  "Invalid device index");
+        scope.SetStatus(err.code);
+        return err;
     }
     if (!buffer.mem) {
-        return OpenclStatus(StatusCode::kInvalidArgument,
-                            BackendErrorKind::kInvalidArgument,
-                            "Invalid buffer handle");
+        Status err = OpenclStatus(StatusCode::kInvalidArgument,
+                                  BackendErrorKind::kInvalidArgument,
+                                  "Invalid buffer handle");
+        scope.SetStatus(err.code);
+        return err;
     }
     if (bytes + offset > buffer.bytes) {
-        return OpenclStatus(StatusCode::kInvalidArgument,
-                            BackendErrorKind::kInvalidArgument,
-                            "Write exceeds buffer size");
+        Status err = OpenclStatus(StatusCode::kInvalidArgument,
+                                  BackendErrorKind::kInvalidArgument,
+                                  "Write exceeds buffer size");
+        scope.SetStatus(err.code);
+        return err;
     }
     cl_int err = loader_.clEnqueueWriteBuffer(devices_[device_index].queue,
                                               buffer.mem, CL_TRUE, offset,
                                               bytes, data, 0, nullptr, nullptr);
     if (err != CL_SUCCESS) {
-        return OpenclStatus(
+        Status st = OpenclStatus(
             StatusCode::kInternal, BackendErrorKind::kRuntime,
             "clEnqueueWriteBuffer failed: " + gpu::OpenCLErrorString(err));
+        scope.SetStatus(st.code);
+        return st;
     }
     return Status::OK();
 }
@@ -860,31 +925,45 @@ Status OpenCLBackend::ReadBuffer(int device_index,
                                  void* data,
                                  size_t bytes,
                                  size_t offset) const {
+    ProfilingScope scope(
+        profiling_.get(),
+        {ProfilingEventKind::kMemcpyD2H, BackendType::kOpenCL, device_index});
+    scope.SetBytes(bytes);
     Status status = EnsureInitialized();
-    if (!status.ok())
+    if (!status.ok()) {
+        scope.SetStatus(status.code);
         return status;
+    }
     if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
-        return OpenclStatus(StatusCode::kInvalidArgument,
-                            BackendErrorKind::kInvalidArgument,
-                            "Invalid device index");
+        Status err = OpenclStatus(StatusCode::kInvalidArgument,
+                                  BackendErrorKind::kInvalidArgument,
+                                  "Invalid device index");
+        scope.SetStatus(err.code);
+        return err;
     }
     if (!buffer.mem) {
-        return OpenclStatus(StatusCode::kInvalidArgument,
-                            BackendErrorKind::kInvalidArgument,
-                            "Invalid buffer handle");
+        Status err = OpenclStatus(StatusCode::kInvalidArgument,
+                                  BackendErrorKind::kInvalidArgument,
+                                  "Invalid buffer handle");
+        scope.SetStatus(err.code);
+        return err;
     }
     if (bytes + offset > buffer.bytes) {
-        return OpenclStatus(StatusCode::kInvalidArgument,
-                            BackendErrorKind::kInvalidArgument,
-                            "Read exceeds buffer size");
+        Status err = OpenclStatus(StatusCode::kInvalidArgument,
+                                  BackendErrorKind::kInvalidArgument,
+                                  "Read exceeds buffer size");
+        scope.SetStatus(err.code);
+        return err;
     }
     cl_int err = loader_.clEnqueueReadBuffer(devices_[device_index].queue,
                                              buffer.mem, CL_TRUE, offset, bytes,
                                              data, 0, nullptr, nullptr);
     if (err != CL_SUCCESS) {
-        return OpenclStatus(
+        Status st = OpenclStatus(
             StatusCode::kInternal, BackendErrorKind::kRuntime,
             "clEnqueueReadBuffer failed: " + gpu::OpenCLErrorString(err));
+        scope.SetStatus(st.code);
+        return st;
     }
     return Status::OK();
 }
@@ -1001,19 +1080,29 @@ Status OpenCLBackend::LaunchKernel(
     const OpenCLKernel& kernel,
     const OpenCLLaunchConfig& config,
     const std::vector<OpenCLKernelArg>& args) const {
+    ProfilingScope scope(profiling_.get(),
+                         {ProfilingEventKind::kKernelLaunch,
+                          BackendType::kOpenCL, kernel.device_index});
+    scope.SetLabel(kernel.name);
     Status status = EnsureInitialized();
-    if (!status.ok())
+    if (!status.ok()) {
+        scope.SetStatus(status.code);
         return status;
+    }
     if (kernel.device_index < 0 ||
         kernel.device_index >= static_cast<int>(devices_.size())) {
-        return OpenclStatus(StatusCode::kInvalidArgument,
-                            BackendErrorKind::kInvalidArgument,
-                            "Invalid device index for kernel");
+        Status err = OpenclStatus(StatusCode::kInvalidArgument,
+                                  BackendErrorKind::kInvalidArgument,
+                                  "Invalid device index for kernel");
+        scope.SetStatus(err.code);
+        return err;
     }
     if (!kernel.kernel) {
-        return OpenclStatus(StatusCode::kInvalidArgument,
-                            BackendErrorKind::kInvalidArgument,
-                            "Invalid kernel handle");
+        Status err = OpenclStatus(StatusCode::kInvalidArgument,
+                                  BackendErrorKind::kInvalidArgument,
+                                  "Invalid kernel handle");
+        scope.SetStatus(err.code);
+        return err;
     }
 
     cl_int err = CL_SUCCESS;
@@ -1027,9 +1116,11 @@ Status OpenCLBackend::LaunchKernel(
             err = loader_.clSetKernelArg(kernel.kernel, i, arg.size, arg.value);
         }
         if (err != CL_SUCCESS) {
-            return OpenclStatus(
+            Status st = OpenclStatus(
                 StatusCode::kInternal, BackendErrorKind::kLaunch,
                 "clSetKernelArg failed: " + gpu::OpenCLErrorString(err));
+            scope.SetStatus(st.code);
+            return st;
         }
     }
 
@@ -1038,17 +1129,21 @@ Status OpenCLBackend::LaunchKernel(
         devices_[kernel.device_index].queue, kernel.kernel, config.dims,
         nullptr, config.global, local, 0, nullptr, nullptr);
     if (err != CL_SUCCESS) {
-        return OpenclStatus(
+        Status st = OpenclStatus(
             StatusCode::kInternal, BackendErrorKind::kLaunch,
             "clEnqueueNDRangeKernel failed: " + gpu::OpenCLErrorString(err));
+        scope.SetStatus(st.code);
+        return st;
     }
     ExecutionConfig exec_config = GetExecutionConfig();
     if (exec_config.sync_on_launch) {
         err = loader_.clFinish(devices_[kernel.device_index].queue);
         if (err != CL_SUCCESS) {
-            return OpenclStatus(
-                StatusCode::kInternal, BackendErrorKind::kRuntime,
-                "clFinish failed: " + gpu::OpenCLErrorString(err));
+            Status st =
+                OpenclStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                             "clFinish failed: " + gpu::OpenCLErrorString(err));
+            scope.SetStatus(st.code);
+            return st;
         }
     } else if (loader_.clFlush) {
         loader_.clFlush(devices_[kernel.device_index].queue);
