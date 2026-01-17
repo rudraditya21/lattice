@@ -101,7 +101,7 @@ bool BackendVerboseEnabledImpl(BackendType backend) {
             env = std::getenv("LATTICE_CPU_VERBOSE");
             break;
     }
-    return env && env[0] != '\0';
+    return IsTrueEnv(env);
 }
 
 bool ShouldLog(const LogConfig& config, const LogRecord& record) {
@@ -109,34 +109,6 @@ bool ShouldLog(const LogConfig& config, const LogRecord& record) {
         return static_cast<int>(record.level) <= static_cast<int>(config.level);
     }
     return BackendVerboseEnabledImpl(record.backend);
-}
-
-std::string JsonEscape(const std::string& input) {
-    std::string out;
-    out.reserve(input.size() + 8);
-    for (char c : input) {
-        switch (c) {
-            case '"':
-                out += "\\\"";
-                break;
-            case '\\':
-                out += "\\\\";
-                break;
-            case '\n':
-                out += "\\n";
-                break;
-            case '\r':
-                out += "\\r";
-                break;
-            case '\t':
-                out += "\\t";
-                break;
-            default:
-                out.push_back(c);
-                break;
-        }
-    }
-    return out;
 }
 
 std::string TextEscape(const std::string& input) {
@@ -197,14 +169,60 @@ std::filesystem::path TraceRoot() {
     return DefaultCacheRoot() / "trace";
 }
 
-bool TraceEnabled() {
-    return IsTrueEnv(std::getenv("LATTICE_TRACE_KERNELS"));
+const char* TraceEnvForBackend(BackendType backend) {
+    switch (backend) {
+        case BackendType::kOpenCL:
+            return std::getenv("LATTICE_OPENCL_TRACE_KERNELS");
+        case BackendType::kCUDA:
+            return std::getenv("LATTICE_CUDA_TRACE_KERNELS");
+        case BackendType::kHIP:
+            return std::getenv("LATTICE_HIP_TRACE_KERNELS");
+        case BackendType::kMetal:
+            return std::getenv("LATTICE_METAL_TRACE_KERNELS");
+        case BackendType::kCPU:
+            return std::getenv("LATTICE_CPU_TRACE_KERNELS");
+    }
+    return nullptr;
+}
+
+bool TraceEnabled(BackendType backend) {
+    if (IsTrueEnv(std::getenv("LATTICE_TRACE_KERNELS")))
+        return true;
+    return IsTrueEnv(TraceEnvForBackend(backend));
 }
 
 std::mutex g_log_mu;
 std::atomic<uint64_t> g_trace_counter{0};
 
 }  // namespace
+
+std::string EscapeJson(const std::string& input) {
+    std::string out;
+    out.reserve(input.size() + 8);
+    for (char c : input) {
+        switch (c) {
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
+            default:
+                out.push_back(c);
+                break;
+        }
+    }
+    return out;
+}
 
 bool BackendVerboseEnabled(BackendType backend) {
     return BackendVerboseEnabledImpl(backend);
@@ -218,30 +236,40 @@ std::string FormatLogLine(const LogRecord& record, LogFormat format) {
         out << ",\"backend\":\"" << BackendTypeName(record.backend) << "\"";
         out << ",\"kind\":\"" << BackendErrorKindName(record.kind) << "\"";
         if (!record.operation.empty()) {
-            out << ",\"op\":\"" << JsonEscape(record.operation) << "\"";
+            out << ",\"op\":\"" << EscapeJson(record.operation) << "\"";
         }
         if (record.device_index >= 0) {
             out << ",\"device_index\":" << record.device_index;
         }
         if (!record.device_name.empty()) {
-            out << ",\"device_name\":\"" << JsonEscape(record.device_name)
+            out << ",\"device_name\":\"" << EscapeJson(record.device_name)
                 << "\"";
+        }
+        if (!record.device_info.empty()) {
+            if (!record.device_info.empty() &&
+                (record.device_info.front() == '{' ||
+                 record.device_info.front() == '[')) {
+                out << ",\"device_info\":" << record.device_info;
+            } else {
+                out << ",\"device_info\":\"" << EscapeJson(record.device_info)
+                    << "\"";
+            }
         }
         if (record.error_code != 0) {
             out << ",\"error_code\":" << record.error_code;
         }
         if (!record.error_name.empty()) {
-            out << ",\"error_name\":\"" << JsonEscape(record.error_name)
+            out << ",\"error_name\":\"" << EscapeJson(record.error_name)
                 << "\"";
         }
         if (!record.trace_path.empty()) {
-            out << ",\"trace_path\":\"" << JsonEscape(record.trace_path)
+            out << ",\"trace_path\":\"" << EscapeJson(record.trace_path)
                 << "\"";
         }
         if (!record.build_log.empty()) {
-            out << ",\"build_log\":\"" << JsonEscape(record.build_log) << "\"";
+            out << ",\"build_log\":\"" << EscapeJson(record.build_log) << "\"";
         }
-        out << ",\"message\":\"" << JsonEscape(record.message) << "\"";
+        out << ",\"message\":\"" << EscapeJson(record.message) << "\"";
         out << "}";
         return out.str();
     }
@@ -256,6 +284,8 @@ std::string FormatLogLine(const LogRecord& record, LogFormat format) {
         out << " device_index=" << record.device_index;
     if (!record.device_name.empty())
         out << " device_name=\"" << TextEscape(record.device_name) << "\"";
+    if (!record.device_info.empty())
+        out << " device_info=\"" << TextEscape(record.device_info) << "\"";
     if (record.error_code != 0)
         out << " error_code=" << record.error_code;
     if (!record.error_name.empty())
@@ -278,7 +308,7 @@ void LogBackend(const LogRecord& record) {
 }
 
 bool TraceKernelSource(const KernelTrace& trace, std::string* out_path) {
-    if (!TraceEnabled())
+    if (!trace.enabled && !TraceEnabled(trace.backend))
         return false;
     std::filesystem::path root = TraceRoot();
     const std::filesystem::path backend_dir =

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -13,6 +14,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -60,6 +62,39 @@ Status CudaStatus(StatusCode code,
                   BackendErrorKind kind,
                   const std::string& message) {
     return MakeBackendError(code, BackendType::kCUDA, kind, message);
+}
+
+std::string CudaErrorName(gpu::CUresult err, const gpu::CudaLoader* loader) {
+    if (!loader || !loader->cuGetErrorName)
+        return "";
+    const char* name = nullptr;
+    if (loader->cuGetErrorName(err, &name) != gpu::CUDA_SUCCESS || !name)
+        return "";
+    return std::string(name);
+}
+
+Status CudaErrorStatus(StatusCode code,
+                       BackendErrorKind kind,
+                       const std::string& message,
+                       gpu::CUresult err,
+                       const gpu::CudaLoader* loader) {
+    Status st = CudaStatus(code, kind,
+                           message + ": " + gpu::CudaErrorString(err, loader));
+    st.backend_code = static_cast<int64_t>(err);
+    st.backend_error_name = CudaErrorName(err, loader);
+    return st;
+}
+
+bool CudaIsNotReady(gpu::CUresult err, const gpu::CudaLoader* loader) {
+    if (err == gpu::CUDA_SUCCESS)
+        return false;
+    std::string name = CudaErrorName(err, loader);
+    if (!name.empty()) {
+        return name.find("NOT_READY") != std::string::npos;
+    }
+    std::string desc = gpu::CudaErrorString(err, loader);
+    return desc.find("not ready") != std::string::npos ||
+           desc.find("NOT_READY") != std::string::npos;
 }
 
 int CapabilityToInt(CapabilityStatus status) {
@@ -138,6 +173,51 @@ bool UseUnifiedPinnedMemory() {
         return IsTrueEnvValue(env);
     }
     return true;
+}
+
+std::string CudaDeviceInfoJson(const CudaDeviceDesc& desc,
+                               const DeviceCapabilities& caps) {
+    std::ostringstream out;
+    out << "{";
+    out << "\"name\":\"" << EscapeJson(desc.name) << "\"";
+    if (!desc.vendor.empty()) {
+        out << ",\"vendor\":\"" << EscapeJson(desc.vendor) << "\"";
+    }
+    if (!desc.driver_version.empty()) {
+        out << ",\"driver_version\":\"" << EscapeJson(desc.driver_version)
+            << "\"";
+    }
+    if (!desc.runtime_version.empty()) {
+        out << ",\"runtime_version\":\"" << EscapeJson(desc.runtime_version)
+            << "\"";
+    }
+    if (desc.major > 0 || desc.minor > 0) {
+        out << ",\"compute_capability\":\"" << desc.major << "." << desc.minor
+            << "\"";
+    }
+    out << ",\"total_mem\":" << desc.total_mem;
+    out << ",\"multiprocessor_count\":" << desc.multiprocessor_count;
+    out << ",\"clock_khz\":" << desc.clock_khz;
+    out << ",\"fp16\":" << CapabilityToInt(caps.fp16);
+    out << ",\"fp64\":" << CapabilityToInt(caps.fp64);
+    out << ",\"local_mem_bytes\":" << caps.local_mem_bytes;
+    out << ",\"shared_mem_bytes\":" << caps.shared_mem_bytes;
+    out << ",\"max_work_group_size\":" << caps.max_work_group_size;
+    out << ",\"max_work_item_sizes\":[" << caps.max_work_item_sizes[0] << ","
+        << caps.max_work_item_sizes[1] << "," << caps.max_work_item_sizes[2]
+        << "]";
+    out << ",\"max_threads_per_block\":" << caps.max_threads_per_block;
+    out << ",\"is_gpu\":" << (caps.is_gpu ? "true" : "false");
+    out << ",\"is_cpu\":" << (caps.is_cpu ? "true" : "false");
+    out << ",\"is_software\":" << (caps.is_software ? "true" : "false");
+    out << ",\"quirks_flags\":" << caps.quirks.flags;
+    out << ",\"quirks_disabled\":" << (caps.quirks.disabled ? "true" : "false");
+    if (!caps.quirks.reason.empty()) {
+        out << ",\"quirks_reason\":\"" << EscapeJson(caps.quirks.reason)
+            << "\"";
+    }
+    out << "}";
+    return out.str();
 }
 
 DeviceMetadata BuildDeviceMetadata(const CudaDeviceDesc& desc,
@@ -811,9 +891,9 @@ Status CudaBackend::WriteBuffer(int device_index,
     }
     gpu::CUresult err = loader_.cuMemcpyHtoD(buffer.ptr + offset, data, bytes);
     if (err != gpu::CUDA_SUCCESS) {
-        Status st = CudaStatus(
-            StatusCode::kInternal, BackendErrorKind::kRuntime,
-            "cuMemcpyHtoD failed: " + gpu::CudaErrorString(err, &loader_));
+        Status st =
+            CudaErrorStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                            "cuMemcpyHtoD failed", err, &loader_);
         scope.SetStatus(st.code);
         return st;
     }
@@ -853,9 +933,9 @@ Status CudaBackend::ReadBuffer(int device_index,
     }
     gpu::CUresult err = loader_.cuMemcpyDtoH(data, buffer.ptr + offset, bytes);
     if (err != gpu::CUDA_SUCCESS) {
-        Status st = CudaStatus(
-            StatusCode::kInternal, BackendErrorKind::kRuntime,
-            "cuMemcpyDtoH failed: " + gpu::CudaErrorString(err, &loader_));
+        Status st =
+            CudaErrorStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                            "cuMemcpyDtoH failed", err, &loader_);
         scope.SetStatus(st.code);
         return st;
     }
@@ -998,20 +1078,73 @@ Status CudaBackend::LaunchKernel(const CudaKernel& kernel,
         static_cast<unsigned int>(config.shared_bytes), dev.stream,
         params.data(), nullptr);
     if (err != gpu::CUDA_SUCCESS) {
-        Status st = CudaStatus(
-            StatusCode::kInternal, BackendErrorKind::kLaunch,
-            "cuLaunchKernel failed: " + gpu::CudaErrorString(err, &loader_));
+        Status st =
+            CudaErrorStatus(StatusCode::kInternal, BackendErrorKind::kLaunch,
+                            "cuLaunchKernel failed", err, &loader_);
         scope.SetStatus(st.code);
         return st;
     }
     ExecutionConfig exec_config = GetExecutionConfig();
     if (exec_config.sync_on_launch && loader_.cuStreamSynchronize) {
+        if (exec_config.kernel_timeout_ms > 0 && loader_.cuEventCreate &&
+            loader_.cuEventRecord && loader_.cuEventQuery) {
+            gpu::CUevent event = nullptr;
+            gpu::CUresult ev_err =
+                loader_.cuEventCreate(&event, kCuEventDisableTiming);
+            if (ev_err == gpu::CUDA_SUCCESS && event) {
+                ev_err = loader_.cuEventRecord(event, dev.stream);
+                if (ev_err != gpu::CUDA_SUCCESS) {
+                    if (loader_.cuEventDestroy)
+                        loader_.cuEventDestroy(event);
+                    Status st = CudaErrorStatus(
+                        StatusCode::kInternal, BackendErrorKind::kRuntime,
+                        "cuEventRecord failed", ev_err, &loader_);
+                    scope.SetStatus(st.code);
+                    return st;
+                }
+                const auto deadline =
+                    std::chrono::steady_clock::now() +
+                    std::chrono::milliseconds(exec_config.kernel_timeout_ms);
+                while (true) {
+                    gpu::CUresult q = loader_.cuEventQuery(event);
+                    if (q == gpu::CUDA_SUCCESS) {
+                        break;
+                    }
+                    if (!CudaIsNotReady(q, &loader_)) {
+                        if (loader_.cuEventDestroy)
+                            loader_.cuEventDestroy(event);
+                        Status st = CudaErrorStatus(
+                            StatusCode::kInternal, BackendErrorKind::kRuntime,
+                            "cuEventQuery failed", q, &loader_);
+                        scope.SetStatus(st.code);
+                        return st;
+                    }
+                    if (std::chrono::steady_clock::now() >= deadline) {
+                        if (loader_.cuEventDestroy)
+                            loader_.cuEventDestroy(event);
+                        Status st = CudaStatus(
+                            StatusCode::kUnavailable,
+                            BackendErrorKind::kRuntime,
+                            "kernel timeout after " +
+                                std::to_string(exec_config.kernel_timeout_ms) +
+                                " ms");
+                        st.backend_code = exec_config.kernel_timeout_ms;
+                        st.backend_error_name = "timeout";
+                        scope.SetStatus(st.code);
+                        return st;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                if (loader_.cuEventDestroy)
+                    loader_.cuEventDestroy(event);
+                return Status::OK();
+            }
+        }
         err = loader_.cuStreamSynchronize(dev.stream);
         if (err != gpu::CUDA_SUCCESS) {
-            Status st =
-                CudaStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
-                           "cuStreamSynchronize failed: " +
-                               gpu::CudaErrorString(err, &loader_));
+            Status st = CudaErrorStatus(
+                StatusCode::kInternal, BackendErrorKind::kRuntime,
+                "cuStreamSynchronize failed", err, &loader_);
             scope.SetStatus(st.code);
             return st;
         }
@@ -1340,9 +1473,16 @@ Status CudaBackend::EnsureInitialized() const {
             info += " (sm_" + std::to_string(dev.desc.major) +
                     std::to_string(dev.desc.minor) + ")";
         }
-        LogBackend({LogLevel::kInfo, BackendType::kCUDA,
-                    BackendErrorKind::kDiscovery, info, "device_info",
-                    dev.desc.index, dev.desc.name});
+        LogRecord record;
+        record.level = LogLevel::kInfo;
+        record.backend = BackendType::kCUDA;
+        record.kind = BackendErrorKind::kDiscovery;
+        record.message = info;
+        record.operation = "device_info";
+        record.device_index = dev.desc.index;
+        record.device_name = dev.desc.name;
+        record.device_info = CudaDeviceInfoJson(dev.desc, dev.caps);
+        LogBackend(record);
     }
 
     init_status_ = Status::OK();
@@ -1591,6 +1731,7 @@ StatusOr<gpu::CUmodule> CudaBackend::BuildOrLoadModule(
     trace.source = source;
     trace.device_index = dev.desc.index;
     trace.device_name = dev.desc.name;
+    trace.enabled = exec_config_.trace_kernels;
     std::string trace_path;
     if (TraceKernelSource(trace, &trace_path)) {
         LogBackend({LogLevel::kTrace, BackendType::kCUDA,

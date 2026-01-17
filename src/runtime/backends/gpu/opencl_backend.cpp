@@ -16,6 +16,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -112,6 +113,73 @@ Status OpenclStatus(StatusCode code,
                     BackendErrorKind kind,
                     const std::string& message) {
     return MakeBackendError(code, BackendType::kOpenCL, kind, message);
+}
+
+Status OpenclErrorStatus(StatusCode code,
+                         BackendErrorKind kind,
+                         const std::string& message,
+                         cl_int err) {
+    Status st =
+        OpenclStatus(code, kind, message + ": " + gpu::OpenCLErrorString(err));
+    st.backend_code = static_cast<int64_t>(err);
+    st.backend_error_name = gpu::OpenCLErrorString(err);
+    return st;
+}
+
+std::string OpenclDeviceInfoJson(const OpenCLDeviceDesc& desc,
+                                 const DeviceCapabilities& caps) {
+    std::ostringstream out;
+    out << "{";
+    out << "\"name\":\"" << EscapeJson(desc.name) << "\"";
+    if (!desc.vendor.empty()) {
+        out << ",\"vendor\":\"" << EscapeJson(desc.vendor) << "\"";
+    }
+    if (!desc.platform_name.empty()) {
+        out << ",\"platform_name\":\"" << EscapeJson(desc.platform_name)
+            << "\"";
+    }
+    if (!desc.platform_vendor.empty()) {
+        out << ",\"platform_vendor\":\"" << EscapeJson(desc.platform_vendor)
+            << "\"";
+    }
+    if (!desc.platform_version.empty()) {
+        out << ",\"platform_version\":\"" << EscapeJson(desc.platform_version)
+            << "\"";
+    }
+    if (!desc.device_version.empty()) {
+        out << ",\"device_version\":\"" << EscapeJson(desc.device_version)
+            << "\"";
+    }
+    if (!desc.runtime_version.empty()) {
+        out << ",\"runtime_version\":\"" << EscapeJson(desc.runtime_version)
+            << "\"";
+    }
+    if (!desc.driver_version.empty()) {
+        out << ",\"driver_version\":\"" << EscapeJson(desc.driver_version)
+            << "\"";
+    }
+    out << ",\"device_type\":\"" << DeviceTypeString(desc.type) << "\"";
+    out << ",\"vendor_id\":" << desc.vendor_id;
+    out << ",\"compute_units\":" << desc.compute_units;
+    out << ",\"max_clock_mhz\":" << desc.max_clock_mhz;
+    out << ",\"local_mem_bytes\":" << desc.local_mem_size;
+    out << ",\"max_work_group_size\":" << desc.max_work_group_size;
+    out << ",\"fp16\":" << CapabilityToInt(caps.fp16);
+    out << ",\"fp64\":" << CapabilityToInt(caps.fp64);
+    out << ",\"max_work_item_sizes\":[" << caps.max_work_item_sizes[0] << ","
+        << caps.max_work_item_sizes[1] << "," << caps.max_work_item_sizes[2]
+        << "]";
+    out << ",\"is_gpu\":" << (caps.is_gpu ? "true" : "false");
+    out << ",\"is_cpu\":" << (caps.is_cpu ? "true" : "false");
+    out << ",\"is_software\":" << (caps.is_software ? "true" : "false");
+    out << ",\"quirks_flags\":" << caps.quirks.flags;
+    out << ",\"quirks_disabled\":" << (caps.quirks.disabled ? "true" : "false");
+    if (!caps.quirks.reason.empty()) {
+        out << ",\"quirks_reason\":\"" << EscapeJson(caps.quirks.reason)
+            << "\"";
+    }
+    out << "}";
+    return out.str();
 }
 
 DeviceMetadata BuildDeviceMetadata(const OpenCLDeviceDesc& desc,
@@ -911,9 +979,9 @@ Status OpenCLBackend::WriteBuffer(int device_index,
                                               buffer.mem, CL_TRUE, offset,
                                               bytes, data, 0, nullptr, nullptr);
     if (err != CL_SUCCESS) {
-        Status st = OpenclStatus(
-            StatusCode::kInternal, BackendErrorKind::kRuntime,
-            "clEnqueueWriteBuffer failed: " + gpu::OpenCLErrorString(err));
+        Status st =
+            OpenclErrorStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                              "clEnqueueWriteBuffer failed", err);
         scope.SetStatus(st.code);
         return st;
     }
@@ -959,9 +1027,9 @@ Status OpenCLBackend::ReadBuffer(int device_index,
                                              buffer.mem, CL_TRUE, offset, bytes,
                                              data, 0, nullptr, nullptr);
     if (err != CL_SUCCESS) {
-        Status st = OpenclStatus(
-            StatusCode::kInternal, BackendErrorKind::kRuntime,
-            "clEnqueueReadBuffer failed: " + gpu::OpenCLErrorString(err));
+        Status st =
+            OpenclErrorStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                              "clEnqueueReadBuffer failed", err);
         scope.SetStatus(st.code);
         return st;
     }
@@ -1116,34 +1184,89 @@ Status OpenCLBackend::LaunchKernel(
             err = loader_.clSetKernelArg(kernel.kernel, i, arg.size, arg.value);
         }
         if (err != CL_SUCCESS) {
-            Status st = OpenclStatus(
-                StatusCode::kInternal, BackendErrorKind::kLaunch,
-                "clSetKernelArg failed: " + gpu::OpenCLErrorString(err));
+            Status st = OpenclErrorStatus(StatusCode::kInternal,
+                                          BackendErrorKind::kLaunch,
+                                          "clSetKernelArg failed", err);
             scope.SetStatus(st.code);
             return st;
         }
     }
 
     const size_t* local = config.use_local ? config.local : nullptr;
+    ExecutionConfig exec_config = GetExecutionConfig();
+    cl_event event = nullptr;
+    cl_event* event_ptr =
+        (exec_config.sync_on_launch && exec_config.kernel_timeout_ms > 0 &&
+         loader_.clGetEventInfo)
+            ? &event
+            : nullptr;
     err = loader_.clEnqueueNDRangeKernel(
         devices_[kernel.device_index].queue, kernel.kernel, config.dims,
-        nullptr, config.global, local, 0, nullptr, nullptr);
+        nullptr, config.global, local, 0, nullptr, event_ptr);
     if (err != CL_SUCCESS) {
-        Status st = OpenclStatus(
-            StatusCode::kInternal, BackendErrorKind::kLaunch,
-            "clEnqueueNDRangeKernel failed: " + gpu::OpenCLErrorString(err));
+        Status st =
+            OpenclErrorStatus(StatusCode::kInternal, BackendErrorKind::kLaunch,
+                              "clEnqueueNDRangeKernel failed", err);
         scope.SetStatus(st.code);
         return st;
     }
-    ExecutionConfig exec_config = GetExecutionConfig();
     if (exec_config.sync_on_launch) {
-        err = loader_.clFinish(devices_[kernel.device_index].queue);
-        if (err != CL_SUCCESS) {
-            Status st =
-                OpenclStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
-                             "clFinish failed: " + gpu::OpenCLErrorString(err));
-            scope.SetStatus(st.code);
-            return st;
+        if (event && loader_.clGetEventInfo) {
+            const auto deadline =
+                std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(exec_config.kernel_timeout_ms);
+            while (true) {
+                cl_int status = CL_COMPLETE;
+                cl_int info_err = loader_.clGetEventInfo(
+                    event, CL_EVENT_COMMAND_EXECUTION_STATUS, sizeof(status),
+                    &status, nullptr);
+                if (info_err != CL_SUCCESS) {
+                    if (loader_.clReleaseEvent)
+                        loader_.clReleaseEvent(event);
+                    Status st = OpenclErrorStatus(
+                        StatusCode::kInternal, BackendErrorKind::kRuntime,
+                        "clGetEventInfo failed", info_err);
+                    scope.SetStatus(st.code);
+                    return st;
+                }
+                if (status == CL_COMPLETE) {
+                    break;
+                }
+                if (status < 0) {
+                    if (loader_.clReleaseEvent)
+                        loader_.clReleaseEvent(event);
+                    Status st = OpenclErrorStatus(
+                        StatusCode::kInternal, BackendErrorKind::kRuntime,
+                        "kernel execution failed", status);
+                    scope.SetStatus(st.code);
+                    return st;
+                }
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    if (loader_.clReleaseEvent)
+                        loader_.clReleaseEvent(event);
+                    Status st = OpenclStatus(
+                        StatusCode::kUnavailable, BackendErrorKind::kRuntime,
+                        "kernel timeout after " +
+                            std::to_string(exec_config.kernel_timeout_ms) +
+                            " ms");
+                    st.backend_code = exec_config.kernel_timeout_ms;
+                    st.backend_error_name = "timeout";
+                    scope.SetStatus(st.code);
+                    return st;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            if (loader_.clReleaseEvent)
+                loader_.clReleaseEvent(event);
+        } else {
+            err = loader_.clFinish(devices_[kernel.device_index].queue);
+            if (err != CL_SUCCESS) {
+                Status st = OpenclErrorStatus(StatusCode::kInternal,
+                                              BackendErrorKind::kRuntime,
+                                              "clFinish failed", err);
+                scope.SetStatus(st.code);
+                return st;
+            }
         }
     } else if (loader_.clFlush) {
         loader_.clFlush(devices_[kernel.device_index].queue);
@@ -1493,13 +1616,21 @@ Status OpenCLBackend::EnsureInitialized() const {
     }
 
     for (size_t i = 0; i < devices_.size(); ++i) {
-        const auto& dev = devices_[i].desc;
-        std::string info = dev.name + " (" + DeviceTypeString(dev.type) +
-                           ") vendor=" + dev.vendor +
-                           " driver=" + dev.driver_version;
-        LogBackend({LogLevel::kInfo, BackendType::kOpenCL,
-                    BackendErrorKind::kDiscovery, info, "device_info",
-                    dev.index, dev.name});
+        const auto& dev = devices_[i];
+        std::string info = dev.desc.name + " (" +
+                           DeviceTypeString(dev.desc.type) +
+                           ") vendor=" + dev.desc.vendor +
+                           " driver=" + dev.desc.driver_version;
+        LogRecord record;
+        record.level = LogLevel::kInfo;
+        record.backend = BackendType::kOpenCL;
+        record.kind = BackendErrorKind::kDiscovery;
+        record.message = info;
+        record.operation = "device_info";
+        record.device_index = dev.desc.index;
+        record.device_name = dev.desc.name;
+        record.device_info = OpenclDeviceInfoJson(dev.desc, dev.caps);
+        LogBackend(record);
     }
 
     init_status_ = Status::OK();
@@ -1777,6 +1908,7 @@ StatusOr<cl_program> OpenCLBackend::BuildOrLoadProgram(
     trace.source = source;
     trace.device_index = dev.desc.index;
     trace.device_name = dev.desc.name;
+    trace.enabled = exec_config_.trace_kernels;
     std::string trace_path;
     if (TraceKernelSource(trace, &trace_path)) {
         LogBackend({LogLevel::kTrace, BackendType::kOpenCL,

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -18,6 +19,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -42,6 +44,25 @@ Status MetalStatus(StatusCode code,
                    BackendErrorKind kind,
                    const std::string& message) {
     return MakeBackendError(code, BackendType::kMetal, kind, message);
+}
+
+Status MetalErrorStatus(StatusCode code,
+                        BackendErrorKind kind,
+                        const std::string& message,
+                        NSError* error) {
+    std::string detail = message;
+    if (error && error.localizedDescription) {
+        detail += ": ";
+        detail += error.localizedDescription.UTF8String;
+    }
+    Status st = MetalStatus(code, kind, detail);
+    if (error) {
+        st.backend_code = static_cast<int64_t>(error.code);
+        if (error.domain) {
+            st.backend_error_name = error.domain.UTF8String;
+        }
+    }
+    return st;
 }
 
 int CapabilityToInt(CapabilityStatus status) {
@@ -69,6 +90,44 @@ bool ReadFile(const std::filesystem::path& path,
     ss << in.rdbuf();
     *out = ss.str();
     return true;
+}
+
+std::string MetalDeviceInfoJson(const MetalDeviceDesc& desc,
+                                const DeviceCapabilities& caps) {
+    std::ostringstream out;
+    out << "{";
+    out << "\"name\":\"" << EscapeJson(desc.name) << "\"";
+    if (!desc.vendor.empty()) {
+        out << ",\"vendor\":\"" << EscapeJson(desc.vendor) << "\"";
+    }
+    if (!desc.driver_version.empty()) {
+        out << ",\"driver_version\":\"" << EscapeJson(desc.driver_version)
+            << "\"";
+    }
+    if (!desc.runtime_version.empty()) {
+        out << ",\"runtime_version\":\"" << EscapeJson(desc.runtime_version)
+            << "\"";
+    }
+    out << ",\"max_threadgroup_size\":" << desc.max_threadgroup_size;
+    out << ",\"shared_mem_bytes\":" << desc.shared_mem_bytes;
+    out << ",\"fp16\":" << CapabilityToInt(caps.fp16);
+    out << ",\"fp64\":" << CapabilityToInt(caps.fp64);
+    out << ",\"local_mem_bytes\":" << caps.local_mem_bytes;
+    out << ",\"max_work_group_size\":" << caps.max_work_group_size;
+    out << ",\"max_work_item_sizes\":[" << caps.max_work_item_sizes[0] << ","
+        << caps.max_work_item_sizes[1] << "," << caps.max_work_item_sizes[2]
+        << "]";
+    out << ",\"is_gpu\":" << (caps.is_gpu ? "true" : "false");
+    out << ",\"is_cpu\":" << (caps.is_cpu ? "true" : "false");
+    out << ",\"is_software\":" << (caps.is_software ? "true" : "false");
+    out << ",\"quirks_flags\":" << caps.quirks.flags;
+    out << ",\"quirks_disabled\":" << (caps.quirks.disabled ? "true" : "false");
+    if (!caps.quirks.reason.empty()) {
+        out << ",\"quirks_reason\":\"" << EscapeJson(caps.quirks.reason)
+            << "\"";
+    }
+    out << "}";
+    return out.str();
 }
 
 std::unordered_map<std::string, std::string> ParseDefineOptions(
@@ -781,6 +840,7 @@ StatusOr<std::vector<MetalKernel>> MetalBackend::BuildKernelsFromFile(
             trace.source = source;
             trace.device_index = dev.desc.index;
             trace.device_name = dev.desc.name;
+            trace.enabled = exec_config_.trace_kernels;
             std::string trace_path;
             if (TraceKernelSource(trace, &trace_path)) {
                 LogBackend({LogLevel::kTrace, BackendType::kMetal,
@@ -946,11 +1006,42 @@ Status MetalBackend::LaunchKernel(
     [cmd commit];
     ExecutionConfig exec_config = GetExecutionConfig();
     if (exec_config.sync_on_launch) {
-        [cmd waitUntilCompleted];
+        if (exec_config.kernel_timeout_ms > 0) {
+            const auto deadline =
+                std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(exec_config.kernel_timeout_ms);
+            while (true) {
+                MTLCommandBufferStatus status = cmd.status;
+                if (status == MTLCommandBufferStatusCompleted) {
+                    break;
+                }
+                if (status == MTLCommandBufferStatusError) {
+                    Status err = MetalErrorStatus(
+                        StatusCode::kInternal, BackendErrorKind::kRuntime,
+                        "command buffer failed", cmd.error);
+                    scope.SetStatus(err.code);
+                    return err;
+                }
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    Status st = MetalStatus(
+                        StatusCode::kUnavailable, BackendErrorKind::kRuntime,
+                        "kernel timeout after " +
+                            std::to_string(exec_config.kernel_timeout_ms) +
+                            " ms");
+                    st.backend_code = exec_config.kernel_timeout_ms;
+                    st.backend_error_name = "timeout";
+                    scope.SetStatus(st.code);
+                    return st;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        } else {
+            [cmd waitUntilCompleted];
+        }
         if (cmd.error) {
-            Status err =
-                MetalStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
-                            cmd.error.localizedDescription.UTF8String);
+            Status err = MetalErrorStatus(StatusCode::kInternal,
+                                          BackendErrorKind::kRuntime,
+                                          "command buffer failed", cmd.error);
             scope.SetStatus(err.code);
             return err;
         }
@@ -1191,9 +1282,16 @@ Status MetalBackend::EnsureInitialized() const {
 
     for (size_t i = 0; i < devices_.size(); ++i) {
         const auto& dev = devices_[i];
-        LogBackend({LogLevel::kInfo, BackendType::kMetal,
-                    BackendErrorKind::kDiscovery, dev.desc.name, "device_info",
-                    dev.desc.index, dev.desc.name});
+        LogRecord record;
+        record.level = LogLevel::kInfo;
+        record.backend = BackendType::kMetal;
+        record.kind = BackendErrorKind::kDiscovery;
+        record.message = dev.desc.name;
+        record.operation = "device_info";
+        record.device_index = dev.desc.index;
+        record.device_name = dev.desc.name;
+        record.device_info = MetalDeviceInfoJson(dev.desc, dev.caps);
+        LogBackend(record);
     }
 
     init_status_ = Status::OK();

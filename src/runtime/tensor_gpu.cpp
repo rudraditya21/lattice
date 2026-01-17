@@ -1191,8 +1191,15 @@ void LogGpuError(BackendType backend,
                  const std::string& op) {
     if (!BackendVerboseEnabled(backend))
         return;
-    LogBackend({LogLevel::kWarn, backend, BackendErrorKind::kRuntime,
-                status.message, op});
+    LogRecord record;
+    record.level = LogLevel::kWarn;
+    record.backend = backend;
+    record.kind = BackendErrorKind::kRuntime;
+    record.message = status.message;
+    record.operation = op;
+    record.error_code = status.backend_code;
+    record.error_name = status.backend_error_name;
+    LogBackend(record);
 }
 
 std::optional<Value> BuildDenseTensor(const std::vector<int64_t>& shape,

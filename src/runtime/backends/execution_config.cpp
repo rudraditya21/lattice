@@ -52,6 +52,20 @@ ExecutionConfig LoadExecutionConfig(const std::string& prefix,
     if (ParseBoolEnv(std::getenv(mixed_key.c_str()), &value)) {
         base.enable_mixed_precision = value;
     }
+    const std::string trace_key = prefix + "_TRACE_KERNELS";
+    if (ParseBoolEnv(std::getenv(trace_key.c_str()), &value)) {
+        base.trace_kernels = value;
+    }
+    const std::string timeout_key = prefix + "_KERNEL_TIMEOUT_MS";
+    if (const char* env = std::getenv(timeout_key.c_str())) {
+        char* end = nullptr;
+        long long parsed = std::strtoll(env, &end, 10);
+        if (end != env) {
+            if (parsed < 0)
+                parsed = 0;
+            base.kernel_timeout_ms = static_cast<int64_t>(parsed);
+        }
+    }
     return base;
 }
 

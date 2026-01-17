@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -13,6 +14,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -56,6 +58,67 @@ Status HipStatus(StatusCode code,
                  BackendErrorKind kind,
                  const std::string& message) {
     return MakeBackendError(code, BackendType::kHIP, kind, message);
+}
+
+Status HipErrorStatus(StatusCode code,
+                      BackendErrorKind kind,
+                      const std::string& message,
+                      gpu::hipError_t err,
+                      const gpu::HipLoader* loader) {
+    Status st = HipStatus(code, kind,
+                          message + ": " + gpu::HipErrorString(err, loader));
+    st.backend_code = static_cast<int64_t>(err);
+    st.backend_error_name = gpu::HipErrorString(err, loader);
+    return st;
+}
+
+bool HipIsNotReady(gpu::hipError_t err, const gpu::HipLoader* loader) {
+    if (err == gpu::hipSuccess)
+        return false;
+    std::string desc = gpu::HipErrorString(err, loader);
+    return desc.find("NotReady") != std::string::npos ||
+           desc.find("not ready") != std::string::npos;
+}
+
+std::string HipDeviceInfoJson(const HipDeviceDesc& desc,
+                              const DeviceCapabilities& caps) {
+    std::ostringstream out;
+    out << "{";
+    out << "\"name\":\"" << EscapeJson(desc.name) << "\"";
+    if (!desc.vendor.empty()) {
+        out << ",\"vendor\":\"" << EscapeJson(desc.vendor) << "\"";
+    }
+    if (!desc.driver_version.empty()) {
+        out << ",\"driver_version\":\"" << EscapeJson(desc.driver_version)
+            << "\"";
+    }
+    if (!desc.runtime_version.empty()) {
+        out << ",\"runtime_version\":\"" << EscapeJson(desc.runtime_version)
+            << "\"";
+    }
+    out << ",\"total_mem\":" << desc.total_mem;
+    out << ",\"multiprocessor_count\":" << desc.multiprocessor_count;
+    out << ",\"clock_khz\":" << desc.clock_khz;
+    out << ",\"fp16\":" << CapabilityToInt(caps.fp16);
+    out << ",\"fp64\":" << CapabilityToInt(caps.fp64);
+    out << ",\"local_mem_bytes\":" << caps.local_mem_bytes;
+    out << ",\"shared_mem_bytes\":" << caps.shared_mem_bytes;
+    out << ",\"max_work_group_size\":" << caps.max_work_group_size;
+    out << ",\"max_work_item_sizes\":[" << caps.max_work_item_sizes[0] << ","
+        << caps.max_work_item_sizes[1] << "," << caps.max_work_item_sizes[2]
+        << "]";
+    out << ",\"max_threads_per_block\":" << caps.max_threads_per_block;
+    out << ",\"is_gpu\":" << (caps.is_gpu ? "true" : "false");
+    out << ",\"is_cpu\":" << (caps.is_cpu ? "true" : "false");
+    out << ",\"is_software\":" << (caps.is_software ? "true" : "false");
+    out << ",\"quirks_flags\":" << caps.quirks.flags;
+    out << ",\"quirks_disabled\":" << (caps.quirks.disabled ? "true" : "false");
+    if (!caps.quirks.reason.empty()) {
+        out << ",\"quirks_reason\":\"" << EscapeJson(caps.quirks.reason)
+            << "\"";
+    }
+    out << "}";
+    return out.str();
 }
 
 int CapabilityToInt(CapabilityStatus status) {
@@ -813,9 +876,9 @@ Status HipBackend::WriteBuffer(int device_index,
     gpu::hipError_t err =
         loader_.hipMemcpy(dst, data, bytes, gpu::hipMemcpyHostToDevice);
     if (err != gpu::hipSuccess) {
-        Status st = HipStatus(
-            StatusCode::kInternal, BackendErrorKind::kRuntime,
-            "hipMemcpy HtoD failed: " + gpu::HipErrorString(err, &loader_));
+        Status st =
+            HipErrorStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                           "hipMemcpy HtoD failed", err, &loader_);
         scope.SetStatus(st.code);
         return st;
     }
@@ -858,9 +921,9 @@ Status HipBackend::ReadBuffer(int device_index,
     gpu::hipError_t err =
         loader_.hipMemcpy(data, src, bytes, gpu::hipMemcpyDeviceToHost);
     if (err != gpu::hipSuccess) {
-        Status st = HipStatus(
-            StatusCode::kInternal, BackendErrorKind::kRuntime,
-            "hipMemcpy DtoH failed: " + gpu::HipErrorString(err, &loader_));
+        Status st =
+            HipErrorStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                           "hipMemcpy DtoH failed", err, &loader_);
         scope.SetStatus(st.code);
         return st;
     }
@@ -1013,20 +1076,72 @@ Status HipBackend::LaunchKernel(const HipKernel& kernel,
         static_cast<unsigned int>(config.shared_bytes), dev.stream,
         params.data(), nullptr);
     if (err != gpu::hipSuccess) {
-        Status st = HipStatus(StatusCode::kInternal, BackendErrorKind::kLaunch,
-                              "hipModuleLaunchKernel failed: " +
-                                  gpu::HipErrorString(err, &loader_));
+        Status st =
+            HipErrorStatus(StatusCode::kInternal, BackendErrorKind::kLaunch,
+                           "hipModuleLaunchKernel failed", err, &loader_);
         scope.SetStatus(st.code);
         return st;
     }
     ExecutionConfig exec_config = GetExecutionConfig();
     if (exec_config.sync_on_launch && loader_.hipStreamSynchronize) {
+        if (exec_config.kernel_timeout_ms > 0 && loader_.hipEventCreate &&
+            loader_.hipEventRecord && loader_.hipEventQuery) {
+            gpu::hipEvent_t event = nullptr;
+            gpu::hipError_t ev_err = loader_.hipEventCreate(&event);
+            if (ev_err == gpu::hipSuccess && event) {
+                ev_err = loader_.hipEventRecord(event, dev.stream);
+                if (ev_err != gpu::hipSuccess) {
+                    if (loader_.hipEventDestroy)
+                        loader_.hipEventDestroy(event);
+                    Status st = HipErrorStatus(
+                        StatusCode::kInternal, BackendErrorKind::kRuntime,
+                        "hipEventRecord failed", ev_err, &loader_);
+                    scope.SetStatus(st.code);
+                    return st;
+                }
+                const auto deadline =
+                    std::chrono::steady_clock::now() +
+                    std::chrono::milliseconds(exec_config.kernel_timeout_ms);
+                while (true) {
+                    gpu::hipError_t q = loader_.hipEventQuery(event);
+                    if (q == gpu::hipSuccess) {
+                        break;
+                    }
+                    if (!HipIsNotReady(q, &loader_)) {
+                        if (loader_.hipEventDestroy)
+                            loader_.hipEventDestroy(event);
+                        Status st = HipErrorStatus(
+                            StatusCode::kInternal, BackendErrorKind::kRuntime,
+                            "hipEventQuery failed", q, &loader_);
+                        scope.SetStatus(st.code);
+                        return st;
+                    }
+                    if (std::chrono::steady_clock::now() >= deadline) {
+                        if (loader_.hipEventDestroy)
+                            loader_.hipEventDestroy(event);
+                        Status st = HipStatus(
+                            StatusCode::kUnavailable,
+                            BackendErrorKind::kRuntime,
+                            "kernel timeout after " +
+                                std::to_string(exec_config.kernel_timeout_ms) +
+                                " ms");
+                        st.backend_code = exec_config.kernel_timeout_ms;
+                        st.backend_error_name = "timeout";
+                        scope.SetStatus(st.code);
+                        return st;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                if (loader_.hipEventDestroy)
+                    loader_.hipEventDestroy(event);
+                return Status::OK();
+            }
+        }
         err = loader_.hipStreamSynchronize(dev.stream);
         if (err != gpu::hipSuccess) {
-            Status st =
-                HipStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
-                          "hipStreamSynchronize failed: " +
-                              gpu::HipErrorString(err, &loader_));
+            Status st = HipErrorStatus(
+                StatusCode::kInternal, BackendErrorKind::kRuntime,
+                "hipStreamSynchronize failed", err, &loader_);
             scope.SetStatus(st.code);
             return st;
         }
@@ -1325,9 +1440,16 @@ Status HipBackend::EnsureInitialized() const {
 
     for (size_t i = 0; i < devices_.size(); ++i) {
         const auto& dev = devices_[i];
-        LogBackend({LogLevel::kInfo, BackendType::kHIP,
-                    BackendErrorKind::kDiscovery, dev.desc.name, "device_info",
-                    dev.desc.index, dev.desc.name});
+        LogRecord record;
+        record.level = LogLevel::kInfo;
+        record.backend = BackendType::kHIP;
+        record.kind = BackendErrorKind::kDiscovery;
+        record.message = dev.desc.name;
+        record.operation = "device_info";
+        record.device_index = dev.desc.index;
+        record.device_name = dev.desc.name;
+        record.device_info = HipDeviceInfoJson(dev.desc, dev.caps);
+        LogBackend(record);
     }
 
     init_status_ = Status::OK();
@@ -1571,6 +1693,7 @@ StatusOr<gpu::hipModule_t> HipBackend::BuildOrLoadModule(
     trace.source = source;
     trace.device_index = dev.desc.index;
     trace.device_name = dev.desc.name;
+    trace.enabled = exec_config_.trace_kernels;
     std::string trace_path;
     if (TraceKernelSource(trace, &trace_path)) {
         LogBackend({LogLevel::kTrace, BackendType::kHIP,

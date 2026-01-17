@@ -21,6 +21,8 @@ enum class StatusCode { kOk, kInvalidArgument, kUnavailable, kInternal };
 struct Status {
     StatusCode code = StatusCode::kOk;
     std::string message;
+    int64_t backend_code = 0;
+    std::string backend_error_name;
     static Status OK() { return Status{StatusCode::kOk, ""}; }
     static Status Invalid(const std::string& msg) {
         return Status{StatusCode::kInvalidArgument, msg};
@@ -114,6 +116,8 @@ struct ExecutionConfig {
     bool enable_fast_math = false;
     bool enable_vectorize = true;
     bool enable_mixed_precision = false;
+    bool trace_kernels = false;
+    int64_t kernel_timeout_ms = 0;
 };
 
 enum class ProfilingEventKind {

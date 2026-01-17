@@ -24,6 +24,7 @@ struct LogRecord {
     std::string error_name;
     std::string trace_path;
     std::string build_log;
+    std::string device_info;
 };
 
 struct KernelTrace {
@@ -33,8 +34,10 @@ struct KernelTrace {
     std::string source;
     int device_index = -1;
     std::string device_name;
+    bool enabled = false;
 };
 
+std::string EscapeJson(const std::string& input);
 std::string FormatLogLine(const LogRecord& record, LogFormat format);
 void LogBackend(const LogRecord& record);
 bool BackendVerboseEnabled(BackendType backend);
