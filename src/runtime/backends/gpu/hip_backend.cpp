@@ -1162,13 +1162,25 @@ Status HipBackend::SmokeTest() const {
 
     const std::string kernel_path =
         (std::filesystem::path(kernel_dir) / "lattice_smoke.hip").string();
-    auto kernels_or = BuildKernelsFromFile(kernel_path, "vec_add");
-    if (!kernels_or.ok())
-        return kernels_or.status();
-    auto kernels = kernels_or.value();
-    if (kernels.empty()) {
+    auto add_kernels_or = BuildKernelsFromFile(kernel_path, "vec_add");
+    if (!add_kernels_or.ok())
+        return add_kernels_or.status();
+    auto add_kernels = add_kernels_or.value();
+    if (add_kernels.empty()) {
         return HipStatus(StatusCode::kUnavailable, BackendErrorKind::kDiscovery,
                          "No HIP devices available");
+    }
+    auto mul_kernels_or = BuildKernelsFromFile(kernel_path, "vec_mul");
+    if (!mul_kernels_or.ok()) {
+        for (auto& kernel : add_kernels) {
+            ReleaseKernel(&kernel);
+        }
+        return mul_kernels_or.status();
+    }
+    auto mul_kernels = mul_kernels_or.value();
+    std::unordered_map<int, HipKernel> mul_by_device;
+    for (auto& kernel : mul_kernels) {
+        mul_by_device[kernel.device_index] = kernel;
     }
 
     constexpr size_t kCount = 1024;
@@ -1176,7 +1188,20 @@ Status HipBackend::SmokeTest() const {
     std::vector<float> b(kCount, 2.5f);
     std::vector<float> out(kCount, 0.0f);
 
-    for (const auto& kernel : kernels) {
+    for (const auto& kernel : add_kernels) {
+        auto it = mul_by_device.find(kernel.device_index);
+        if (it == mul_by_device.end()) {
+            for (auto& add_kernel : add_kernels) {
+                ReleaseKernel(&add_kernel);
+            }
+            for (auto& mul_kernel : mul_kernels) {
+                ReleaseKernel(&mul_kernel);
+            }
+            return HipStatus(StatusCode::kUnavailable,
+                             BackendErrorKind::kDiscovery,
+                             "Missing HIP vec_mul kernel");
+        }
+        const HipKernel& mul_kernel = it->second;
         auto buf_a_or =
             CreateBuffer(kernel.device_index, kCount * sizeof(float));
         if (!buf_a_or.ok())
@@ -1232,9 +1257,33 @@ Status HipBackend::SmokeTest() const {
             }
         }
 
+        status = LaunchKernel(mul_kernel, cfg, args);
+        if (!status.ok())
+            return status;
+
+        status = ReadBuffer(kernel.device_index, buf_out, out.data(),
+                            out.size() * sizeof(float));
+        if (!status.ok())
+            return status;
+
+        for (size_t i = 0; i < kCount; ++i) {
+            if (out[i] != a[i] * b[i]) {
+                return HipStatus(StatusCode::kInternal,
+                                 BackendErrorKind::kRuntime,
+                                 "HIP smoke test failed: vec_mul mismatch");
+            }
+        }
+
         ReleaseBuffer(&buf_a);
         ReleaseBuffer(&buf_b);
         ReleaseBuffer(&buf_out);
+    }
+
+    for (auto& kernel : add_kernels) {
+        ReleaseKernel(&kernel);
+    }
+    for (auto& kernel : mul_kernels) {
+        ReleaseKernel(&kernel);
     }
 
     return Status::OK();

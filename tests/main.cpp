@@ -21,9 +21,12 @@ void RunBackendTests(TestContext* ctx);
 void RunBackendEdgeTests(TestContext* ctx);
 void RunBackendErrorTests(TestContext* ctx);
 void RunBackendLogTests(TestContext* ctx);
+void RunGpuCorrectnessTests(TestContext* ctx);
+void RunGpuStressTests(TestContext* ctx);
 void RunAbiTests(TestContext* ctx);
 void RunDeviceSelectorTests(TestContext* ctx);
 void RunDeviceQuirksTests(TestContext* ctx);
+void RunDeviceBufferTests(TestContext* ctx);
 void RunCacheStoreTests(TestContext* ctx);
 void RunMemoryPoolTests(TestContext* ctx);
 void RunKernelBuildTests(TestContext* ctx);
@@ -33,6 +36,8 @@ void RunIntegrationTests(TestContext* ctx);
 
 int main() {
   test::TestContext ctx;
+  test::RunGpuCorrectnessTests(&ctx);
+  test::RunGpuStressTests(&ctx);
   test::RunLexerTests(&ctx);
   test::RunParserTests(&ctx);
   test::RunRuntimeTests(&ctx);
@@ -54,6 +59,7 @@ int main() {
   test::RunAbiTests(&ctx);
   test::RunDeviceSelectorTests(&ctx);
   test::RunDeviceQuirksTests(&ctx);
+  test::RunDeviceBufferTests(&ctx);
   test::RunCacheStoreTests(&ctx);
   test::RunMemoryPoolTests(&ctx);
   test::RunKernelBuildTests(&ctx);

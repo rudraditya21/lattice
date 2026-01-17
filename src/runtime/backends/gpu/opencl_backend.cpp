@@ -1285,14 +1285,28 @@ Status OpenCLBackend::SmokeTest() const {
                             "OpenCL kernel directory not found");
     }
 
-    auto kernels_or = BuildKernelsFromFile("lattice_smoke.cl", "vec_add", "");
-    if (!kernels_or.ok())
-        return kernels_or.status();
-    auto kernels = kernels_or.value();
-    if (kernels.empty()) {
+    auto add_kernels_or =
+        BuildKernelsFromFile("lattice_smoke.cl", "vec_add", "");
+    if (!add_kernels_or.ok())
+        return add_kernels_or.status();
+    auto add_kernels = add_kernels_or.value();
+    if (add_kernels.empty()) {
         return OpenclStatus(StatusCode::kUnavailable,
                             BackendErrorKind::kDiscovery,
                             "No OpenCL devices available");
+    }
+    auto mul_kernels_or =
+        BuildKernelsFromFile("lattice_smoke.cl", "vec_mul", "");
+    if (!mul_kernels_or.ok()) {
+        for (auto& kernel : add_kernels) {
+            ReleaseKernel(&kernel);
+        }
+        return mul_kernels_or.status();
+    }
+    auto mul_kernels = mul_kernels_or.value();
+    std::unordered_map<int, OpenCLKernel> mul_by_device;
+    for (auto& kernel : mul_kernels) {
+        mul_by_device[kernel.device_index] = kernel;
     }
 
     const size_t n = 1024;
@@ -1300,7 +1314,20 @@ Status OpenCLBackend::SmokeTest() const {
     std::vector<float> b(n, 2.0f);
     std::vector<float> out(n, 0.0f);
 
-    for (const auto& kernel : kernels) {
+    for (const auto& kernel : add_kernels) {
+        auto it = mul_by_device.find(kernel.device_index);
+        if (it == mul_by_device.end()) {
+            for (auto& add_kernel : add_kernels) {
+                ReleaseKernel(&add_kernel);
+            }
+            for (auto& mul_kernel : mul_kernels) {
+                ReleaseKernel(&mul_kernel);
+            }
+            return OpenclStatus(StatusCode::kUnavailable,
+                                BackendErrorKind::kDiscovery,
+                                "Missing OpenCL vec_mul kernel");
+        }
+        const OpenCLKernel& mul_kernel = it->second;
         const int device_index = kernel.device_index;
         auto buf_a_or =
             CreateBuffer(device_index, n * sizeof(float), CL_MEM_READ_ONLY);
@@ -1373,12 +1400,40 @@ Status OpenCLBackend::SmokeTest() const {
             }
         }
 
+        Status mul_launch = LaunchKernel(mul_kernel, cfg, args);
+        if (!mul_launch.ok()) {
+            ReleaseBuffer(&buf_a);
+            ReleaseBuffer(&buf_b);
+            ReleaseBuffer(&buf_out);
+            return mul_launch;
+        }
+
+        Status mul_read =
+            ReadBuffer(device_index, buf_out, out.data(), n * sizeof(float));
+        if (!mul_read.ok()) {
+            ReleaseBuffer(&buf_a);
+            ReleaseBuffer(&buf_b);
+            ReleaseBuffer(&buf_out);
+            return mul_read;
+        }
+
+        for (size_t i = 0; i < n; ++i) {
+            if (std::fabs(out[i] - (a[i] * b[i])) > 1e-3f) {
+                return OpenclStatus(
+                    StatusCode::kInternal, BackendErrorKind::kRuntime,
+                    "OpenCL smoke test failed: vec_mul mismatch");
+            }
+        }
+
         ReleaseBuffer(&buf_a);
         ReleaseBuffer(&buf_b);
         ReleaseBuffer(&buf_out);
     }
 
-    for (auto& kernel : kernels) {
+    for (auto& kernel : add_kernels) {
+        ReleaseKernel(&kernel);
+    }
+    for (auto& kernel : mul_kernels) {
         ReleaseKernel(&kernel);
     }
 

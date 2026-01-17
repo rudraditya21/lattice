@@ -91,6 +91,9 @@ add_executable(lattice_tests
     tests/runtime/abi_tests.cpp
     tests/runtime/device_selector_tests.cpp
     tests/runtime/device_quirks_tests.cpp
+    tests/runtime/device_buffer_tests.cpp
+    tests/runtime/gpu_correctness_tests.cpp
+    tests/runtime/gpu_stress_tests.cpp
     tests/runtime/cache_store_tests.cpp
     tests/runtime/memory_pool_tests.cpp
     tests/runtime/kernel_build_tests.cpp
