@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -13,12 +14,138 @@
 #include <utility>
 #include <vector>
 
+#if defined(LATTICE_USE_ACCELERATE)
+#include <Accelerate/Accelerate.h>
+#elif defined(LATTICE_USE_CBLAS)
+#include <cblas.h>
+#endif
+
 #include "runtime/decimal.h"
 #include "runtime/tensor_gpu.h"
 #include "runtime/tensor_utils.h"
 #include "util/error.h"
 
 namespace lattice::runtime {
+namespace {
+
+bool TryBlasMatmul(const Value& lhs,
+                   const Value& rhs,
+                   DType elem,
+                   int64_t m,
+                   int64_t n,
+                   int64_t k,
+                   Value* out,
+                   std::string* error) {
+#if defined(LATTICE_USE_ACCELERATE) || defined(LATTICE_USE_CBLAS)
+    if (!out) {
+        if (error)
+            *error = "blas output pointer is null";
+        return false;
+    }
+    if (m <= 0 || n <= 0 || k <= 0) {
+        *out = Value::Tensor({m, n}, elem, 0.0);
+        return true;
+    }
+    if (m > std::numeric_limits<int>::max() ||
+        n > std::numeric_limits<int>::max() ||
+        k > std::numeric_limits<int>::max()) {
+        if (error)
+            *error = "blas matmul dims exceed int limits";
+        return false;
+    }
+    *out = Value::Tensor({m, n}, elem, 0.0);
+    const double* a = lhs.tensor.Data();
+    const double* b = rhs.tensor.Data();
+    double* c = out->tensor.Data();
+    const double alpha = 1.0;
+    const double beta = 0.0;
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, static_cast<int>(m),
+                static_cast<int>(n), static_cast<int>(k), alpha, a,
+                static_cast<int>(k), b, static_cast<int>(n), beta, c,
+                static_cast<int>(n));
+    return true;
+#else
+    (void)lhs;
+    (void)rhs;
+    (void)elem;
+    (void)m;
+    (void)n;
+    (void)k;
+    (void)out;
+    if (error)
+        *error = "BLAS not available";
+    return false;
+#endif
+}
+
+std::vector<int64_t> RowMajorStrides(const std::vector<int64_t>& shape) {
+    std::vector<int64_t> strides(shape.size(), 1);
+    int64_t stride = 1;
+    for (int i = static_cast<int>(shape.size()) - 1; i >= 0; --i) {
+        strides[i] = stride;
+        stride *= shape[static_cast<size_t>(i)];
+    }
+    return strides;
+}
+
+bool IsContiguousStrides(const std::vector<int64_t>& shape,
+                         const std::vector<int64_t>& strides) {
+    if (shape.size() != strides.size())
+        return false;
+    return RowMajorStrides(shape) == strides;
+}
+
+bool TryBlasAxpy(const Value& x,
+                 const Value& base,
+                 DType elem,
+                 double alpha,
+                 Value* out,
+                 std::string* error) {
+#if defined(LATTICE_USE_ACCELERATE) || defined(LATTICE_USE_CBLAS)
+    if (!out) {
+        if (error)
+            *error = "blas output pointer is null";
+        return false;
+    }
+    if (x.type != DType::kTensor || base.type != DType::kTensor) {
+        if (error)
+            *error = "blas axpy expects tensor operands";
+        return false;
+    }
+    if (x.tensor.size != base.tensor.size) {
+        if (error)
+            *error = "blas axpy size mismatch";
+        return false;
+    }
+    const int64_t count = x.tensor.size;
+    if (count <= 0) {
+        *out = Value::Tensor(base.tensor.shape, elem, 0.0);
+        return true;
+    }
+    if (count > std::numeric_limits<int>::max()) {
+        if (error)
+            *error = "blas axpy dims exceed int limits";
+        return false;
+    }
+    *out = Value::Tensor(base.tensor.shape, elem, 0.0);
+    std::memcpy(out->tensor.Data(), base.tensor.Data(),
+                static_cast<size_t>(count) * sizeof(double));
+    const int n = static_cast<int>(count);
+    cblas_daxpy(n, alpha, x.tensor.Data(), 1, out->tensor.Data(), 1);
+    return true;
+#else
+    (void)x;
+    (void)base;
+    (void)elem;
+    (void)alpha;
+    (void)out;
+    if (error)
+        *error = "BLAS not available";
+    return false;
+#endif
+}
+
+}  // namespace
 
 bool IsComplex(DType t) {
     return t == DType::kC64 || t == DType::kC128;
@@ -1133,6 +1260,28 @@ Value Evaluator::EvaluateBinary(const parser::BinaryExpression& expr) {
                                       expr.column);
         }
         Value out = Value::Tensor(out_shape, elem_target, 0.0);
+        if ((expr.op == parser::BinaryOp::kAdd ||
+             expr.op == parser::BinaryOp::kSub) &&
+            lhs.type == DType::kTensor && rhs.type == DType::kTensor &&
+            lhs.tensor.kind == TensorKind::kDense &&
+            rhs.tensor.kind == TensorKind::kDense &&
+            lhs.tensor.shape == rhs.tensor.shape &&
+            IsContiguousStrides(lhs.tensor.shape, lhs.tensor.strides) &&
+            IsContiguousStrides(rhs.tensor.shape, rhs.tensor.strides)) {
+            std::string blas_error;
+            const double alpha = expr.op == parser::BinaryOp::kAdd ? 1.0 : -1.0;
+            Value blas_out;
+            if (TryBlasAxpy(rhs, lhs, elem_target, alpha, &blas_out,
+                            &blas_error)) {
+                EnsureFiniteOrThrow(blas_out, expr.line, expr.column);
+                return blas_out;
+            }
+            if (!blas_error.empty() && blas_error != "BLAS not available") {
+                throw util::Error(
+                    "BLAS elementwise add/sub failed: " + blas_error, expr.line,
+                    expr.column);
+            }
+        }
         std::vector<int64_t> lhs_bstrides =
             lhs.type == DType::kTensor
                 ? BroadcastStrides(lhs.tensor.shape, lhs.tensor.strides,
@@ -2398,21 +2547,27 @@ Value Evaluator::EvaluateCall(const parser::CallExpression& call) {
                 TryGpuMatmul(lhs, rhs, call_line, call_col, &gpu_error);
             if (gpu_value.has_value())
                 return gpu_value.value();
+            if (!gpu_error.empty()) {
+                throw util::Error(
+                    "matmul requires BLAS on selected backend: " + gpu_error,
+                    call_line, call_col);
+            }
         }
         DType elem = PromoteTensorElem(
             lhs.tensor.elem_type, rhs.tensor.elem_type, call_line, call_col);
-        Value out = Value::Tensor(std::vector<int64_t>{m, n}, elem, 0.0);
-        for (int64_t i = 0; i < m; ++i) {
-            for (int64_t j = 0; j < n; ++j) {
-                double acc = 0.0;
-                for (int64_t kk = 0; kk < k; ++kk) {
-                    acc += lhs.tensor.Data()[i * k + kk] *
-                           rhs.tensor.Data()[kk * n + j];
-                }
-                out.tensor.Data()[i * n + j] = acc;
+        {
+            Value blas_out;
+            std::string blas_error;
+            if (TryBlasMatmul(lhs, rhs, elem, m, n, k, &blas_out,
+                              &blas_error)) {
+                return blas_out;
             }
+            std::string message = "matmul requires BLAS";
+            if (!blas_error.empty()) {
+                message += ": " + blas_error;
+            }
+            throw util::Error(message, call_line, call_col);
         }
-        return out;
     }
     if (name == "conv2d") {
         expect_args(2, name);

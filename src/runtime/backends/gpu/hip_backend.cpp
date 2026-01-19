@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -40,6 +41,8 @@ constexpr int kAttrSharedMemPerBlock = 8;
 constexpr int kAttrClockRate = 13;
 constexpr int kAttrMultiprocessorCount = 16;
 
+int CapabilityToInt(CapabilityStatus status);
+
 std::string FormatHipVersion(int version) {
     if (version <= 0)
         return "";
@@ -69,6 +72,16 @@ Status HipErrorStatus(StatusCode code,
                           message + ": " + gpu::HipErrorString(err, loader));
     st.backend_code = static_cast<int64_t>(err);
     st.backend_error_name = gpu::HipErrorString(err, loader);
+    return st;
+}
+
+Status HipblasErrorStatus(StatusCode code,
+                          const std::string& message,
+                          gpu::hipblasStatus_t err) {
+    Status st = HipStatus(code, BackendErrorKind::kRuntime,
+                          message + ": " + gpu::HipblasErrorString(err));
+    st.backend_code = static_cast<int64_t>(err);
+    st.backend_error_name = gpu::HipblasErrorString(err);
     return st;
 }
 
@@ -415,6 +428,8 @@ struct HipBackend::DeviceContext {
     gpu::hipDevice_t device = 0;
     gpu::hipCtx_t context = nullptr;
     gpu::hipStream_t stream = nullptr;
+    gpu::hipblasHandle_t blas_handle = nullptr;
+    bool blas_ready = false;
     HipDeviceDesc desc;
     DeviceCapabilities caps;
     std::string fingerprint;
@@ -434,6 +449,11 @@ HipBackend::~HipBackend() {
     for (auto& dev : devices_) {
         if (loader_.hipCtxSetCurrent && dev.context) {
             loader_.hipCtxSetCurrent(dev.context);
+        }
+        if (dev.blas_handle && hipblas_loader_.hipblasDestroy) {
+            hipblas_loader_.hipblasDestroy(dev.blas_handle);
+            dev.blas_handle = nullptr;
+            dev.blas_ready = false;
         }
         if (dev.device_pool) {
             MemoryPoolStats stats = dev.device_pool->Stats();
@@ -466,6 +486,7 @@ HipBackend::~HipBackend() {
         }
         pinned_pool_->Trim();
     }
+    hipblas_loader_.Unload();
     loader_.Unload();
 }
 
@@ -930,6 +951,222 @@ Status HipBackend::ReadBuffer(int device_index,
     return Status::OK();
 }
 
+StatusOr<bool> HipBackend::BlasMatmul(int device_index,
+                                      const HipBuffer& a,
+                                      const HipBuffer& b,
+                                      const HipBuffer& c,
+                                      int64_t m,
+                                      int64_t n,
+                                      int64_t k,
+                                      bool use_fp64) const {
+    Status status = EnsureInitialized();
+    if (!status.ok())
+        return status;
+    if (!hipblas_loader_.Loaded()) {
+        return Status::Unavailable("hipBLAS not available");
+    }
+    if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
+        return HipStatus(StatusCode::kInvalidArgument,
+                         BackendErrorKind::kInvalidArgument,
+                         "Invalid HIP device index");
+    }
+    if (!hipblas_loader_.hipblasCreate || !hipblas_loader_.hipblasSetStream ||
+        !hipblas_loader_.hipblasDgemm || !hipblas_loader_.hipblasSgemm) {
+        return Status::Unavailable("hipBLAS symbols unavailable");
+    }
+    if (m <= 0 || n <= 0 || k <= 0) {
+        return true;
+    }
+    if (m > std::numeric_limits<int>::max() ||
+        n > std::numeric_limits<int>::max() ||
+        k > std::numeric_limits<int>::max()) {
+        return HipStatus(StatusCode::kInvalidArgument,
+                         BackendErrorKind::kInvalidArgument,
+                         "hipBLAS matmul dims exceed int limits");
+    }
+    auto& dev = devices_[device_index];
+    if (!dev.blas_handle || !dev.blas_ready) {
+        return Status::Unavailable("hipBLAS handle unavailable");
+    }
+    if (loader_.hipCtxSetCurrent && dev.context) {
+        loader_.hipCtxSetCurrent(dev.context);
+    }
+    hipblas_loader_.hipblasSetStream(dev.blas_handle, dev.stream);
+
+    const int m_c = static_cast<int>(n);
+    const int n_c = static_cast<int>(m);
+    const int k_c = static_cast<int>(k);
+    const int lda = static_cast<int>(n);
+    const int ldb = static_cast<int>(k);
+    const int ldc = static_cast<int>(n);
+
+    if (use_fp64) {
+        const double alpha = 1.0;
+        const double beta = 0.0;
+        auto* b_ptr = reinterpret_cast<const double*>(b.ptr);
+        auto* a_ptr = reinterpret_cast<const double*>(a.ptr);
+        auto* c_ptr = reinterpret_cast<double*>(c.ptr);
+        gpu::hipblasStatus_t err = hipblas_loader_.hipblasDgemm(
+            dev.blas_handle, gpu::HIPBLAS_OP_N, gpu::HIPBLAS_OP_N, m_c, n_c,
+            k_c, &alpha, b_ptr, lda, a_ptr, ldb, &beta, c_ptr, ldc);
+        if (err != gpu::HIPBLAS_STATUS_SUCCESS) {
+            return HipblasErrorStatus(StatusCode::kInternal,
+                                      "hipblasDgemm failed", err);
+        }
+    } else {
+        const float alpha = 1.0f;
+        const float beta = 0.0f;
+        auto* b_ptr = reinterpret_cast<const float*>(b.ptr);
+        auto* a_ptr = reinterpret_cast<const float*>(a.ptr);
+        auto* c_ptr = reinterpret_cast<float*>(c.ptr);
+        gpu::hipblasStatus_t err = hipblas_loader_.hipblasSgemm(
+            dev.blas_handle, gpu::HIPBLAS_OP_N, gpu::HIPBLAS_OP_N, m_c, n_c,
+            k_c, &alpha, b_ptr, lda, a_ptr, ldb, &beta, c_ptr, ldc);
+        if (err != gpu::HIPBLAS_STATUS_SUCCESS) {
+            return HipblasErrorStatus(StatusCode::kInternal,
+                                      "hipblasSgemm failed", err);
+        }
+    }
+    return true;
+}
+
+StatusOr<bool> HipBackend::BlasCopy(int device_index,
+                                    const HipBuffer& src,
+                                    const HipBuffer& dst,
+                                    int64_t count,
+                                    bool use_fp64) const {
+    Status status = EnsureInitialized();
+    if (!status.ok())
+        return status;
+    if (!hipblas_loader_.Loaded()) {
+        return Status::Unavailable("hipBLAS not available");
+    }
+    if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
+        return HipStatus(StatusCode::kInvalidArgument,
+                         BackendErrorKind::kInvalidArgument,
+                         "Invalid HIP device index");
+    }
+    if (!hipblas_loader_.hipblasCreate || !hipblas_loader_.hipblasSetStream ||
+        !hipblas_loader_.hipblasScopy || !hipblas_loader_.hipblasDcopy) {
+        return Status::Unavailable("hipBLAS symbols unavailable");
+    }
+    if (count <= 0) {
+        return true;
+    }
+    if (count > std::numeric_limits<int>::max()) {
+        return HipStatus(StatusCode::kInvalidArgument,
+                         BackendErrorKind::kInvalidArgument,
+                         "hipBLAS copy dims exceed int limits");
+    }
+    const size_t elem_bytes = use_fp64 ? sizeof(double) : sizeof(float);
+    const size_t bytes = static_cast<size_t>(count) * elem_bytes;
+    if (bytes > src.bytes || bytes > dst.bytes) {
+        return HipStatus(StatusCode::kInvalidArgument,
+                         BackendErrorKind::kInvalidArgument,
+                         "hipBLAS copy exceeds buffer size");
+    }
+    auto& dev = devices_[device_index];
+    if (!dev.blas_handle || !dev.blas_ready) {
+        return Status::Unavailable("hipBLAS handle unavailable");
+    }
+    if (loader_.hipCtxSetCurrent && dev.context) {
+        loader_.hipCtxSetCurrent(dev.context);
+    }
+    hipblas_loader_.hipblasSetStream(dev.blas_handle, dev.stream);
+
+    const int n = static_cast<int>(count);
+    if (use_fp64) {
+        auto* src_ptr = reinterpret_cast<const double*>(src.ptr);
+        auto* dst_ptr = reinterpret_cast<double*>(dst.ptr);
+        gpu::hipblasStatus_t err = hipblas_loader_.hipblasDcopy(
+            dev.blas_handle, n, src_ptr, 1, dst_ptr, 1);
+        if (err != gpu::HIPBLAS_STATUS_SUCCESS) {
+            return HipblasErrorStatus(StatusCode::kInternal,
+                                      "hipblasDcopy failed", err);
+        }
+    } else {
+        auto* src_ptr = reinterpret_cast<const float*>(src.ptr);
+        auto* dst_ptr = reinterpret_cast<float*>(dst.ptr);
+        gpu::hipblasStatus_t err = hipblas_loader_.hipblasScopy(
+            dev.blas_handle, n, src_ptr, 1, dst_ptr, 1);
+        if (err != gpu::HIPBLAS_STATUS_SUCCESS) {
+            return HipblasErrorStatus(StatusCode::kInternal,
+                                      "hipblasScopy failed", err);
+        }
+    }
+    return true;
+}
+
+StatusOr<bool> HipBackend::BlasAxpy(int device_index,
+                                    const HipBuffer& x,
+                                    const HipBuffer& y,
+                                    int64_t count,
+                                    double alpha,
+                                    bool use_fp64) const {
+    Status status = EnsureInitialized();
+    if (!status.ok())
+        return status;
+    if (!hipblas_loader_.Loaded()) {
+        return Status::Unavailable("hipBLAS not available");
+    }
+    if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
+        return HipStatus(StatusCode::kInvalidArgument,
+                         BackendErrorKind::kInvalidArgument,
+                         "Invalid HIP device index");
+    }
+    if (!hipblas_loader_.hipblasCreate || !hipblas_loader_.hipblasSetStream ||
+        !hipblas_loader_.hipblasSaxpy || !hipblas_loader_.hipblasDaxpy) {
+        return Status::Unavailable("hipBLAS symbols unavailable");
+    }
+    if (count <= 0) {
+        return true;
+    }
+    if (count > std::numeric_limits<int>::max()) {
+        return HipStatus(StatusCode::kInvalidArgument,
+                         BackendErrorKind::kInvalidArgument,
+                         "hipBLAS axpy dims exceed int limits");
+    }
+    const size_t elem_bytes = use_fp64 ? sizeof(double) : sizeof(float);
+    const size_t bytes = static_cast<size_t>(count) * elem_bytes;
+    if (bytes > x.bytes || bytes > y.bytes) {
+        return HipStatus(StatusCode::kInvalidArgument,
+                         BackendErrorKind::kInvalidArgument,
+                         "hipBLAS axpy exceeds buffer size");
+    }
+    auto& dev = devices_[device_index];
+    if (!dev.blas_handle || !dev.blas_ready) {
+        return Status::Unavailable("hipBLAS handle unavailable");
+    }
+    if (loader_.hipCtxSetCurrent && dev.context) {
+        loader_.hipCtxSetCurrent(dev.context);
+    }
+    hipblas_loader_.hipblasSetStream(dev.blas_handle, dev.stream);
+
+    const int n = static_cast<int>(count);
+    if (use_fp64) {
+        const double alpha_d = alpha;
+        auto* x_ptr = reinterpret_cast<const double*>(x.ptr);
+        auto* y_ptr = reinterpret_cast<double*>(y.ptr);
+        gpu::hipblasStatus_t err = hipblas_loader_.hipblasDaxpy(
+            dev.blas_handle, n, &alpha_d, x_ptr, 1, y_ptr, 1);
+        if (err != gpu::HIPBLAS_STATUS_SUCCESS) {
+            return HipblasErrorStatus(StatusCode::kInternal,
+                                      "hipblasDaxpy failed", err);
+        }
+    } else {
+        const float alpha_f = static_cast<float>(alpha);
+        auto* x_ptr = reinterpret_cast<const float*>(x.ptr);
+        auto* y_ptr = reinterpret_cast<float*>(y.ptr);
+        gpu::hipblasStatus_t err = hipblas_loader_.hipblasSaxpy(
+            dev.blas_handle, n, &alpha_f, x_ptr, 1, y_ptr, 1);
+        if (err != gpu::HIPBLAS_STATUS_SUCCESS) {
+            return HipblasErrorStatus(StatusCode::kInternal,
+                                      "hipblasSaxpy failed", err);
+        }
+    }
+    return true;
+}
+
 StatusOr<HipKernel> HipBackend::BuildKernelFromFile(
     const std::string& path,
     const std::string& kernel_name,
@@ -1301,6 +1538,12 @@ Status HipBackend::EnsureInitialized() const {
             HipStatus(StatusCode::kUnavailable, BackendErrorKind::kInit, error);
         return init_status_;
     }
+    std::string blas_error;
+    bool blas_loaded = hipblas_loader_.Load(&blas_error);
+    if (!blas_loaded && !blas_error.empty()) {
+        LogBackend({LogLevel::kWarn, BackendType::kHIP, BackendErrorKind::kInit,
+                    "hipBLAS unavailable: " + blas_error, "hipblas_load"});
+    }
 
     if (loader_.hipInit) {
         loader_.hipInit(0);
@@ -1454,6 +1697,21 @@ Status HipBackend::EnsureInitialized() const {
                             BackendErrorKind::kContext, "stream init failed",
                             "stream", dev.desc.index, dev.desc.name});
                 continue;
+            }
+        }
+        if (blas_loaded && hipblas_loader_.hipblasCreate &&
+            hipblas_loader_.hipblasSetStream) {
+            gpu::hipblasStatus_t rc =
+                hipblas_loader_.hipblasCreate(&dev.blas_handle);
+            if (rc == gpu::HIPBLAS_STATUS_SUCCESS) {
+                dev.blas_ready = true;
+                hipblas_loader_.hipblasSetStream(dev.blas_handle, dev.stream);
+            } else {
+                LogBackend(
+                    {LogLevel::kWarn, BackendType::kHIP,
+                     BackendErrorKind::kRuntime,
+                     "hipBLAS init failed: " + gpu::HipblasErrorString(rc),
+                     "hipblas_init", dev.desc.index, dev.desc.name});
             }
         }
 

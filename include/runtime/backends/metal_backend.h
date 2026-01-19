@@ -114,6 +114,25 @@ class MetalBackend final : public Backend {
                       void* data,
                       size_t bytes,
                       size_t offset = 0) const;
+    StatusOr<bool> BlasMatmul(int device_index,
+                              const MetalBuffer& a,
+                              const MetalBuffer& b,
+                              const MetalBuffer& c,
+                              int64_t m,
+                              int64_t n,
+                              int64_t k,
+                              bool use_fp64) const;
+    StatusOr<bool> BlasCopy(int device_index,
+                            const MetalBuffer& src,
+                            const MetalBuffer& dst,
+                            int64_t count,
+                            bool use_fp64) const;
+    StatusOr<bool> BlasAxpy(int device_index,
+                            const MetalBuffer& x,
+                            const MetalBuffer& y,
+                            int64_t count,
+                            double alpha,
+                            bool use_fp64) const;
 
     StatusOr<MetalKernel> BuildKernelFromFile(
         const std::string& path,

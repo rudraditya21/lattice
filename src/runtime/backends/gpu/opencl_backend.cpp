@@ -12,6 +12,7 @@
 #include <future>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -123,6 +124,17 @@ Status OpenclErrorStatus(StatusCode code,
         OpenclStatus(code, kind, message + ": " + gpu::OpenCLErrorString(err));
     st.backend_code = static_cast<int64_t>(err);
     st.backend_error_name = gpu::OpenCLErrorString(err);
+    return st;
+}
+
+Status ClblastErrorStatus(StatusCode code,
+                          BackendErrorKind kind,
+                          const std::string& message,
+                          gpu::CLBlastStatusCode err) {
+    Status st =
+        OpenclStatus(code, kind, message + ": " + gpu::ClblastErrorString(err));
+    st.backend_code = static_cast<int64_t>(err);
+    st.backend_error_name = gpu::ClblastErrorString(err);
     return st;
 }
 
@@ -512,6 +524,7 @@ OpenCLBackend::~OpenCLBackend() {
         }
         loader_.Unload();
     }
+    clblast_.Unload();
 }
 
 BackendType OpenCLBackend::Type() const {
@@ -1034,6 +1047,268 @@ Status OpenCLBackend::ReadBuffer(int device_index,
         return st;
     }
     return Status::OK();
+}
+
+StatusOr<bool> OpenCLBackend::BlasMatmul(int device_index,
+                                         const OpenCLBuffer& a,
+                                         const OpenCLBuffer& b,
+                                         const OpenCLBuffer& c,
+                                         int64_t m,
+                                         int64_t n,
+                                         int64_t k,
+                                         bool use_fp64) const {
+    Status status = EnsureInitialized();
+    if (!status.ok())
+        return status;
+    if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "Invalid OpenCL device index");
+    }
+    if (m <= 0 || n <= 0 || k <= 0) {
+        return true;
+    }
+    if (!a.mem || !b.mem || !c.mem) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "OpenCL BLAS buffers are null");
+    }
+    if (a.device_index != device_index || b.device_index != device_index ||
+        c.device_index != device_index) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "OpenCL BLAS buffers belong to a different device");
+    }
+    if (!clblast_.Loaded()) {
+        std::string error;
+        if (!clblast_.Load(&error)) {
+            return Status::Unavailable("CLBlast not available: " + error);
+        }
+    }
+    if (!clblast_.clblastSgemm) {
+        return Status::Unavailable("CLBlast symbols unavailable");
+    }
+    if (use_fp64 && !clblast_.clblastDgemm) {
+        return Status::Unavailable("CLBlast double precision unavailable");
+    }
+
+    const size_t m_sz = static_cast<size_t>(m);
+    const size_t n_sz = static_cast<size_t>(n);
+    const size_t k_sz = static_cast<size_t>(k);
+    const size_t elem_size = use_fp64 ? sizeof(double) : sizeof(float);
+    const size_t max_size = std::numeric_limits<size_t>::max();
+    if (m_sz > max_size / k_sz || m_sz > max_size / n_sz ||
+        k_sz > max_size / n_sz) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "OpenCL BLAS dimensions overflow");
+    }
+    const size_t count_a = m_sz * k_sz;
+    const size_t count_b = k_sz * n_sz;
+    const size_t count_c = m_sz * n_sz;
+    if (count_a > max_size / elem_size || count_b > max_size / elem_size ||
+        count_c > max_size / elem_size) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "OpenCL BLAS size overflow");
+    }
+    const size_t bytes_a = count_a * elem_size;
+    const size_t bytes_b = count_b * elem_size;
+    const size_t bytes_c = count_c * elem_size;
+    if (bytes_a > a.bytes || bytes_b > b.bytes || bytes_c > c.bytes) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "OpenCL BLAS buffers are too small");
+    }
+
+    auto& dev = devices_[device_index];
+    if (!dev.queue) {
+        return OpenclStatus(StatusCode::kUnavailable,
+                            BackendErrorKind::kContext,
+                            "OpenCL queue unavailable");
+    }
+    if (use_fp64 && dev.caps.fp64 == CapabilityStatus::kNo) {
+        return Status::Unavailable("OpenCL device lacks FP64 support");
+    }
+
+    const size_t lda = k_sz;
+    const size_t ldb = n_sz;
+    const size_t ldc = n_sz;
+    const gpu::CLBlastLayout layout = gpu::CLBLAST_LAYOUT_ROW_MAJOR;
+    const gpu::CLBlastTranspose trans = gpu::CLBLAST_TRANSPOSE_NO;
+    cl_command_queue queue = dev.queue;
+    cl_event event = nullptr;
+
+    if (use_fp64) {
+        const double alpha = 1.0;
+        const double beta = 0.0;
+        gpu::CLBlastStatusCode err = clblast_.clblastDgemm(
+            layout, trans, trans, m_sz, n_sz, k_sz, alpha, a.mem, 0, lda, b.mem,
+            0, ldb, beta, c.mem, 0, ldc, &queue, &event);
+        if (err != gpu::CLBLAST_STATUS_SUCCESS) {
+            return ClblastErrorStatus(StatusCode::kInternal,
+                                      BackendErrorKind::kRuntime,
+                                      "CLBlast Dgemm failed", err);
+        }
+    } else {
+        const float alpha = 1.0f;
+        const float beta = 0.0f;
+        gpu::CLBlastStatusCode err = clblast_.clblastSgemm(
+            layout, trans, trans, m_sz, n_sz, k_sz, alpha, a.mem, 0, lda, b.mem,
+            0, ldb, beta, c.mem, 0, ldc, &queue, &event);
+        if (err != gpu::CLBLAST_STATUS_SUCCESS) {
+            return ClblastErrorStatus(StatusCode::kInternal,
+                                      BackendErrorKind::kRuntime,
+                                      "CLBlast Sgemm failed", err);
+        }
+    }
+
+    if (event && loader_.clWaitForEvents) {
+        cl_int wait_err = loader_.clWaitForEvents(1, &event);
+        if (loader_.clReleaseEvent) {
+            loader_.clReleaseEvent(event);
+        }
+        if (wait_err != CL_SUCCESS) {
+            return OpenclErrorStatus(StatusCode::kInternal,
+                                     BackendErrorKind::kRuntime,
+                                     "CLBlast wait failed", wait_err);
+        }
+    } else if (loader_.clFinish) {
+        cl_int finish_err = loader_.clFinish(queue);
+        if (finish_err != CL_SUCCESS) {
+            return OpenclErrorStatus(StatusCode::kInternal,
+                                     BackendErrorKind::kRuntime,
+                                     "CLBlast finish failed", finish_err);
+        }
+    }
+
+    return true;
+}
+
+StatusOr<bool> OpenCLBackend::BlasCopy(int device_index,
+                                       const OpenCLBuffer& src,
+                                       const OpenCLBuffer& dst,
+                                       int64_t count,
+                                       bool use_fp64) const {
+    Status status = EnsureInitialized();
+    if (!status.ok())
+        return status;
+    if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "Invalid OpenCL device index");
+    }
+    if (count <= 0) {
+        return true;
+    }
+    if (!src.mem || !dst.mem) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "OpenCL BLAS buffers are null");
+    }
+    if (src.device_index != device_index || dst.device_index != device_index) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "OpenCL BLAS buffers belong to a different device");
+    }
+    if (!clblast_.Loaded()) {
+        std::string error;
+        if (!clblast_.Load(&error)) {
+            return Status::Unavailable("CLBlast not available: " + error);
+        }
+    }
+    if (!clblast_.clblastScopy || (use_fp64 && !clblast_.clblastDcopy)) {
+        return Status::Unavailable("CLBlast symbols unavailable");
+    }
+
+    const size_t elem_bytes = use_fp64 ? sizeof(double) : sizeof(float);
+    const size_t count_sz = static_cast<size_t>(count);
+    const size_t bytes = count_sz * elem_bytes;
+    if (bytes > src.bytes || bytes > dst.bytes) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "OpenCL BLAS copy exceeds buffer size");
+    }
+
+    cl_command_queue queue = devices_[device_index].queue;
+    gpu::CLBlastStatusCode err = gpu::CLBLAST_STATUS_SUCCESS;
+    if (use_fp64) {
+        err = clblast_.clblastDcopy(count_sz, src.mem, 0, 1, dst.mem, 0, 1,
+                                    &queue, nullptr);
+    } else {
+        err = clblast_.clblastScopy(count_sz, src.mem, 0, 1, dst.mem, 0, 1,
+                                    &queue, nullptr);
+    }
+    if (err != gpu::CLBLAST_STATUS_SUCCESS) {
+        return ClblastErrorStatus(StatusCode::kInternal,
+                                  BackendErrorKind::kRuntime,
+                                  "CLBlast copy failed", err);
+    }
+    return true;
+}
+
+StatusOr<bool> OpenCLBackend::BlasAxpy(int device_index,
+                                       const OpenCLBuffer& x,
+                                       const OpenCLBuffer& y,
+                                       int64_t count,
+                                       double alpha,
+                                       bool use_fp64) const {
+    Status status = EnsureInitialized();
+    if (!status.ok())
+        return status;
+    if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "Invalid OpenCL device index");
+    }
+    if (count <= 0) {
+        return true;
+    }
+    if (!x.mem || !y.mem) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "OpenCL BLAS buffers are null");
+    }
+    if (x.device_index != device_index || y.device_index != device_index) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "OpenCL BLAS buffers belong to a different device");
+    }
+    if (!clblast_.Loaded()) {
+        std::string error;
+        if (!clblast_.Load(&error)) {
+            return Status::Unavailable("CLBlast not available: " + error);
+        }
+    }
+    if (!clblast_.clblastSaxpy || (use_fp64 && !clblast_.clblastDaxpy)) {
+        return Status::Unavailable("CLBlast symbols unavailable");
+    }
+
+    const size_t elem_bytes = use_fp64 ? sizeof(double) : sizeof(float);
+    const size_t count_sz = static_cast<size_t>(count);
+    const size_t bytes = count_sz * elem_bytes;
+    if (bytes > x.bytes || bytes > y.bytes) {
+        return OpenclStatus(StatusCode::kInvalidArgument,
+                            BackendErrorKind::kInvalidArgument,
+                            "OpenCL BLAS axpy exceeds buffer size");
+    }
+
+    cl_command_queue queue = devices_[device_index].queue;
+    gpu::CLBlastStatusCode err = gpu::CLBLAST_STATUS_SUCCESS;
+    if (use_fp64) {
+        err = clblast_.clblastDaxpy(count_sz, alpha, x.mem, 0, 1, y.mem, 0, 1,
+                                    &queue, nullptr);
+    } else {
+        const float alpha_f = static_cast<float>(alpha);
+        err = clblast_.clblastSaxpy(count_sz, alpha_f, x.mem, 0, 1, y.mem, 0, 1,
+                                    &queue, nullptr);
+    }
+    if (err != gpu::CLBLAST_STATUS_SUCCESS) {
+        return ClblastErrorStatus(StatusCode::kInternal,
+                                  BackendErrorKind::kRuntime,
+                                  "CLBlast axpy failed", err);
+    }
+    return true;
 }
 
 StatusOr<OpenCLKernel> OpenCLBackend::BuildKernelFromFile(

@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -62,6 +63,16 @@ Status CudaStatus(StatusCode code,
                   BackendErrorKind kind,
                   const std::string& message) {
     return MakeBackendError(code, BackendType::kCUDA, kind, message);
+}
+
+Status CublasErrorStatus(StatusCode code,
+                         const std::string& message,
+                         gpu::cublasStatus_t err) {
+    Status st = CudaStatus(code, BackendErrorKind::kRuntime,
+                           message + ": " + gpu::CublasErrorString(err));
+    st.backend_code = static_cast<int64_t>(err);
+    st.backend_error_name = gpu::CublasErrorString(err);
+    return st;
 }
 
 std::string CudaErrorName(gpu::CUresult err, const gpu::CudaLoader* loader) {
@@ -430,6 +441,8 @@ struct CudaBackend::DeviceContext {
     gpu::CUdevice device = 0;
     gpu::CUcontext context = nullptr;
     gpu::CUstream stream = nullptr;
+    gpu::cublasHandle_t blas_handle = nullptr;
+    bool blas_ready = false;
     CudaDeviceDesc desc;
     DeviceCapabilities caps;
     std::string fingerprint;
@@ -449,6 +462,11 @@ CudaBackend::~CudaBackend() {
     for (auto& dev : devices_) {
         if (loader_.cuCtxSetCurrent && dev.context) {
             loader_.cuCtxSetCurrent(dev.context);
+        }
+        if (dev.blas_handle && cublas_loader_.cublasDestroy) {
+            cublas_loader_.cublasDestroy(dev.blas_handle);
+            dev.blas_handle = nullptr;
+            dev.blas_ready = false;
         }
         if (dev.device_pool) {
             MemoryPoolStats stats = dev.device_pool->Stats();
@@ -481,6 +499,7 @@ CudaBackend::~CudaBackend() {
         }
         pinned_pool_->Trim();
     }
+    cublas_loader_.Unload();
     loader_.Unload();
 }
 
@@ -942,6 +961,232 @@ Status CudaBackend::ReadBuffer(int device_index,
     return Status::OK();
 }
 
+StatusOr<bool> CudaBackend::BlasMatmul(int device_index,
+                                       const CudaBuffer& a,
+                                       const CudaBuffer& b,
+                                       const CudaBuffer& c,
+                                       int64_t m,
+                                       int64_t n,
+                                       int64_t k,
+                                       bool use_fp64) const {
+    Status status = EnsureInitialized();
+    if (!status.ok())
+        return status;
+    if (!cublas_loader_.Loaded()) {
+        return Status::Unavailable("cuBLAS not available");
+    }
+    if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
+        return CudaStatus(StatusCode::kInvalidArgument,
+                          BackendErrorKind::kInvalidArgument,
+                          "Invalid CUDA device index");
+    }
+    if (!cublas_loader_.cublasCreate || !cublas_loader_.cublasSetStream ||
+        !cublas_loader_.cublasDgemm || !cublas_loader_.cublasSgemm) {
+        return Status::Unavailable("cuBLAS symbols unavailable");
+    }
+    if (m <= 0 || n <= 0 || k <= 0) {
+        return true;
+    }
+    if (m > std::numeric_limits<int>::max() ||
+        n > std::numeric_limits<int>::max() ||
+        k > std::numeric_limits<int>::max()) {
+        return CudaStatus(StatusCode::kInvalidArgument,
+                          BackendErrorKind::kInvalidArgument,
+                          "cuBLAS matmul dims exceed int limits");
+    }
+    auto& dev = devices_[device_index];
+    if (!dev.blas_handle || !dev.blas_ready) {
+        return Status::Unavailable("cuBLAS handle unavailable");
+    }
+    if (loader_.cuCtxSetCurrent) {
+        loader_.cuCtxSetCurrent(dev.context);
+    }
+    cublas_loader_.cublasSetStream(dev.blas_handle, dev.stream);
+
+    const int m_c = static_cast<int>(n);
+    const int n_c = static_cast<int>(m);
+    const int k_c = static_cast<int>(k);
+    const int lda = static_cast<int>(n);
+    const int ldb = static_cast<int>(k);
+    const int ldc = static_cast<int>(n);
+
+    if (use_fp64) {
+        const double alpha = 1.0;
+        const double beta = 0.0;
+        auto* b_ptr =
+            reinterpret_cast<const double*>(static_cast<uintptr_t>(b.ptr));
+        auto* a_ptr =
+            reinterpret_cast<const double*>(static_cast<uintptr_t>(a.ptr));
+        auto* c_ptr = reinterpret_cast<double*>(static_cast<uintptr_t>(c.ptr));
+        gpu::cublasStatus_t err = cublas_loader_.cublasDgemm(
+            dev.blas_handle, gpu::CUBLAS_OP_N, gpu::CUBLAS_OP_N, m_c, n_c, k_c,
+            &alpha, b_ptr, lda, a_ptr, ldb, &beta, c_ptr, ldc);
+        if (err != gpu::CUBLAS_STATUS_SUCCESS) {
+            return CublasErrorStatus(StatusCode::kInternal,
+                                     "cublasDgemm failed", err);
+        }
+    } else {
+        const float alpha = 1.0f;
+        const float beta = 0.0f;
+        auto* b_ptr =
+            reinterpret_cast<const float*>(static_cast<uintptr_t>(b.ptr));
+        auto* a_ptr =
+            reinterpret_cast<const float*>(static_cast<uintptr_t>(a.ptr));
+        auto* c_ptr = reinterpret_cast<float*>(static_cast<uintptr_t>(c.ptr));
+        gpu::cublasStatus_t err = cublas_loader_.cublasSgemm(
+            dev.blas_handle, gpu::CUBLAS_OP_N, gpu::CUBLAS_OP_N, m_c, n_c, k_c,
+            &alpha, b_ptr, lda, a_ptr, ldb, &beta, c_ptr, ldc);
+        if (err != gpu::CUBLAS_STATUS_SUCCESS) {
+            return CublasErrorStatus(StatusCode::kInternal,
+                                     "cublasSgemm failed", err);
+        }
+    }
+    return true;
+}
+
+StatusOr<bool> CudaBackend::BlasCopy(int device_index,
+                                     const CudaBuffer& src,
+                                     const CudaBuffer& dst,
+                                     int64_t count,
+                                     bool use_fp64) const {
+    Status status = EnsureInitialized();
+    if (!status.ok())
+        return status;
+    if (!cublas_loader_.Loaded()) {
+        return Status::Unavailable("cuBLAS not available");
+    }
+    if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
+        return CudaStatus(StatusCode::kInvalidArgument,
+                          BackendErrorKind::kInvalidArgument,
+                          "Invalid CUDA device index");
+    }
+    if (!cublas_loader_.cublasCreate || !cublas_loader_.cublasSetStream ||
+        !cublas_loader_.cublasScopy || !cublas_loader_.cublasDcopy) {
+        return Status::Unavailable("cuBLAS symbols unavailable");
+    }
+    if (count <= 0) {
+        return true;
+    }
+    if (count > std::numeric_limits<int>::max()) {
+        return CudaStatus(StatusCode::kInvalidArgument,
+                          BackendErrorKind::kInvalidArgument,
+                          "cuBLAS copy dims exceed int limits");
+    }
+    const size_t elem_bytes = use_fp64 ? sizeof(double) : sizeof(float);
+    const size_t bytes = static_cast<size_t>(count) * elem_bytes;
+    if (bytes > src.bytes || bytes > dst.bytes) {
+        return CudaStatus(StatusCode::kInvalidArgument,
+                          BackendErrorKind::kInvalidArgument,
+                          "cuBLAS copy exceeds buffer size");
+    }
+    auto& dev = devices_[device_index];
+    if (!dev.blas_handle || !dev.blas_ready) {
+        return Status::Unavailable("cuBLAS handle unavailable");
+    }
+    if (loader_.cuCtxSetCurrent) {
+        loader_.cuCtxSetCurrent(dev.context);
+    }
+    cublas_loader_.cublasSetStream(dev.blas_handle, dev.stream);
+
+    const int n = static_cast<int>(count);
+    if (use_fp64) {
+        auto* src_ptr =
+            reinterpret_cast<const double*>(static_cast<uintptr_t>(src.ptr));
+        auto* dst_ptr =
+            reinterpret_cast<double*>(static_cast<uintptr_t>(dst.ptr));
+        gpu::cublasStatus_t err = cublas_loader_.cublasDcopy(
+            dev.blas_handle, n, src_ptr, 1, dst_ptr, 1);
+        if (err != gpu::CUBLAS_STATUS_SUCCESS) {
+            return CublasErrorStatus(StatusCode::kInternal,
+                                     "cublasDcopy failed", err);
+        }
+    } else {
+        auto* src_ptr =
+            reinterpret_cast<const float*>(static_cast<uintptr_t>(src.ptr));
+        auto* dst_ptr =
+            reinterpret_cast<float*>(static_cast<uintptr_t>(dst.ptr));
+        gpu::cublasStatus_t err = cublas_loader_.cublasScopy(
+            dev.blas_handle, n, src_ptr, 1, dst_ptr, 1);
+        if (err != gpu::CUBLAS_STATUS_SUCCESS) {
+            return CublasErrorStatus(StatusCode::kInternal,
+                                     "cublasScopy failed", err);
+        }
+    }
+    return true;
+}
+
+StatusOr<bool> CudaBackend::BlasAxpy(int device_index,
+                                     const CudaBuffer& x,
+                                     const CudaBuffer& y,
+                                     int64_t count,
+                                     double alpha,
+                                     bool use_fp64) const {
+    Status status = EnsureInitialized();
+    if (!status.ok())
+        return status;
+    if (!cublas_loader_.Loaded()) {
+        return Status::Unavailable("cuBLAS not available");
+    }
+    if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
+        return CudaStatus(StatusCode::kInvalidArgument,
+                          BackendErrorKind::kInvalidArgument,
+                          "Invalid CUDA device index");
+    }
+    if (!cublas_loader_.cublasCreate || !cublas_loader_.cublasSetStream ||
+        !cublas_loader_.cublasSaxpy || !cublas_loader_.cublasDaxpy) {
+        return Status::Unavailable("cuBLAS symbols unavailable");
+    }
+    if (count <= 0) {
+        return true;
+    }
+    if (count > std::numeric_limits<int>::max()) {
+        return CudaStatus(StatusCode::kInvalidArgument,
+                          BackendErrorKind::kInvalidArgument,
+                          "cuBLAS axpy dims exceed int limits");
+    }
+    const size_t elem_bytes = use_fp64 ? sizeof(double) : sizeof(float);
+    const size_t bytes = static_cast<size_t>(count) * elem_bytes;
+    if (bytes > x.bytes || bytes > y.bytes) {
+        return CudaStatus(StatusCode::kInvalidArgument,
+                          BackendErrorKind::kInvalidArgument,
+                          "cuBLAS axpy exceeds buffer size");
+    }
+    auto& dev = devices_[device_index];
+    if (!dev.blas_handle || !dev.blas_ready) {
+        return Status::Unavailable("cuBLAS handle unavailable");
+    }
+    if (loader_.cuCtxSetCurrent) {
+        loader_.cuCtxSetCurrent(dev.context);
+    }
+    cublas_loader_.cublasSetStream(dev.blas_handle, dev.stream);
+
+    const int n = static_cast<int>(count);
+    if (use_fp64) {
+        const double alpha_d = alpha;
+        auto* x_ptr =
+            reinterpret_cast<const double*>(static_cast<uintptr_t>(x.ptr));
+        auto* y_ptr = reinterpret_cast<double*>(static_cast<uintptr_t>(y.ptr));
+        gpu::cublasStatus_t err = cublas_loader_.cublasDaxpy(
+            dev.blas_handle, n, &alpha_d, x_ptr, 1, y_ptr, 1);
+        if (err != gpu::CUBLAS_STATUS_SUCCESS) {
+            return CublasErrorStatus(StatusCode::kInternal,
+                                     "cublasDaxpy failed", err);
+        }
+    } else {
+        const float alpha_f = static_cast<float>(alpha);
+        auto* x_ptr =
+            reinterpret_cast<const float*>(static_cast<uintptr_t>(x.ptr));
+        auto* y_ptr = reinterpret_cast<float*>(static_cast<uintptr_t>(y.ptr));
+        gpu::cublasStatus_t err = cublas_loader_.cublasSaxpy(
+            dev.blas_handle, n, &alpha_f, x_ptr, 1, y_ptr, 1);
+        if (err != gpu::CUBLAS_STATUS_SUCCESS) {
+            return CublasErrorStatus(StatusCode::kInternal,
+                                     "cublasSaxpy failed", err);
+        }
+    }
+    return true;
+}
+
 StatusOr<CudaKernel> CudaBackend::BuildKernelFromFile(
     const std::string& path,
     const std::string& kernel_name,
@@ -1305,6 +1550,13 @@ Status CudaBackend::EnsureInitialized() const {
                                   BackendErrorKind::kInit, error);
         return init_status_;
     }
+    std::string blas_error;
+    bool blas_loaded = cublas_loader_.Load(&blas_error);
+    if (!blas_loaded && !blas_error.empty()) {
+        LogBackend({LogLevel::kWarn, BackendType::kCUDA,
+                    BackendErrorKind::kInit,
+                    "cuBLAS unavailable: " + blas_error, "cublas_load"});
+    }
 
     if (!loader_.cuInit) {
         init_status_ =
@@ -1483,6 +1735,20 @@ Status CudaBackend::EnsureInitialized() const {
                             BackendErrorKind::kContext, "stream init failed",
                             "stream", dev.desc.index, dev.desc.name});
                 continue;
+            }
+        }
+        if (blas_loaded && cublas_loader_.cublasCreate &&
+            cublas_loader_.cublasSetStream) {
+            gpu::cublasStatus_t rc =
+                cublas_loader_.cublasCreate(&dev.blas_handle);
+            if (rc == gpu::CUBLAS_STATUS_SUCCESS) {
+                dev.blas_ready = true;
+                cublas_loader_.cublasSetStream(dev.blas_handle, dev.stream);
+            } else {
+                LogBackend({LogLevel::kWarn, BackendType::kCUDA,
+                            BackendErrorKind::kRuntime,
+                            "cuBLAS init failed: " + gpu::CublasErrorString(rc),
+                            "cublas_init", dev.desc.index, dev.desc.name});
             }
         }
         devices_.push_back(std::move(dev));

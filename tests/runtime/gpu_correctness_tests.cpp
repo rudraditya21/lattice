@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "parser/ast.h"
+#include "runtime/backend.h"
 #include "runtime/tensor_gpu.h"
 
 namespace test {

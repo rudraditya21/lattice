@@ -42,7 +42,6 @@ constexpr size_t kMaxTensorDims = cuda::kMaxTensorDims;
 
 using ElemwiseParams = cuda::ElemwiseParams;
 using ReduceParams = cuda::ReduceParams;
-using MatmulParams = cuda::MatmulParams;
 using TransposeParams = cuda::TransposeParams;
 using Conv2dParams = cuda::Conv2dParams;
 using Pool2dParams = cuda::Pool2dParams;
@@ -721,6 +720,100 @@ class GpuExecutor {
         return out;
     }
 
+    StatusOr<bool> TryBlasMatmul(const GpuBuffer& a,
+                                 const GpuBuffer& b,
+                                 const GpuBuffer& c,
+                                 int64_t m,
+                                 int64_t n,
+                                 int64_t k) {
+        Status status = EnsureInitialized();
+        if (!status.ok())
+            return status;
+        switch (backend_type_) {
+            case BackendType::kCUDA:
+                return cuda_->BlasMatmul(a.device_index, a.cuda, b.cuda, c.cuda,
+                                         m, n, k, use_fp64_);
+            case BackendType::kHIP:
+                return hip_->BlasMatmul(a.device_index, a.hip, b.hip, c.hip, m,
+                                        n, k, use_fp64_);
+            case BackendType::kOpenCL:
+                return opencl_->BlasMatmul(a.device_index, a.opencl, b.opencl,
+                                           c.opencl, m, n, k, use_fp64_);
+            case BackendType::kMetal:
+#if defined(__APPLE__)
+                return metal_->BlasMatmul(a.device_index, a.metal, b.metal,
+                                          c.metal, m, n, k, use_fp64_);
+#else
+                return Status::Unavailable(
+                    "Metal backend unavailable on this platform");
+#endif
+            case BackendType::kCPU:
+                return Status::Unavailable("BLAS unavailable for backend");
+        }
+        return Status::Unavailable("BLAS unavailable for backend");
+    }
+
+    StatusOr<bool> TryBlasCopy(const GpuBuffer& src,
+                               const GpuBuffer& dst,
+                               int64_t count) {
+        Status status = EnsureInitialized();
+        if (!status.ok())
+            return status;
+        switch (backend_type_) {
+            case BackendType::kCUDA:
+                return cuda_->BlasCopy(src.device_index, src.cuda, dst.cuda,
+                                       count, use_fp64_);
+            case BackendType::kHIP:
+                return hip_->BlasCopy(src.device_index, src.hip, dst.hip, count,
+                                      use_fp64_);
+            case BackendType::kOpenCL:
+                return opencl_->BlasCopy(src.device_index, src.opencl,
+                                         dst.opencl, count, use_fp64_);
+            case BackendType::kMetal:
+#if defined(__APPLE__)
+                return metal_->BlasCopy(src.device_index, src.metal, dst.metal,
+                                        count, use_fp64_);
+#else
+                return Status::Unavailable(
+                    "Metal backend unavailable on this platform");
+#endif
+            case BackendType::kCPU:
+                return Status::Unavailable("BLAS unavailable for backend");
+        }
+        return Status::Unavailable("BLAS unavailable for backend");
+    }
+
+    StatusOr<bool> TryBlasAxpy(const GpuBuffer& x,
+                               const GpuBuffer& y,
+                               int64_t count,
+                               double alpha) {
+        Status status = EnsureInitialized();
+        if (!status.ok())
+            return status;
+        switch (backend_type_) {
+            case BackendType::kCUDA:
+                return cuda_->BlasAxpy(x.device_index, x.cuda, y.cuda, count,
+                                       alpha, use_fp64_);
+            case BackendType::kHIP:
+                return hip_->BlasAxpy(x.device_index, x.hip, y.hip, count,
+                                      alpha, use_fp64_);
+            case BackendType::kOpenCL:
+                return opencl_->BlasAxpy(x.device_index, x.opencl, y.opencl,
+                                         count, alpha, use_fp64_);
+            case BackendType::kMetal:
+#if defined(__APPLE__)
+                return metal_->BlasAxpy(x.device_index, x.metal, y.metal, count,
+                                        alpha, use_fp64_);
+#else
+                return Status::Unavailable(
+                    "Metal backend unavailable on this platform");
+#endif
+            case BackendType::kCPU:
+                return Status::Unavailable("BLAS unavailable for backend");
+        }
+        return Status::Unavailable("BLAS unavailable for backend");
+    }
+
     StatusOr<GpuKernel> GetKernel(const KernelSpec& spec) {
         Status status = EnsureInitialized();
         if (!status.ok())
@@ -1257,7 +1350,7 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
         const size_t count = lhs.tensor.ragged_values.size();
         key.vectorize = false;
         spec = ElemwiseKernel(key, op);
-        if (!spec.name)
+        if (spec.name.empty())
             return std::nullopt;
         auto kernel_or = exec.GetKernel(spec);
         if (!kernel_or.ok()) {
@@ -1465,29 +1558,6 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
         return std::nullopt;
     }
 
-    bool can_vectorize =
-        exec.VectorizeEnabled() && !exec.UseFp64() &&
-        lhs_d.type == DType::kTensor && rhs_d.type == DType::kTensor &&
-        IsContiguousStrides(out_shape, out_value.tensor.strides) &&
-        IsContiguousStrides(out_shape, lhs_bstrides) &&
-        IsContiguousStrides(out_shape, rhs_bstrides);
-    key.vectorize = can_vectorize;
-    spec = ElemwiseKernel(key, op);
-    if (!spec.name)
-        return std::nullopt;
-    bool use_vector_kernel = can_vectorize && !exec.UseFp64();
-    if (spec.name.find("_vec") == std::string_view::npos) {
-        use_vector_kernel = false;
-    }
-
-    auto kernel_or = exec.GetKernel(spec);
-    if (!kernel_or.ok()) {
-        LogGpuError(exec.Type(), kernel_or.status(), "elemwise");
-        if (error)
-            *error = kernel_or.status().message;
-        return std::nullopt;
-    }
-
     BufferCleanup cleanup(exec);
 
     size_t lhs_count = lhs_d.type == DType::kTensor
@@ -1567,6 +1637,81 @@ std::optional<Value> TryGpuElemwise(const Value& lhs,
         }
     }
 
+    bool can_blas =
+        (op == parser::BinaryOp::kAdd || op == parser::BinaryOp::kSub) &&
+        lhs_d.type == DType::kTensor && rhs_d.type == DType::kTensor &&
+        lhs_d.tensor.kind == TensorKind::kDense &&
+        rhs_d.tensor.kind == TensorKind::kDense &&
+        lhs_d.tensor.shape == rhs_d.tensor.shape &&
+        out_count <= static_cast<size_t>(std::numeric_limits<int>::max()) &&
+        IsContiguousStrides(out_shape, out_value.tensor.strides) &&
+        IsContiguousStrides(out_shape, lhs_bstrides) &&
+        IsContiguousStrides(out_shape, rhs_bstrides);
+    if (can_blas) {
+        auto copy_or =
+            exec.TryBlasCopy(lhs_buf, out_buf, static_cast<int64_t>(out_count));
+        if (copy_or.ok() && copy_or.value()) {
+            const double alpha = op == parser::BinaryOp::kAdd ? 1.0 : -1.0;
+            auto axpy_or = exec.TryBlasAxpy(
+                rhs_buf, out_buf, static_cast<int64_t>(out_count), alpha);
+            if (axpy_or.ok() && axpy_or.value()) {
+                auto out_data_or = exec.ReadBufferToDouble(out_buf, out_count);
+                if (!out_data_or.ok()) {
+                    LogGpuError(exec.Type(), out_data_or.status(), "elemwise");
+                    if (error)
+                        *error = out_data_or.status().message;
+                    return std::nullopt;
+                }
+                auto out_dense = BuildDenseTensor(out_shape, elem_target,
+                                                  out_data_or.value());
+                if (!out_dense.has_value())
+                    return std::nullopt;
+                if (sparse_out) {
+                    return sparse_kind == TensorKind::kSparseCSR
+                               ? DenseToCSR(out_dense.value())
+                               : DenseToCOO(out_dense.value());
+                }
+                return out_dense.value();
+            }
+            if (!axpy_or.ok() &&
+                axpy_or.status().code != StatusCode::kUnavailable) {
+                LogGpuError(exec.Type(), axpy_or.status(), "elemwise_blas");
+                if (error)
+                    *error = axpy_or.status().message;
+                return std::nullopt;
+            }
+        } else if (!copy_or.ok() &&
+                   copy_or.status().code != StatusCode::kUnavailable) {
+            LogGpuError(exec.Type(), copy_or.status(), "elemwise_blas");
+            if (error)
+                *error = copy_or.status().message;
+            return std::nullopt;
+        }
+    }
+
+    bool can_vectorize =
+        exec.VectorizeEnabled() && !exec.UseFp64() &&
+        lhs_d.type == DType::kTensor && rhs_d.type == DType::kTensor &&
+        IsContiguousStrides(out_shape, out_value.tensor.strides) &&
+        IsContiguousStrides(out_shape, lhs_bstrides) &&
+        IsContiguousStrides(out_shape, rhs_bstrides);
+    key.vectorize = can_vectorize;
+    spec = ElemwiseKernel(key, op);
+    if (spec.name.empty())
+        return std::nullopt;
+    bool use_vector_kernel = can_vectorize && !exec.UseFp64();
+    if (spec.name.find("_vec") == std::string_view::npos) {
+        use_vector_kernel = false;
+    }
+
+    auto kernel_or = exec.GetKernel(spec);
+    if (!kernel_or.ok()) {
+        LogGpuError(exec.Type(), kernel_or.status(), "elemwise");
+        if (error)
+            *error = kernel_or.status().message;
+        return std::nullopt;
+    }
+
     ElemwiseParams params;
     params.count = static_cast<uint64_t>(out_count);
     params.op = 0;
@@ -1644,7 +1789,7 @@ std::optional<Value> TryGpuReduce(const Value& v,
     }
 
     KernelSpec spec = ReduceKernel(exec.DispatchKey(), kind);
-    if (!spec.name)
+    if (spec.name.empty())
         return std::nullopt;
     auto kernel_or = exec.GetKernel(spec);
     if (!kernel_or.ok()) {
@@ -1753,8 +1898,8 @@ std::optional<Value> TryGpuTranspose(const Value& v,
     const int64_t cols = dense.tensor.shape[1];
     const size_t count = static_cast<size_t>(dense.tensor.size);
     size_t elem_bytes = exec.UseFp64() ? sizeof(double) : sizeof(float);
-    GpuKernel kernel = kernel_or.value();
-    uint32_t preferred_tile = TileFromKernelName(kernel.name, 16);
+    GpuKernel gpu_kernel = kernel_or.value();
+    uint32_t preferred_tile = TileFromKernelName(gpu_kernel.name, 16);
     uint32_t tile = SelectTransposeTile(exec.DeviceCaps(), preferred_tile,
                                         elem_bytes, exec.PreferSmallTiles());
     if (tile == 0) {
@@ -1771,7 +1916,7 @@ std::optional<Value> TryGpuTranspose(const Value& v,
                 *error = alt_or.status().message;
             return std::nullopt;
         }
-        kernel = alt_or.value();
+        gpu_kernel = alt_or.value();
     }
 
     BufferCleanup cleanup(exec);
@@ -1818,7 +1963,7 @@ std::optional<Value> TryGpuTranspose(const Value& v,
     args.push_back(GpuArg::Buffer(out_buf));
     args.push_back(GpuArg::Value(&params, sizeof(params)));
 
-    status = exec.LaunchKernel(kernel, cfg, args);
+    status = exec.LaunchKernel(gpu_kernel, cfg, args);
     if (!status.ok()) {
         LogGpuError(exec.Type(), status, "transpose");
         if (error)
@@ -1874,37 +2019,7 @@ std::optional<Value> TryGpuMatmul(const Value& lhs,
         return std::nullopt;
     }
 
-    auto kernel_or =
-        exec.GetKernel(DispatchKernel(KernelOp::kMatmul, exec.DispatchKey()));
-    if (!kernel_or.ok()) {
-        LogGpuError(exec.Type(), kernel_or.status(), "matmul");
-        if (error)
-            *error = kernel_or.status().message;
-        return std::nullopt;
-    }
-
     size_t elem_bytes = exec.UseFp64() ? sizeof(double) : sizeof(float);
-    GpuKernel kernel = kernel_or.value();
-    uint32_t preferred_tile = TileFromKernelName(kernel.name, 16);
-    uint32_t tile = SelectMatmulTile(exec.DeviceCaps(), preferred_tile,
-                                     elem_bytes, exec.PreferSmallTiles());
-    if (tile == 0) {
-        if (error)
-            *error = "matmul tile exceeds device limits";
-        return std::nullopt;
-    }
-    if (tile != preferred_tile) {
-        KernelSpec alt{tile == 32  ? "lattice_matmul_t32"
-                       : tile == 8 ? "lattice_matmul_t8"
-                                   : "lattice_matmul_t16"};
-        auto alt_or = exec.GetKernel(alt);
-        if (!alt_or.ok()) {
-            if (error)
-                *error = alt_or.status().message;
-            return std::nullopt;
-        }
-        kernel = alt_or.value();
-    }
     size_t a_count = static_cast<size_t>(A.tensor.size);
     size_t b_count = static_cast<size_t>(B.tensor.size);
     size_t c_count = static_cast<size_t>(m * n);
@@ -1954,45 +2069,31 @@ std::optional<Value> TryGpuMatmul(const Value& lhs,
         return std::nullopt;
     }
 
-    MatmulParams params;
-    params.m = static_cast<uint64_t>(m);
-    params.n = static_cast<uint64_t>(n);
-    params.k = static_cast<uint64_t>(k);
-    params.lda = static_cast<uint64_t>(k);
-    params.ldb = static_cast<uint64_t>(n);
-    params.ldc = static_cast<uint64_t>(n);
-    params.dtype = KernelDType(exec, elem);
-    params.flags = KernelFlags(exec.ExecConfig(), false, exec.UseFp64());
-
-    LaunchConfig cfg =
-        MakeTiled2DLaunch(static_cast<uint64_t>(n), static_cast<uint64_t>(m),
-                          tile, exec.DeviceCaps());
-    std::vector<GpuArg> args;
-    args.push_back(GpuArg::Buffer(a_buf));
-    args.push_back(GpuArg::Buffer(b_buf));
-    args.push_back(GpuArg::Buffer(c_buf));
-    args.push_back(GpuArg::Value(&params, sizeof(params)));
-
-    status = exec.LaunchKernel(kernel, cfg, args);
-    if (!status.ok()) {
-        LogGpuError(exec.Type(), status, "matmul");
-        if (error)
-            *error = status.message;
-        return std::nullopt;
+    auto blas_or = exec.TryBlasMatmul(a_buf, b_buf, c_buf, m, n, k);
+    if (blas_or.ok() && blas_or.value()) {
+        auto out_data_or = exec.ReadBufferToDouble(c_buf, c_count);
+        if (!out_data_or.ok()) {
+            LogGpuError(exec.Type(), out_data_or.status(), "matmul_blas");
+            if (error)
+                *error = out_data_or.status().message;
+            return std::nullopt;
+        }
+        auto out_dense = BuildDenseTensor({m, n}, elem, out_data_or.value());
+        if (!out_dense.has_value())
+            return std::nullopt;
+        return out_dense.value();
     }
-
-    auto out_data_or = exec.ReadBufferToDouble(c_buf, c_count);
-    if (!out_data_or.ok()) {
-        LogGpuError(exec.Type(), out_data_or.status(), "matmul");
-        if (error)
-            *error = out_data_or.status().message;
-        return std::nullopt;
+    if (!blas_or.ok() && blas_or.status().code != StatusCode::kUnavailable) {
+        LogGpuError(exec.Type(), blas_or.status(), "matmul_blas");
     }
-
-    auto out_dense = BuildDenseTensor({m, n}, elem, out_data_or.value());
-    if (!out_dense.has_value())
-        return std::nullopt;
-    return out_dense.value();
+    if (error) {
+        if (!blas_or.ok()) {
+            *error = blas_or.status().message;
+        } else {
+            *error = "BLAS is required for matmul on this backend";
+        }
+    }
+    return std::nullopt;
 }
 
 std::optional<Value> TryGpuConv2d(const Value& input,
@@ -2039,8 +2140,8 @@ std::optional<Value> TryGpuConv2d(const Value& input,
     }
 
     size_t elem_bytes = exec.UseFp64() ? sizeof(double) : sizeof(float);
-    GpuKernel kernel = kernel_or.value();
-    uint32_t preferred_tile = TileFromKernelName(kernel.name, 16);
+    GpuKernel gpu_kernel = kernel_or.value();
+    uint32_t preferred_tile = TileFromKernelName(gpu_kernel.name, 16);
     uint32_t tile = SelectConv2dTile(exec.DeviceCaps(), preferred_tile,
                                      elem_bytes, exec.PreferSmallTiles());
     if (tile == 0) {
@@ -2056,7 +2157,7 @@ std::optional<Value> TryGpuConv2d(const Value& input,
                 *error = alt_or.status().message;
             return std::nullopt;
         }
-        kernel = alt_or.value();
+        gpu_kernel = alt_or.value();
     }
     size_t in_count = static_cast<size_t>(in.tensor.size);
     size_t k_count = static_cast<size_t>(k.tensor.size);
@@ -2127,7 +2228,7 @@ std::optional<Value> TryGpuConv2d(const Value& input,
     args.push_back(GpuArg::Buffer(out_buf));
     args.push_back(GpuArg::Value(&params, sizeof(params)));
 
-    status = exec.LaunchKernel(kernel, cfg, args);
+    status = exec.LaunchKernel(gpu_kernel, cfg, args);
     if (!status.ok()) {
         LogGpuError(exec.Type(), status, "conv2d");
         if (error)

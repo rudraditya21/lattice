@@ -10,6 +10,7 @@
 
 #include "runtime/backend.h"
 #include "runtime/backends/device_caps.h"
+#include "runtime/backends/gpu/clblast_loader.h"
 #include "runtime/backends/gpu/opencl_loader.h"
 
 namespace lattice::runtime {
@@ -129,6 +130,25 @@ class OpenCLBackend final : public Backend {
                       void* data,
                       size_t bytes,
                       size_t offset = 0) const;
+    StatusOr<bool> BlasMatmul(int device_index,
+                              const OpenCLBuffer& a,
+                              const OpenCLBuffer& b,
+                              const OpenCLBuffer& c,
+                              int64_t m,
+                              int64_t n,
+                              int64_t k,
+                              bool use_fp64) const;
+    StatusOr<bool> BlasCopy(int device_index,
+                            const OpenCLBuffer& src,
+                            const OpenCLBuffer& dst,
+                            int64_t count,
+                            bool use_fp64) const;
+    StatusOr<bool> BlasAxpy(int device_index,
+                            const OpenCLBuffer& x,
+                            const OpenCLBuffer& y,
+                            int64_t count,
+                            double alpha,
+                            bool use_fp64) const;
 
     StatusOr<OpenCLKernel> BuildKernelFromFile(
         const std::string& path,
@@ -170,6 +190,7 @@ class OpenCLBackend final : public Backend {
     MemoryPool* PinnedPool(int device_index) const;
 
     mutable std::vector<DeviceContext> devices_;
+    mutable gpu::ClblastLoader clblast_;
     mutable gpu::OpenCLLoader loader_;
     mutable bool initialized_ = false;
     mutable Status init_status_ = Status::OK();

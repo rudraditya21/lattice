@@ -16,7 +16,7 @@ Lattice is a small scientific computing language aimed at reproducible numerics 
 - Arithmetic expressions with identifiers, unary minus, calls, assignments, and blocks.
 - Control flow via `if/else` statements, nested blocks, `while` loops, `for` loops, and `break`/`continue`.
 - Strict typing with optional annotations and a numeric tower (ints, floats, complex, decimals, rationals) plus tensors.
-- GPU backends: OpenCL, CUDA, HIP, and Metal with in-house kernels (no external BLAS/FFT libraries).
+- GPU backends: OpenCL, CUDA, HIP, and Metal with BLAS/MPS/CLBlast matmul and dense add/sub paths when available (kernels are used for non-BLAS ops only).
  - Built-in constants `pi`, `e`, `gamma`, `inf` and math helpers `pow`, `gcd`, `lcm`, `abs`, `sign`, `mod`, `floor`, `ceil`, `round`, `clamp`, `min`, `max`, `sum`, `mean`, `var`, `std`, `transpose`, `matmul`, `conv2d`, `max_pool2d`, `fft1d`.
  - Typed constructors/casts: `int()`, `float()`, `complex()`, `decimal()`, `rational()`, `tensor()`, `tensor_values()`, `tensor_sparse_csr()`, `tensor_sparse_coo()`, `tensor_ragged()`, `to_dense()`, `to_sparse_csr()`, `to_sparse_coo()`.
 The project is organized with headers in `include/` and sources in `src/`.
@@ -72,6 +72,26 @@ LATTICE_BACKEND=opencl ./build/lattice
 LATTICE_GPU_SMOKE_TEST=1 ctest --test-dir build -R lattice_tests
 ```
 
+## Benchmarks
+Microbenchmarks are available via `./build/lattice_bench`. For R vs Lattice
+matmul comparisons, see `benchmarks/scripts/compare_r_lattice_matmul.sh`.
+
+### Matmul (1024x1024x1024, f64)
+Host: macOS (Intel Core i5 2.4 GHz, Intel Iris Plus Graphics 655).
+
+Command:
+```bash
+./build/lattice_bench --backend cpu --ops matmul --matmul-size 1024 --warmup 1 --iters 2
+```
+
+Results:
+
+| Tool/Backend | Latency (s) | Bandwidth (GB/s) | GFLOP/s | Notes |
+| --- | ---: | ---: | ---: | --- |
+| R (base `%*%`) | 0.0185 | N/A | 116.080 | Median over 2 iterations, warmup 1. |
+| Lattice CPU | 0.0146 | 1.72778 | 147.437 | Same parameters as above. |
+| Lattice Metal | N/A | N/A | N/A | Metal backend unavailable on this host (fell back to OpenCL CPU device). |
+
 ## Tensor Ops and Shapes
 - Creation:
   - Dense: `tensor(d0, d1, ..., fill)` for row-major dense; `tensor_values((1,2,3))` for 1D; nested tuples for nD (e.g., `tensor_values(((1,2),(3,4)))`). Square-bracket list literals are not supported; tuples are the only literal collection.
@@ -80,7 +100,7 @@ LATTICE_GPU_SMOKE_TEST=1 ctest --test-dir build -R lattice_tests
   - Conversion: `to_dense`, `to_sparse_csr`, `to_sparse_coo`.
 - Elementwise ops: `+ - * /` support dense⊕dense (broadcast), dense⊕sparse (densifies sparse), sparse⊕sparse (same format/shape), ragged⊕ragged (matching `row_splits`). Other mixes error with guidance.
 - Reductions: `sum`, `mean`, `var`, `std` reduce all elements; missing sparse entries count as zero; ragged reduces flat values. Results are cast to the tensor element dtype.
-- Linear algebra: `matmul` (2D only) and `transpose` (2D only) on dense tensors; sparse inputs are densified first. More ops (solve/QR/LU/SVD) are not implemented yet.
+- Linear algebra: `matmul` (2D only, requires BLAS/MPS/CLBlast) and `transpose` (2D only) on dense tensors; sparse inputs are densified first. More ops (solve/QR/LU/SVD) are not implemented yet.
 - Convolution/pooling: `conv2d(input2d, kernel2d)` with valid padding only; `max_pool2d(input2d, kh, kw)` with integer kernel sizes, no stride/dilation options yet.
 - FFT: `fft1d` returns a tuple `(real_tensor, imag_tensor)`; implementation is naive O(n^2) and dense-only.
 

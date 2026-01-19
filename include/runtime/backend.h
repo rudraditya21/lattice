@@ -273,6 +273,7 @@ class CpuBackend final : public Backend {
 };
 
 // Returns a singleton CPU backend instance.
+bool BackendAvailable(const Backend* backend);
 const Backend* GetCpuBackend();
 const Backend* GetOpenCLBackend();
 const Backend* GetCudaBackend();

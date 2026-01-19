@@ -68,17 +68,6 @@ typedef struct lattice_reduce_params {
     unsigned long long stride;
 } lattice_reduce_params_t;
 
-typedef struct lattice_matmul_params {
-    unsigned long long m;
-    unsigned long long n;
-    unsigned long long k;
-    unsigned long long lda;
-    unsigned long long ldb;
-    unsigned long long ldc;
-    unsigned int dtype;
-    unsigned int flags;
-} lattice_matmul_params_t;
-
 typedef struct lattice_transpose_params {
     unsigned long long rows;
     unsigned long long cols;
@@ -195,29 +184,6 @@ LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_reduce_params_t, flags) ==
 LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_reduce_params_t, stride) ==
                               24,
                           lattice_reduce_params_stride_off);
-LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_matmul_params_t) == 56,
-                          lattice_matmul_params_size);
-LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_matmul_params_t, m) == 0,
-                          lattice_matmul_params_m_off);
-LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_matmul_params_t, n) == 8,
-                          lattice_matmul_params_n_off);
-LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_matmul_params_t, k) == 16,
-                          lattice_matmul_params_k_off);
-LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_matmul_params_t, lda) ==
-                              24,
-                          lattice_matmul_params_lda_off);
-LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_matmul_params_t, ldb) ==
-                              32,
-                          lattice_matmul_params_ldb_off);
-LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_matmul_params_t, ldc) ==
-                              40,
-                          lattice_matmul_params_ldc_off);
-LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_matmul_params_t, dtype) ==
-                              48,
-                          lattice_matmul_params_dtype_off);
-LATTICE_ABI_STATIC_ASSERT(LATTICE_ABI_OFFSET(lattice_matmul_params_t, flags) ==
-                              52,
-                          lattice_matmul_params_flags_off);
 LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_transpose_params_t) == 24,
                           lattice_transpose_params_size);
 LATTICE_ABI_STATIC_ASSERT(sizeof(lattice_conv2d_params_t) == 56,

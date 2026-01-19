@@ -75,17 +75,6 @@ struct ReduceParams {
     uint64_t stride = 0;
 };
 
-struct MatmulParams {
-    uint64_t m = 0;
-    uint64_t n = 0;
-    uint64_t k = 0;
-    uint64_t lda = 0;
-    uint64_t ldb = 0;
-    uint64_t ldc = 0;
-    uint32_t dtype = 0;
-    uint32_t flags = 0;
-};
-
 struct TransposeParams {
     uint64_t rows = 0;
     uint64_t cols = 0;
@@ -181,22 +170,6 @@ static_assert(offsetof(ReduceParams, flags) == 16,
               "ReduceParams.flags offset mismatch");
 static_assert(offsetof(ReduceParams, stride) == 24,
               "ReduceParams.stride offset mismatch");
-
-static_assert(sizeof(MatmulParams) == 56, "MatmulParams size mismatch");
-static_assert(offsetof(MatmulParams, m) == 0, "MatmulParams.m offset mismatch");
-static_assert(offsetof(MatmulParams, n) == 8, "MatmulParams.n offset mismatch");
-static_assert(offsetof(MatmulParams, k) == 16,
-              "MatmulParams.k offset mismatch");
-static_assert(offsetof(MatmulParams, lda) == 24,
-              "MatmulParams.lda offset mismatch");
-static_assert(offsetof(MatmulParams, ldb) == 32,
-              "MatmulParams.ldb offset mismatch");
-static_assert(offsetof(MatmulParams, ldc) == 40,
-              "MatmulParams.ldc offset mismatch");
-static_assert(offsetof(MatmulParams, dtype) == 48,
-              "MatmulParams.dtype offset mismatch");
-static_assert(offsetof(MatmulParams, flags) == 52,
-              "MatmulParams.flags offset mismatch");
 
 static_assert(sizeof(TransposeParams) == 24, "TransposeParams size mismatch");
 static_assert(sizeof(Conv2dParams) == 56, "Conv2dParams size mismatch");

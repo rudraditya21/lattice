@@ -242,13 +242,6 @@ std::string NormalizeBackendName(const char* name) {
     return out;
 }
 
-bool BackendAvailable(const Backend* backend) {
-    if (!backend)
-        return false;
-    auto stream_or = backend->CreateStream();
-    return stream_or.ok();
-}
-
 const Backend* SelectBestAvailableBackend() {
     const Backend* candidates[] = {
         GetCudaBackend(),   GetHipBackend(),
@@ -538,6 +531,13 @@ BackendCapabilities CpuCaps() {
 }
 
 }  // namespace
+
+bool BackendAvailable(const Backend* backend) {
+    if (!backend)
+        return false;
+    auto stream_or = backend->CreateStream();
+    return stream_or.ok();
+}
 
 CpuBackend::CpuBackend() {
     exec_config_ = LoadExecutionConfig("LATTICE", exec_config_);

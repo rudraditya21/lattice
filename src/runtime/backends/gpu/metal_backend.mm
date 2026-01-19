@@ -3,6 +3,7 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 #import <objc/message.h>
 
 #include <algorithm>
@@ -15,6 +16,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -782,6 +784,199 @@ Status MetalBackend::ReadBuffer(int device_index,
                 static_cast<std::ptrdiff_t>(offset);
     std::memcpy(data, src, bytes);
     return Status::OK();
+}
+
+StatusOr<bool> MetalBackend::BlasMatmul(int device_index,
+                                        const MetalBuffer& a,
+                                        const MetalBuffer& b,
+                                        const MetalBuffer& c,
+                                        int64_t m,
+                                        int64_t n,
+                                        int64_t k,
+                                        bool use_fp64) const {
+    Status status = EnsureInitialized();
+    if (!status.ok())
+        return status;
+    if (device_index < 0 || device_index >= static_cast<int>(devices_.size())) {
+        return MetalStatus(StatusCode::kInvalidArgument,
+                           BackendErrorKind::kInvalidArgument,
+                           "Invalid Metal device index");
+    }
+    if (m <= 0 || n <= 0 || k <= 0) {
+        return true;
+    }
+    if (use_fp64) {
+        return Status::Unavailable("Metal BLAS does not support FP64");
+    }
+    if (!a.handle || !b.handle || !c.handle) {
+        return MetalStatus(StatusCode::kInvalidArgument,
+                           BackendErrorKind::kInvalidArgument,
+                           "Metal BLAS buffers are null");
+    }
+    if (a.device_index != device_index || b.device_index != device_index ||
+        c.device_index != device_index) {
+        return MetalStatus(StatusCode::kInvalidArgument,
+                           BackendErrorKind::kInvalidArgument,
+                           "Metal BLAS buffers belong to a different device");
+    }
+
+    auto& dev = devices_[device_index];
+    if (!dev.device || !dev.queue) {
+        return MetalStatus(StatusCode::kUnavailable, BackendErrorKind::kContext,
+                           "Metal queue unavailable");
+    }
+    if (!MPSSupportsMTLDevice(dev.device)) {
+        return Status::Unavailable("MPS not supported on this device");
+    }
+
+    const size_t m_sz = static_cast<size_t>(m);
+    const size_t n_sz = static_cast<size_t>(n);
+    const size_t k_sz = static_cast<size_t>(k);
+    const size_t elem_size = sizeof(float);
+    const size_t max_size = std::numeric_limits<size_t>::max();
+    if (m_sz > max_size / k_sz || m_sz > max_size / n_sz ||
+        k_sz > max_size / n_sz) {
+        return MetalStatus(StatusCode::kInvalidArgument,
+                           BackendErrorKind::kInvalidArgument,
+                           "Metal BLAS dimensions overflow");
+    }
+    const size_t count_a = m_sz * k_sz;
+    const size_t count_b = k_sz * n_sz;
+    const size_t count_c = m_sz * n_sz;
+    if (count_a > max_size / elem_size || count_b > max_size / elem_size ||
+        count_c > max_size / elem_size) {
+        return MetalStatus(StatusCode::kInvalidArgument,
+                           BackendErrorKind::kInvalidArgument,
+                           "Metal BLAS size overflow");
+    }
+    const size_t bytes_a = count_a * elem_size;
+    const size_t bytes_b = count_b * elem_size;
+    const size_t bytes_c = count_c * elem_size;
+    if (bytes_a > a.bytes || bytes_b > b.bytes || bytes_c > c.bytes) {
+        return MetalStatus(StatusCode::kInvalidArgument,
+                           BackendErrorKind::kInvalidArgument,
+                           "Metal BLAS buffers are too small");
+    }
+    if (m_sz > std::numeric_limits<NSUInteger>::max() ||
+        n_sz > std::numeric_limits<NSUInteger>::max() ||
+        k_sz > std::numeric_limits<NSUInteger>::max()) {
+        return MetalStatus(StatusCode::kInvalidArgument,
+                           BackendErrorKind::kInvalidArgument,
+                           "Metal BLAS dimensions exceed NSUInteger");
+    }
+
+    const NSUInteger m_u = static_cast<NSUInteger>(m_sz);
+    const NSUInteger n_u = static_cast<NSUInteger>(n_sz);
+    const NSUInteger k_u = static_cast<NSUInteger>(k_sz);
+    const NSUInteger row_bytes_a = static_cast<NSUInteger>(k_sz * elem_size);
+    const NSUInteger row_bytes_b = static_cast<NSUInteger>(n_sz * elem_size);
+    const NSUInteger row_bytes_c = static_cast<NSUInteger>(n_sz * elem_size);
+
+    id<MTLBuffer> a_buf = (__bridge id<MTLBuffer>)a.handle;
+    id<MTLBuffer> b_buf = (__bridge id<MTLBuffer>)b.handle;
+    id<MTLBuffer> c_buf = (__bridge id<MTLBuffer>)c.handle;
+    if (!a_buf || !b_buf || !c_buf) {
+        return MetalStatus(StatusCode::kInvalidArgument,
+                           BackendErrorKind::kInvalidArgument,
+                           "Metal BLAS buffers are invalid");
+    }
+
+    MPSMatrixDescriptor* a_desc =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:m_u
+                                              columns:k_u
+                                             rowBytes:row_bytes_a
+                                             dataType:MPSDataTypeFloat32];
+    MPSMatrixDescriptor* b_desc =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:k_u
+                                              columns:n_u
+                                             rowBytes:row_bytes_b
+                                             dataType:MPSDataTypeFloat32];
+    MPSMatrixDescriptor* c_desc =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:m_u
+                                              columns:n_u
+                                             rowBytes:row_bytes_c
+                                             dataType:MPSDataTypeFloat32];
+    if (!a_desc || !b_desc || !c_desc) {
+        return MetalStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                           "Failed to create MPS matrix descriptors");
+    }
+
+    MPSMatrix* a_mat = [[MPSMatrix alloc] initWithBuffer:a_buf
+                                                  offset:0
+                                              descriptor:a_desc];
+    MPSMatrix* b_mat = [[MPSMatrix alloc] initWithBuffer:b_buf
+                                                  offset:0
+                                              descriptor:b_desc];
+    MPSMatrix* c_mat = [[MPSMatrix alloc] initWithBuffer:c_buf
+                                                  offset:0
+                                              descriptor:c_desc];
+    if (!a_mat || !b_mat || !c_mat) {
+        return MetalStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                           "Failed to create MPS matrices");
+    }
+
+    MPSMatrixMultiplication* op =
+        [[MPSMatrixMultiplication alloc] initWithDevice:dev.device
+                                          transposeLeft:false
+                                         transposeRight:false
+                                             resultRows:m_u
+                                          resultColumns:n_u
+                                        interiorColumns:k_u
+                                                  alpha:1.0f
+                                                   beta:0.0f];
+    if (!op) {
+        return MetalStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                           "Failed to create MPS matmul");
+    }
+
+    id<MTLCommandBuffer> cmd = [dev.queue commandBuffer];
+    if (!cmd) {
+        return MetalStatus(StatusCode::kInternal, BackendErrorKind::kRuntime,
+                           "Failed to create Metal command buffer");
+    }
+    [op encodeToCommandBuffer:cmd
+                   leftMatrix:a_mat
+                  rightMatrix:b_mat
+                 resultMatrix:c_mat];
+    [cmd commit];
+    [cmd waitUntilCompleted];
+
+    NSError* error = cmd.error;
+    if (error) {
+        return MetalErrorStatus(StatusCode::kInternal,
+                                BackendErrorKind::kRuntime,
+                                "Metal BLAS command buffer failed", error);
+    }
+
+    return true;
+}
+
+StatusOr<bool> MetalBackend::BlasCopy(int device_index,
+                                      const MetalBuffer& src,
+                                      const MetalBuffer& dst,
+                                      int64_t count,
+                                      bool use_fp64) const {
+    (void)device_index;
+    (void)src;
+    (void)dst;
+    (void)count;
+    (void)use_fp64;
+    return Status::Unavailable("Metal BLAS copy unavailable");
+}
+
+StatusOr<bool> MetalBackend::BlasAxpy(int device_index,
+                                      const MetalBuffer& x,
+                                      const MetalBuffer& y,
+                                      int64_t count,
+                                      double alpha,
+                                      bool use_fp64) const {
+    (void)device_index;
+    (void)x;
+    (void)y;
+    (void)count;
+    (void)alpha;
+    (void)use_fp64;
+    return Status::Unavailable("Metal BLAS axpy unavailable");
 }
 
 StatusOr<MetalKernel> MetalBackend::BuildKernelFromFile(

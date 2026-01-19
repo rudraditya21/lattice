@@ -111,7 +111,6 @@
 - Params structs are 8-byte aligned and have fixed sizes:
   - `ElemwiseParams`=280 bytes (includes broadcast metadata with `kMaxTensorDims=8`).
   - `ReduceParams`=24 bytes.
-  - `MatmulParams`=56 bytes.
   - `TransposeParams`=16 bytes.
   - `Conv2dParams`=48 bytes.
   - `Pool2dParams`=48 bytes.

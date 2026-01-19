@@ -66,17 +66,6 @@ typedef struct lattice_reduce_params {
     ulong stride;
 } lattice_reduce_params_t;
 
-typedef struct lattice_matmul_params {
-    ulong m;
-    ulong n;
-    ulong k;
-    ulong lda;
-    ulong ldb;
-    ulong ldc;
-    uint dtype;
-    uint flags;
-} lattice_matmul_params_t;
-
 typedef struct lattice_transpose_params {
     ulong rows;
     ulong cols;
@@ -205,40 +194,6 @@ LATTICE_ABI_OFFSET_ASSERT(lattice_reduce_params_stride_off,
                           lattice_reduce_params_t,
                           stride,
                           24);
-LATTICE_ABI_STATIC_ASSERT(lattice_matmul_params_size,
-                          sizeof(lattice_matmul_params_t) == 56);
-LATTICE_ABI_OFFSET_ASSERT(lattice_matmul_params_m_off,
-                          lattice_matmul_params_t,
-                          m,
-                          0);
-LATTICE_ABI_OFFSET_ASSERT(lattice_matmul_params_n_off,
-                          lattice_matmul_params_t,
-                          n,
-                          8);
-LATTICE_ABI_OFFSET_ASSERT(lattice_matmul_params_k_off,
-                          lattice_matmul_params_t,
-                          k,
-                          16);
-LATTICE_ABI_OFFSET_ASSERT(lattice_matmul_params_lda_off,
-                          lattice_matmul_params_t,
-                          lda,
-                          24);
-LATTICE_ABI_OFFSET_ASSERT(lattice_matmul_params_ldb_off,
-                          lattice_matmul_params_t,
-                          ldb,
-                          32);
-LATTICE_ABI_OFFSET_ASSERT(lattice_matmul_params_ldc_off,
-                          lattice_matmul_params_t,
-                          ldc,
-                          40);
-LATTICE_ABI_OFFSET_ASSERT(lattice_matmul_params_dtype_off,
-                          lattice_matmul_params_t,
-                          dtype,
-                          48);
-LATTICE_ABI_OFFSET_ASSERT(lattice_matmul_params_flags_off,
-                          lattice_matmul_params_t,
-                          flags,
-                          52);
 LATTICE_ABI_STATIC_ASSERT(lattice_transpose_params_size,
                           sizeof(lattice_transpose_params_t) == 24);
 LATTICE_ABI_STATIC_ASSERT(lattice_conv2d_params_size,

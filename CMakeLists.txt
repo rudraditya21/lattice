@@ -15,6 +15,7 @@ set(LATTICE_SOURCES
     src/runtime/tensor_utils.cpp
     src/runtime/backends/cpu/backend.cpp
     src/runtime/backends/gpu/dynloader.cpp
+    src/runtime/backends/gpu/clblast_loader.cpp
     src/runtime/backends/gpu/opencl_loader.cpp
     src/runtime/backends/gpu/opencl_backend.cpp
     src/runtime/backends/device_quirks.cpp
@@ -29,8 +30,10 @@ set(LATTICE_SOURCES
     src/runtime/backends/execution_config.cpp
     src/runtime/backends/profiling.cpp
     src/runtime/backends/gpu/cuda_loader.cpp
+    src/runtime/backends/gpu/cublas_loader.cpp
     src/runtime/backends/gpu/cuda_backend.cpp
     src/runtime/backends/gpu/hip_loader.cpp
+    src/runtime/backends/gpu/hipblas_loader.cpp
     src/runtime/backends/gpu/hip_backend.cpp
     src/runtime/decimal.cpp
     src/runtime/runner.cpp
@@ -56,10 +59,15 @@ endif()
 if(APPLE)
     set_source_files_properties(src/runtime/backends/gpu/metal_backend.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     find_library(METAL_FRAMEWORK Metal)
+    find_library(MPS_FRAMEWORK MetalPerformanceShaders)
     find_library(FOUNDATION_FRAMEWORK Foundation)
     find_library(QUARTZCORE_FRAMEWORK QuartzCore)
+    find_library(ACCELERATE_FRAMEWORK Accelerate)
     if(METAL_FRAMEWORK)
         target_link_libraries(lattice_lib PRIVATE ${METAL_FRAMEWORK})
+    endif()
+    if(MPS_FRAMEWORK)
+        target_link_libraries(lattice_lib PRIVATE ${MPS_FRAMEWORK})
     endif()
     if(FOUNDATION_FRAMEWORK)
         target_link_libraries(lattice_lib PRIVATE ${FOUNDATION_FRAMEWORK})
@@ -67,11 +75,30 @@ if(APPLE)
     if(QUARTZCORE_FRAMEWORK)
         target_link_libraries(lattice_lib PRIVATE ${QUARTZCORE_FRAMEWORK})
     endif()
+    if(ACCELERATE_FRAMEWORK)
+        target_link_libraries(lattice_lib PRIVATE ${ACCELERATE_FRAMEWORK})
+        target_compile_definitions(lattice_lib PUBLIC LATTICE_USE_ACCELERATE)
+    endif()
+endif()
+
+if(UNIX AND NOT APPLE)
+    find_package(BLAS)
+    if(BLAS_FOUND)
+        find_path(CBLAS_INCLUDE_DIR cblas.h)
+        if(CBLAS_INCLUDE_DIR)
+            target_include_directories(lattice_lib PUBLIC ${CBLAS_INCLUDE_DIR})
+            target_link_libraries(lattice_lib PRIVATE ${BLAS_LIBRARIES})
+            target_compile_definitions(lattice_lib PUBLIC LATTICE_USE_CBLAS)
+        endif()
+    endif()
 endif()
 
 add_executable(lattice main.cpp)
 
 target_link_libraries(lattice PRIVATE lattice_lib)
+
+add_executable(lattice_bench benchmarks/benchmark_main.cpp)
+target_link_libraries(lattice_bench PRIVATE lattice_lib)
 
 enable_testing()
 add_executable(lattice_tests

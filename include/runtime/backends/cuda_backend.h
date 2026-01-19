@@ -11,6 +11,7 @@
 
 #include "runtime/backend.h"
 #include "runtime/backends/device_caps.h"
+#include "runtime/backends/gpu/cublas_loader.h"
 #include "runtime/backends/gpu/cuda_loader.h"
 
 namespace lattice::runtime {
@@ -119,6 +120,25 @@ class CudaBackend final : public Backend {
                       void* data,
                       size_t bytes,
                       size_t offset = 0) const;
+    StatusOr<bool> BlasMatmul(int device_index,
+                              const CudaBuffer& a,
+                              const CudaBuffer& b,
+                              const CudaBuffer& c,
+                              int64_t m,
+                              int64_t n,
+                              int64_t k,
+                              bool use_fp64) const;
+    StatusOr<bool> BlasCopy(int device_index,
+                            const CudaBuffer& src,
+                            const CudaBuffer& dst,
+                            int64_t count,
+                            bool use_fp64) const;
+    StatusOr<bool> BlasAxpy(int device_index,
+                            const CudaBuffer& x,
+                            const CudaBuffer& y,
+                            int64_t count,
+                            double alpha,
+                            bool use_fp64) const;
 
     StatusOr<CudaKernel> BuildKernelFromFile(
         const std::string& path,
@@ -158,6 +178,7 @@ class CudaBackend final : public Backend {
 
     mutable std::vector<DeviceContext> devices_;
     mutable gpu::CudaLoader loader_;
+    mutable gpu::CublasLoader cublas_loader_;
     mutable bool initialized_ = false;
     mutable Status init_status_ = Status::OK();
     mutable std::mutex mu_;

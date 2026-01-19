@@ -12,6 +12,7 @@
 #include "runtime/backend.h"
 #include "runtime/backends/device_caps.h"
 #include "runtime/backends/gpu/hip_loader.h"
+#include "runtime/backends/gpu/hipblas_loader.h"
 
 namespace lattice::runtime {
 
@@ -117,6 +118,25 @@ class HipBackend final : public Backend {
                       void* data,
                       size_t bytes,
                       size_t offset = 0) const;
+    StatusOr<bool> BlasMatmul(int device_index,
+                              const HipBuffer& a,
+                              const HipBuffer& b,
+                              const HipBuffer& c,
+                              int64_t m,
+                              int64_t n,
+                              int64_t k,
+                              bool use_fp64) const;
+    StatusOr<bool> BlasCopy(int device_index,
+                            const HipBuffer& src,
+                            const HipBuffer& dst,
+                            int64_t count,
+                            bool use_fp64) const;
+    StatusOr<bool> BlasAxpy(int device_index,
+                            const HipBuffer& x,
+                            const HipBuffer& y,
+                            int64_t count,
+                            double alpha,
+                            bool use_fp64) const;
 
     StatusOr<HipKernel> BuildKernelFromFile(
         const std::string& path,
@@ -156,6 +176,7 @@ class HipBackend final : public Backend {
 
     mutable std::vector<DeviceContext> devices_;
     mutable gpu::HipLoader loader_;
+    mutable gpu::HipblasLoader hipblas_loader_;
     mutable bool initialized_ = false;
     mutable Status init_status_ = Status::OK();
     mutable std::mutex mu_;

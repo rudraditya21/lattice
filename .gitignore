@@ -37,3 +37,5 @@ compile_commands.json
 
 # Lattice
 .lattice_cache
+
+*.txt

@@ -22,11 +22,11 @@ void RunKernelRegistryTests(TestContext* ctx) {
   key.arch_major = 8;
   key.vectorize = true;
   key.use_fp64 = false;
-  const auto* matmul = rt::SelectKernelDefinition(rt::KernelOp::kMatmul, key);
-  ExpectTrue(matmul != nullptr, "kernel_registry_select_matmul", ctx);
-  if (matmul) {
-    ExpectTrue(matmul->name == "lattice_matmul_t32",
-               "kernel_registry_matmul_variant", ctx);
+  const auto* conv2d = rt::SelectKernelDefinition(rt::KernelOp::kConv2d, key);
+  ExpectTrue(conv2d != nullptr, "kernel_registry_select_conv2d", ctx);
+  if (conv2d) {
+    ExpectTrue(conv2d->name == "lattice_conv2d_t16",
+               "kernel_registry_conv2d_variant", ctx);
   }
 
   const auto* elemwise =

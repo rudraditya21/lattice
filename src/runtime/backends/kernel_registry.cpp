@@ -18,7 +18,7 @@ struct KernelDispatchEntry {
     std::string_view kernel_name;
 };
 
-constexpr std::array<KernelDefinition, 30> kKernelDefs = {{
+constexpr std::array<KernelDefinition, 26> kKernelDefs = {{
     {"lattice_elemwise_add", "tensor_elemwise_add"},
     {"lattice_elemwise_add_vec4", "tensor_elemwise_add"},
     {"lattice_elemwise_sub", "tensor_elemwise_sub"},
@@ -33,10 +33,6 @@ constexpr std::array<KernelDefinition, 30> kKernelDefs = {{
     {"lattice_reduce_std", "tensor_reduce_std"},
     {"lattice_transpose", "tensor_transpose"},
     {"lattice_transpose_t8", "tensor_transpose"},
-    {"lattice_matmul", "tensor_matmul"},
-    {"lattice_matmul_t16", "tensor_matmul"},
-    {"lattice_matmul_t32", "tensor_matmul"},
-    {"lattice_matmul_t8", "tensor_matmul"},
     {"lattice_conv2d", "tensor_conv2d"},
     {"lattice_conv2d_t8", "tensor_conv2d"},
     {"lattice_conv2d_t16", "tensor_conv2d"},
@@ -51,7 +47,7 @@ constexpr std::array<KernelDefinition, 30> kKernelDefs = {{
     {"lattice_regression", "tensor_regression"},
 }};
 
-constexpr std::array<KernelDispatchEntry, 25> kDispatchTable = {{
+constexpr std::array<KernelDispatchEntry, 19> kDispatchTable = {{
     {KernelOp::kElemwiseAdd, BackendType::kCPU, KernelVendor::kAny, 0, 0, true,
      false, "lattice_elemwise_add_vec4"},
     {KernelOp::kElemwiseAdd, BackendType::kCPU, KernelVendor::kAny, 0, 0, false,
@@ -80,19 +76,6 @@ constexpr std::array<KernelDispatchEntry, 25> kDispatchTable = {{
 
     {KernelOp::kTranspose, BackendType::kCPU, KernelVendor::kAny, 0, 0, false,
      false, "lattice_transpose"},
-
-    {KernelOp::kMatmul, BackendType::kCUDA, KernelVendor::kNvidia, 8, 0, false,
-     false, "lattice_matmul_t32"},
-    {KernelOp::kMatmul, BackendType::kCUDA, KernelVendor::kNvidia, 0, 0, false,
-     false, "lattice_matmul_t16"},
-    {KernelOp::kMatmul, BackendType::kHIP, KernelVendor::kAmd, 0, 0, false,
-     false, "lattice_matmul_t16"},
-    {KernelOp::kMatmul, BackendType::kMetal, KernelVendor::kApple, 0, 0, false,
-     false, "lattice_matmul_t16"},
-    {KernelOp::kMatmul, BackendType::kOpenCL, KernelVendor::kIntel, 0, 0, false,
-     false, "lattice_matmul_t16"},
-    {KernelOp::kMatmul, BackendType::kCPU, KernelVendor::kAny, 0, 0, false,
-     false, "lattice_matmul"},
 
     {KernelOp::kConv2d, BackendType::kCUDA, KernelVendor::kNvidia, 0, 0, false,
      false, "lattice_conv2d_t16"},

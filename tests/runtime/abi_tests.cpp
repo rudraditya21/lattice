@@ -13,7 +13,6 @@ void RunAbiTests(TestContext* ctx) {
   using lattice::runtime::cuda::ElemwiseParams;
   using lattice::runtime::cuda::FftParams;
   using lattice::runtime::cuda::LuParams;
-  using lattice::runtime::cuda::MatmulParams;
   using lattice::runtime::cuda::Pool2dParams;
   using lattice::runtime::cuda::QuantileParams;
   using lattice::runtime::cuda::QrParams;
@@ -61,15 +60,6 @@ void RunAbiTests(TestContext* ctx) {
   ExpectTrue(offsetof(ReduceParams, flags) == 16, "reduce_params_flags_off", ctx);
   ExpectTrue(offsetof(ReduceParams, stride) == 24, "reduce_params_stride_off", ctx);
 
-  ExpectTrue(sizeof(MatmulParams) == 56, "matmul_params_size", ctx);
-  ExpectTrue(offsetof(MatmulParams, m) == 0, "matmul_params_m_off", ctx);
-  ExpectTrue(offsetof(MatmulParams, n) == 8, "matmul_params_n_off", ctx);
-  ExpectTrue(offsetof(MatmulParams, k) == 16, "matmul_params_k_off", ctx);
-  ExpectTrue(offsetof(MatmulParams, lda) == 24, "matmul_params_lda_off", ctx);
-  ExpectTrue(offsetof(MatmulParams, ldb) == 32, "matmul_params_ldb_off", ctx);
-  ExpectTrue(offsetof(MatmulParams, ldc) == 40, "matmul_params_ldc_off", ctx);
-  ExpectTrue(offsetof(MatmulParams, dtype) == 48, "matmul_params_dtype_off", ctx);
-  ExpectTrue(offsetof(MatmulParams, flags) == 52, "matmul_params_flags_off", ctx);
 
   ExpectTrue(sizeof(TransposeParams) == 24, "transpose_params_size", ctx);
   ExpectTrue(sizeof(Conv2dParams) == 56, "conv2d_params_size", ctx);

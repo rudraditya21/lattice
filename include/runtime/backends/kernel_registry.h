@@ -23,7 +23,6 @@ enum class KernelOp {
     kReduceVar,
     kReduceStd,
     kTranspose,
-    kMatmul,
     kConv2d,
 };
 
